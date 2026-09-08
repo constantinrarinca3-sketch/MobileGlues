@@ -6,6 +6,7 @@
 // End of Source File Header
 
 #include "log.h"
+#include "mg.h"
 #include <unistd.h>
 #include <mutex>
 

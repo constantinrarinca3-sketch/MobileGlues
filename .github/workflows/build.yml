@@ -1,5 +1,9 @@
 name: Build MobileGlues for iOS
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches-ignore:
+      - zomdroid-experimental
+  workflow_dispatch:
 jobs:
   build-ios:
     runs-on: macos-latest
