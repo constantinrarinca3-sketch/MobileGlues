@@ -613,28 +613,52 @@ static bool upgrade_legacy_desktop_shader(std::string& glsl, GLenum shader_type)
     glsl = std::regex_replace(glsl, version_directive, "#version 330",
                               std::regex_constants::format_first_only);
 
-    if (shader_type == GL_VERTEX_SHADER) {
-        static const std::regex attribute_token(R"(\battribute\b)");
-        static const std::regex varying_token(R"(\bvarying\b)");
-        glsl = std::regex_replace(glsl, attribute_token, "in");
-        glsl = std::regex_replace(glsl, varying_token, "out");
-    } else if (shader_type == GL_FRAGMENT_SHADER) {
-        static const std::regex varying_token(R"(\bvarying\b)");
-        static const std::regex frag_color_token(R"(\bgl_FragColor\b)");
-        glsl = std::regex_replace(glsl, varying_token, "in");
-        if (std::regex_search(glsl, frag_color_token)) {
-            glsl = std::regex_replace(glsl, frag_color_token, "zomdroid_FragColor");
-            glsl.insert(find_insertion_point(glsl),
-                        "layout(location = 0) out vec4 zomdroid_FragColor;\n");
-        }
-    } else {
-        return false;
-    }
-
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=legacy_%d_to_330 type=0x%x", version, shader_type);
 #endif
     return true;
+}
+
+// Several Build 42 shaders advertise desktop GLSL 330 but still use tokens
+// removed from the core profile (`varying` and `gl_FragColor`). glslang rejects
+// those before SPIRV-Cross gets a chance to produce ESSL, so they used to take
+// the same unsafe raw-source fallback as GLSL 1.20. Normalize only tokens whose
+// stage-specific replacement is exact; fixed-function inputs remain excluded by
+// upgrade_legacy_desktop_shader() above.
+static bool normalize_desktop_core_tokens(std::string& glsl, GLenum shader_type) {
+    if (getGLSLVersion(glsl.c_str()) < 130) return false;
+
+    static const std::regex attribute_token(R"(\battribute\b)");
+    static const std::regex varying_token(R"(\bvarying\b)");
+    static const std::regex frag_color_token(R"(\bgl_FragColor\b)");
+    bool changed = false;
+
+    if (shader_type == GL_VERTEX_SHADER) {
+        if (std::regex_search(glsl, attribute_token)) {
+            glsl = std::regex_replace(glsl, attribute_token, "in");
+            changed = true;
+        }
+        if (std::regex_search(glsl, varying_token)) {
+            glsl = std::regex_replace(glsl, varying_token, "out");
+            changed = true;
+        }
+    } else if (shader_type == GL_FRAGMENT_SHADER) {
+        if (std::regex_search(glsl, varying_token)) {
+            glsl = std::regex_replace(glsl, varying_token, "in");
+            changed = true;
+        }
+        if (std::regex_search(glsl, frag_color_token)) {
+            glsl = std::regex_replace(glsl, frag_color_token, "zomdroid_FragColor");
+            glsl.insert(find_insertion_point(glsl),
+                        "layout(location = 0) out vec4 zomdroid_FragColor;\n");
+            changed = true;
+        }
+    }
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (changed) write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=desktop_core_tokens type=0x%x", shader_type);
+#endif
+    return changed;
 }
 
 void process_sampler_buffer(std::string& source) { // a simplized version, should be rewritten in the future
@@ -785,6 +809,7 @@ void inject_mg_macro_definition(std::string& glslCode) {
 std::string preprocess_glsl(const std::string& glsl, GLenum shaderType) {
     std::string ret = glsl;
     upgrade_legacy_desktop_shader(ret, shaderType);
+    normalize_desktop_core_tokens(ret, shaderType);
     upgrade_legacy_texture_calls(ret);
     // Remove lines beginning with `#line`
     ret = replace_line_starting_with(ret, "#line");
