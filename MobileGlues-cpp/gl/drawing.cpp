@@ -8,10 +8,14 @@
 #include "drawing.h"
 #include "restart.h"
 #include "buffer.h"
+#include "enable.h"
 #include "framebuffer.h"
 #include "mg.h"
+#include "quad_indices.h"
 #include "texture.h"
 #include "../egl/context.h"
+
+#include <limits>
 
 #define DEBUG 0
 
@@ -200,11 +204,278 @@ void prepareForDraw() {
     }
 }
 
+namespace {
+
+// GLES removed GL_QUADS. Keep two context-owned scratch index buffers: the
+// array path reuses one monotonically-grown 0-based sequence, while the indexed
+// path uploads the application's expanded stream. They are separate so an
+// indexed draw cannot evict the hot array sequence used by the sprite batcher.
+thread_local GLuint g_quad_array_ibo = 0;
+thread_local GLuint g_quad_elements_ibo = 0;
+thread_local unsigned long long g_quad_owner_ctx_id = 0;
+thread_local std::size_t g_quad_array_uploaded = 0;
+thread_local std::vector<GLuint> g_quad_array_indices;
+thread_local std::vector<GLuint> g_quad_element_indices;
+
+void quad_check_context() {
+    const unsigned long long current = g_current_ctx ? g_current_ctx->id : 0;
+    if (current == g_quad_owner_ctx_id) return;
+    g_quad_array_ibo = 0;
+    g_quad_elements_ibo = 0;
+    g_quad_array_uploaded = 0;
+    g_quad_owner_ctx_id = current;
+}
+
+GLsizei quad_index_size(GLenum type) {
+    switch (type) {
+    case GL_UNSIGNED_BYTE:
+        return 1;
+    case GL_UNSIGNED_SHORT:
+        return 2;
+    case GL_UNSIGNED_INT:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+bool quad_output_count(GLsizei source_count, GLsizei* output_count) {
+    if (source_count < 0) {
+        mg_set_gl_error(GL_INVALID_VALUE);
+        return false;
+    }
+    const std::size_t count = mg_quad_detail::triangle_index_capacity(static_cast<std::size_t>(source_count));
+    if (count > static_cast<std::size_t>(std::numeric_limits<GLsizei>::max())) {
+        mg_set_gl_error(GL_OUT_OF_MEMORY);
+        return false;
+    }
+    *output_count = static_cast<GLsizei>(count);
+    return true;
+}
+
+void trace_quad_rewrite(const char* route, GLsizei source_count, GLsizei output_count, GLenum type,
+                        GLuint source_ibo) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    static thread_local unsigned int arrays_seen = 0;
+    static thread_local unsigned int elements_seen = 0;
+    unsigned int& seen = type == 0 ? arrays_seen : elements_seen;
+    if (seen++ < 8) {
+        write_log("ZOMDROID_QUADS_REWRITE route=%s source=%d triangles_indices=%d type=0x%x source_ibo=%u", route,
+                  source_count, output_count, type, source_ibo);
+    }
+#else
+    (void)route;
+    (void)source_count;
+    (void)output_count;
+    (void)type;
+    (void)source_ibo;
+#endif
+}
+
+void quad_warn_once(const char* message) {
+    static bool warned = false;
+    if (warned) return;
+    warned = true;
+    LOG_W_FORCE("%s", message)
+}
+
+bool draw_arrays_as_triangles(GLint first, GLsizei count, GLsizei instancecount) {
+    if (first < 0 || instancecount < -1) {
+        mg_set_gl_error(GL_INVALID_VALUE);
+        return true;
+    }
+
+    GLsizei output_count = 0;
+    if (!quad_output_count(count, &output_count) || output_count == 0 || instancecount == 0) return true;
+
+    quad_check_context();
+    const GLuint previous_ibo = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
+    const std::size_t wanted = static_cast<std::size_t>(output_count);
+    if (g_quad_array_indices.size() < wanted) {
+        g_quad_array_indices.resize(wanted);
+        mg_quad_detail::expand_sequence(g_quad_array_indices.data(), static_cast<std::size_t>(count));
+    }
+    if (!g_quad_array_ibo) GLES.glGenBuffers(1, &g_quad_array_ibo);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_array_ibo);
+    if (g_quad_array_uploaded < wanted) {
+        GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(wanted * sizeof(GLuint)),
+                          g_quad_array_indices.data(), GL_STREAM_DRAW);
+        g_quad_array_uploaded = wanted;
+    }
+
+    bool drew = false;
+    if (first == 0) {
+        if (instancecount < 0) {
+            GLES.glDrawElements(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr);
+        } else {
+            GLES.glDrawElementsInstanced(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr, instancecount);
+        }
+        drew = true;
+    } else if (instancecount < 0 && GLES.glDrawElementsBaseVertex) {
+        GLES.glDrawElementsBaseVertex(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr, first);
+        drew = true;
+    } else if (instancecount >= 0 && GLES.glDrawElementsInstancedBaseVertex) {
+        GLES.glDrawElementsInstancedBaseVertex(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr, instancecount,
+                                               first);
+        drew = true;
+    }
+
+    if (!drew) {
+        // GLES 3.0/3.1 may have no base-vertex entry point. Build an absolute
+        // stream only on that fallback; GLES 3.2 stays on the reusable buffer.
+        g_quad_element_indices.resize(wanted);
+        mg_quad_detail::expand_sequence(g_quad_element_indices.data(), static_cast<std::size_t>(count),
+                                        static_cast<GLuint>(first));
+        if (!g_quad_elements_ibo) GLES.glGenBuffers(1, &g_quad_elements_ibo);
+        GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_elements_ibo);
+        GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(wanted * sizeof(GLuint)),
+                          g_quad_element_indices.data(), GL_STREAM_DRAW);
+        if (instancecount < 0) {
+            GLES.glDrawElements(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr);
+        } else {
+            GLES.glDrawElementsInstanced(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, nullptr, instancecount);
+        }
+    }
+
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
+    trace_quad_rewrite("arrays", count, output_count, 0, previous_ibo);
+    CHECK_GL_ERROR
+    return true;
+}
+
+void draw_unreadable_quad_elements(GLsizei count, GLenum type, const void* indices, GLint basevertex,
+                                   GLsizei instancecount, GLuint source_ibo) {
+    if (mg_primitive_restart_enabled()) {
+        quad_warn_once("GL_QUADS: unreadable index buffer with primitive restart; draw skipped");
+        return;
+    }
+
+    const GLsizei size = quad_index_size(type);
+    const GLsizei quads = count / 4;
+    for (GLsizei q = 0; q < quads; ++q) {
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(indices) + static_cast<uintptr_t>(q * 4) * size;
+        const void* quad = reinterpret_cast<const void*>(offset);
+        if (basevertex == 0) {
+            if (instancecount < 0) {
+                GLES.glDrawElements(GL_TRIANGLE_FAN, 4, type, quad);
+            } else {
+                GLES.glDrawElementsInstanced(GL_TRIANGLE_FAN, 4, type, quad, instancecount);
+            }
+        } else if (instancecount < 0 && GLES.glDrawElementsBaseVertex) {
+            GLES.glDrawElementsBaseVertex(GL_TRIANGLE_FAN, 4, type, quad, basevertex);
+        } else if (instancecount >= 0 && GLES.glDrawElementsInstancedBaseVertex) {
+            GLES.glDrawElementsInstancedBaseVertex(GL_TRIANGLE_FAN, 4, type, quad, instancecount, basevertex);
+        } else {
+            quad_warn_once("GL_QUADS: unreadable index buffer needs unavailable base-vertex support; draw skipped");
+            return;
+        }
+    }
+    trace_quad_rewrite("elements-fan-fallback", count, quads * 6, type, source_ibo);
+}
+
+bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices, GLint basevertex,
+                                GLsizei instancecount) {
+    if (instancecount < -1) {
+        mg_set_gl_error(GL_INVALID_VALUE);
+        return true;
+    }
+    const GLsizei size = quad_index_size(type);
+    if (size == 0) {
+        mg_set_gl_error(GL_INVALID_ENUM);
+        return true;
+    }
+
+    GLsizei capacity = 0;
+    if (!quad_output_count(count, &capacity) || capacity == 0 || instancecount == 0) return true;
+
+    quad_check_context();
+    const GLuint previous_ibo = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
+    const void* source = indices;
+    bool mapped = false;
+    if (previous_ibo != 0) {
+        GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
+        if (!GLES.glMapBufferRange) {
+            draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
+            return true;
+        }
+        source = GLES.glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER,
+                                       static_cast<GLintptr>(reinterpret_cast<uintptr_t>(indices)),
+                                       static_cast<GLsizeiptr>(count) * size, GL_MAP_READ_BIT);
+        mapped = source != nullptr;
+        if (!mapped) {
+            draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
+            return true;
+        }
+    } else if (!source) {
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        return true;
+    }
+
+    g_quad_element_indices.resize(static_cast<std::size_t>(capacity));
+    const bool restart = mg_primitive_restart_enabled();
+    const GLuint restart_index = mg_primitive_restart_index_for(type);
+    std::size_t output = 0;
+    switch (type) {
+    case GL_UNSIGNED_BYTE:
+        output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLubyte*>(source),
+                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+        break;
+    case GL_UNSIGNED_SHORT:
+        output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLushort*>(source),
+                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+        break;
+    case GL_UNSIGNED_INT:
+        output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLuint*>(source),
+                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+        break;
+    }
+    if (mapped) GLES.glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+    if (output == 0) return true;
+
+    if (!g_quad_elements_ibo) GLES.glGenBuffers(1, &g_quad_elements_ibo);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_elements_ibo);
+    GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(output * sizeof(GLuint)),
+                      g_quad_element_indices.data(), GL_STREAM_DRAW);
+    if (instancecount < 0) {
+        GLES.glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(output), GL_UNSIGNED_INT, nullptr);
+    } else {
+        GLES.glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(output), GL_UNSIGNED_INT, nullptr,
+                                     instancecount);
+    }
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
+    trace_quad_rewrite("elements", count, static_cast<GLsizei>(output), type, previous_ibo);
+    CHECK_GL_ERROR
+    return true;
+}
+
+} // namespace
+
+void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    LOG()
+    if (mode == GL_QUADS) {
+        prepareForDraw();
+        if (draw_arrays_as_triangles(first, count, -1)) return;
+    }
+    GLES.glDrawArrays(mode, first, count);
+    CHECK_GL_ERROR
+}
+
+void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {
+    LOG()
+    if (mode == GL_QUADS) {
+        prepareForDraw();
+        if (draw_arrays_as_triangles(first, count, instancecount)) return;
+    }
+    GLES.glDrawArraysInstanced(mode, first, count, instancecount);
+    CHECK_GL_ERROR
+}
+
 void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei primcount) {
     LOG()
     LOG_D("glDrawElementsInstanced, mode: %d, count: %d, type: %d, indices: %p, primcount: %d", mode, count, type,
           indices, primcount)
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, primcount)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, primcount)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
@@ -217,6 +488,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices
     LOG()
     LOG_D("glDrawElements, mode: %d, count: %d, type: %d, indices: %p", mode, count, type, indices)
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
@@ -302,6 +574,7 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
     LOG_D("glDrawElementsBaseVertex, mode: %d, count: %d, type: %d, indices: %p, basevertex: %d", mode, count, type,
           indices, basevertex);
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, -1)) return;
     // The rewrite applies the base vertex itself, so it covers both the emulated
     // and the driver-supported branch below.
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, basevertex, -1)) return;
@@ -453,6 +726,7 @@ void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, G
     LOG()
     LOG_D("glDrawRangeElements, mode: %d, start: %u, end: %u, count: %d, type: %d", mode, start, end, count, type)
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     // The rewritten stream is 32-bit with 0xFFFFFFFF sentinels, so start/end no
     // longer describe it. They are only a promise about the index range, and
     // dropping the promise is allowed; drawing the wrong primitives is not.
@@ -467,6 +741,7 @@ void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsize
     LOG()
     LOG_D("glDrawRangeElementsBaseVertex, mode: %d, count: %d, type: %d, basevertex: %d", mode, count, type, basevertex)
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, basevertex, -1)) return;
     restart_guard_t guard(type);
     if (GLES.glDrawRangeElementsBaseVertex) {
@@ -485,6 +760,7 @@ void glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, 
     LOG_D("glDrawElementsInstancedBaseVertex, mode: %d, count: %d, type: %d, instancecount: %d, basevertex: %d", mode,
           count, type, instancecount, basevertex)
     prepareForDraw();
+    if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, instancecount)) return;
     if (mg_restart_needs_rewrite(type) &&
         mg_draw_elements_restart(mode, count, type, indices, basevertex, instancecount))
         return;
@@ -525,6 +801,7 @@ void glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, 
                      baseinstance);
     }
     prepareForDraw();
+    if (mode == GL_QUADS && draw_arrays_as_triangles(first, count, instancecount)) return;
     GLES.glDrawArraysInstanced(mode, first, count, instancecount);
     CHECK_GL_ERROR
 }

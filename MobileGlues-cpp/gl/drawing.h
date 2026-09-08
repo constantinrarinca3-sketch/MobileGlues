@@ -32,6 +32,8 @@ extern "C"
 {
 #endif
 
+    GLAPI GLAPIENTRY void glDrawArrays(GLenum mode, GLint first, GLsizei count);
+    GLAPI GLAPIENTRY void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount);
     GLAPI GLAPIENTRY void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void* indices,
                                                   GLsizei primcount);
     GLAPI GLAPIENTRY void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void* indices,
