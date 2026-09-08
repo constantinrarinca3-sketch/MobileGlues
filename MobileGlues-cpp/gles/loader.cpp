@@ -666,6 +666,7 @@ void init_target_gles() {
     INIT_GLES_FUNC(glGetQueryObjecti64vEXT)
     INIT_GLES_FUNC(glBindFragDataLocationEXT)
     INIT_GLES_FUNC(glMapBufferOES)
+    INIT_GLES_FUNC(glUnmapBufferOES)
 
     INIT_GLES_FUNC(glMultiDrawArraysIndirectEXT)
     INIT_GLES_FUNC(glMultiDrawElementsIndirectEXT)

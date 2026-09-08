@@ -135,9 +135,12 @@ extern "C"
 #ifndef __APPLE__
 #define NATIVE_FUNCTION_HEAD(type, name, ...)                                                                          \
     extern "C" GLAPI GLAPIENTRY type name##ARB(__VA_ARGS__) __attribute__((alias(#name)));                             \
-    extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {
+    extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {                                                              \
+        LOG()
 #else
-#define NATIVE_FUNCTION_HEAD(type, name, ...) extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {
+#define NATIVE_FUNCTION_HEAD(type, name, ...)                                                                          \
+    extern "C" GLAPI GLAPIENTRY type name(__VA_ARGS__) {                                                              \
+        LOG()
 #endif
 
 #if GLOBAL_DEBUG

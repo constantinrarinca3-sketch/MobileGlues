@@ -7,6 +7,7 @@
 
 #include "buffer.h"
 #include "../egl/context.h"
+#include <atomic>
 #include <mutex>
 #include <memory>
 #include <ska/flat_hash_map.hpp>
@@ -36,6 +37,24 @@ static GLint maxArrayId = 0;
 // ---------------------------------------------------------------------------
 
 namespace {
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+// First-use breadcrumbs go quiet after an entry point has been seen. Map/unmap
+// can fail on a later invocation, so retain a small ordered enter/exit window
+// without turning every draw into file I/O.
+std::atomic<unsigned int> g_zomdroid_buffer_trace_seq{0};
+constexpr unsigned int k_zomdroid_buffer_trace_limit = 256;
+
+void trace_zomdroid_buffer_call(const char* phase, GLenum target, GLintptr offset, GLsizeiptr length,
+                                GLbitfield access, const void* result) {
+    const unsigned int seq = g_zomdroid_buffer_trace_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq > k_zomdroid_buffer_trace_limit) return;
+    write_log("ZOMDROID_GL_BUFFER %u %s target=0x%x offset=%lld length=%lld access=0x%x result=%p", seq, phase,
+              target, static_cast<long long>(offset), static_cast<long long>(length), access, result);
+}
+#else
+void trace_zomdroid_buffer_call(const char*, GLenum, GLintptr, GLsizeiptr, GLbitfield, const void*) {}
+#endif
 
 struct buffer_group_state_t { // shared across a share group
     std::vector<GLuint> gen_buffers;
@@ -1042,9 +1061,16 @@ void glGetBufferParameteriv(GLenum target, GLenum pname, GLint* params) {
 void* glMapBuffer(GLenum target, GLenum access) {
     LOG()
     LOG_D("glMapBuffer, target = %s, access = %s", glEnumToString(target), glEnumToString(access))
-    if (g_gles_caps.GL_OES_mapbuffer) {
+    trace_zomdroid_buffer_call("MAP_ENTER", target, 0, 0, access, nullptr);
+
+    // Do not mix the OES map entry point with the core unmap entry point. GLES
+    // 3.x uses the core pair; OES is only a fallback for a backend without core
+    // range mapping.
+    if (!GLES.glMapBufferRange && g_gles_caps.GL_OES_mapbuffer && GLES.glMapBufferOES && GLES.glUnmapBufferOES) {
         borrowed_target_t t(target);
-        return GLES.glMapBufferOES(t.target, access);
+        void* ptr = GLES.glMapBufferOES(t.target, access);
+        trace_zomdroid_buffer_call("MAP_OES_EXIT", target, 0, 0, access, ptr);
+        return ptr;
     }
     GLint buffer_size;
     glGetBufferParameteriv(target, GL_BUFFER_SIZE, &buffer_size);
@@ -1063,9 +1089,12 @@ void* glMapBuffer(GLenum target, GLenum access) {
         flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
         break;
     default:
+        trace_zomdroid_buffer_call("MAP_BAD_ACCESS", target, 0, buffer_size, access, nullptr);
+        mg_set_gl_error(GL_INVALID_ENUM);
         return nullptr;
     }
     void* ptr = glMapBufferRange(target, 0, buffer_size, flags);
+    trace_zomdroid_buffer_call("MAP_CORE_EXIT", target, 0, buffer_size, flags, ptr);
     return ptr;
 }
 
@@ -1091,17 +1120,38 @@ void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
     LOG()
     if (global_settings.buffer_coherent_as_flush) access &= ~GL_MAP_FLUSH_EXPLICIT_BIT;
     //    access |= GL_MAP_UNSYNCHRONIZED_BIT;
+    trace_zomdroid_buffer_call("MAP_RANGE_ENTER", target, offset, length, access, nullptr);
+    if (!GLES.glMapBufferRange) {
+        trace_zomdroid_buffer_call("MAP_RANGE_MISSING", target, offset, length, access, nullptr);
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        return nullptr;
+    }
     borrowed_target_t t(target);
-    return GLES.glMapBufferRange(t.target, offset, length, access);
+    void* ptr = GLES.glMapBufferRange(t.target, offset, length, access);
+    trace_zomdroid_buffer_call("MAP_RANGE_EXIT", target, offset, length, access, ptr);
+    return ptr;
 }
 
 GLboolean glUnmapBuffer(GLenum target) {
     LOG()
     LOG_D("%s(%s)", __func__, glEnumToString(target));
+    trace_zomdroid_buffer_call("UNMAP_ENTER", target, 0, 0, 0, nullptr);
     borrowed_target_t t(target);
-    if (g_gles_caps.GL_OES_mapbuffer) return GLES.glUnmapBuffer(t.target);
-
-    GLboolean result = GLES.glUnmapBuffer(t.target);
+    GLboolean result = GL_FALSE;
+    if (!GLES.glMapBufferRange && g_gles_caps.GL_OES_mapbuffer && GLES.glUnmapBufferOES) {
+        result = GLES.glUnmapBufferOES(t.target);
+        trace_zomdroid_buffer_call(result ? "UNMAP_OES_EXIT_TRUE" : "UNMAP_OES_EXIT_FALSE", target, 0, 0, 0,
+                                   nullptr);
+        return result;
+    }
+    if (!GLES.glUnmapBuffer) {
+        trace_zomdroid_buffer_call("UNMAP_MISSING", target, 0, 0, 0, nullptr);
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        return GL_FALSE;
+    }
+    result = GLES.glUnmapBuffer(t.target);
+    trace_zomdroid_buffer_call(result ? "UNMAP_CORE_EXIT_TRUE" : "UNMAP_CORE_EXIT_FALSE", target, 0, 0, 0,
+                               nullptr);
     CHECK_GL_ERROR
     return result;
 }
