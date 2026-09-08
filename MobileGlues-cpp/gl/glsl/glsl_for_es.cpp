@@ -346,6 +346,87 @@ std::string processOutColorLocations(const std::string& glslCode) {
     return std::regex_replace(glslCode, pattern, replacement);
 }
 
+// Build 42's legacy util/math.glsl declares float/vec2/vec3 overloads named
+// `clamp`. Desktop GLSL accepts those helpers, but SPIRV-Cross preserves the
+// declarations when producing ESSL and Qualcomm then rejects them because
+// `clamp` is a reserved built-in. The helper bodies implement exactly the ESSL
+// built-in operation, so remove definitions only and let existing calls bind to
+// the native built-in. Calls, prototypes and unrelated identifiers are left
+// untouched.
+static size_t remove_redefined_clamp_overloads(std::string& source) {
+    static const std::regex return_type(
+        R"(^\s*(?:(?:lowp|mediump|highp)\s+)?(?:float|vec2|vec3|vec4)\s*$)");
+
+    size_t removed = 0;
+    size_t cursor = 0;
+    while ((cursor = source.find("clamp", cursor)) != std::string::npos) {
+        const size_t name_end = cursor + 5;
+        const auto is_identifier_char = [](char value) {
+            const unsigned char ch = static_cast<unsigned char>(value);
+            return std::isalnum(ch) || value == '_';
+        };
+        if ((cursor > 0 && is_identifier_char(source[cursor - 1])) ||
+            (name_end < source.size() && is_identifier_char(source[name_end]))) {
+            cursor = name_end;
+            continue;
+        }
+
+        size_t open_paren = name_end;
+        while (open_paren < source.size() && std::isspace(static_cast<unsigned char>(source[open_paren])))
+            ++open_paren;
+        if (open_paren == source.size() || source[open_paren] != '(') {
+            cursor = name_end;
+            continue;
+        }
+
+        int paren_depth = 1;
+        size_t signature_end = open_paren + 1;
+        while (signature_end < source.size() && paren_depth != 0) {
+            if (source[signature_end] == '(')
+                ++paren_depth;
+            else if (source[signature_end] == ')')
+                --paren_depth;
+            ++signature_end;
+        }
+        if (paren_depth != 0) break;
+
+        size_t body_open = signature_end;
+        while (body_open < source.size() && std::isspace(static_cast<unsigned char>(source[body_open])))
+            ++body_open;
+        if (body_open == source.size() || source[body_open] != '{') {
+            cursor = name_end;
+            continue;
+        }
+
+        const size_t line_start_pos = source.rfind('\n', cursor);
+        const size_t definition_start = line_start_pos == std::string::npos ? 0 : line_start_pos + 1;
+        const std::string return_prefix = source.substr(definition_start, cursor - definition_start);
+        if (!std::regex_match(return_prefix, return_type)) {
+            cursor = name_end;
+            continue;
+        }
+
+        int brace_depth = 1;
+        size_t definition_end = body_open + 1;
+        while (definition_end < source.size() && brace_depth != 0) {
+            if (source[definition_end] == '{')
+                ++brace_depth;
+            else if (source[definition_end] == '}')
+                --brace_depth;
+            ++definition_end;
+        }
+        if (brace_depth != 0) break;
+
+        while (definition_end < source.size() &&
+               (source[definition_end] == '\r' || source[definition_end] == '\n'))
+            ++definition_end;
+        source.erase(definition_start, definition_end - definition_start);
+        cursor = definition_start;
+        ++removed;
+    }
+    return removed;
+}
+
 std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_version, uint glsl_version,
                          int& return_code) {
     std::string sha256_string(glsl_code);
@@ -355,7 +436,9 @@ std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_vers
     if (cachedESSL) {
         LOG_D("GLSL Hit Cache:\n%s\n-->\n%s", glsl_code, cachedESSL)
         return_code = 0;
-        return (char*)cachedESSL;
+        std::string cached(cachedESSL);
+        remove_redefined_clamp_overloads(cached);
+        return cached;
     }
 
     return_code = -1;
@@ -363,6 +446,7 @@ std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_vers
     // return_code):GLSLtoGLSLES_2(glsl_code, glsl_type, essl_version, return_code);
     std::string converted = GLSLtoGLSLES_2(glsl_code, glsl_type, essl_version, return_code);
     if (return_code >= 0 && !converted.empty()) {
+        remove_redefined_clamp_overloads(converted);
         converted = process_uniform_declarations(converted);
         Cache::get_instance().put(sha256_string.c_str(), converted.c_str());
     }

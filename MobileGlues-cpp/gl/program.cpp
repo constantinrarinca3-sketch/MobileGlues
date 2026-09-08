@@ -20,6 +20,9 @@
 #define DEBUG 0
 
 extern UnorderedMap<GLuint, bool> shader_map_is_sampler_buffer_emulated;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+extern UnorderedMap<GLuint, bool> zomdroid_tile_depth_shader;
+#endif
 UnorderedMap<GLuint, bool> program_map_is_sampler_buffer_emulated;
 
 enum class ShouldGenerateFSState : int {
@@ -158,6 +161,13 @@ void glLinkProgram(GLuint program) {
 void glGetProgramiv(GLuint program, GLenum pname, GLint* params) {
     LOG()
     GLES.glGetProgramiv(program, pname, params);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (params && (pname == GL_LINK_STATUS || pname == GL_VALIDATE_STATUS) && *params != GL_TRUE) {
+        GLchar info_log[1024] = {};
+        GLES.glGetProgramInfoLog(program, sizeof(info_log), nullptr, info_log);
+        LOG_W_FORCE("ZOMDROID_PROGRAM_FAILURE program=%u query=0x%x driver=[%s]", program, pname, info_log)
+    }
+#endif
     if (global_settings.ignore_error >= IgnoreErrorLevel::Partial &&
         (pname == GL_LINK_STATUS || pname == GL_VALIDATE_STATUS) && !*params) {
         GLchar infoLog[512];
@@ -199,6 +209,12 @@ void glAttachShader(GLuint program, GLuint shader) {
     }
 
     GLES.glAttachShader(program, shader);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const auto tile_it = zomdroid_tile_depth_shader.find(shader);
+    if (tile_it != zomdroid_tile_depth_shader.end() && tile_it->second) {
+        LOG_I("ZOMDROID_TILEDEPTH_ATTACH program=%u shader=%u type=0x%x", program, shader, type)
+    }
+#endif
     CHECK_GL_ERROR
 }
 

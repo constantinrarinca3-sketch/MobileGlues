@@ -25,6 +25,9 @@
 struct shader_t shaderInfo;
 
 UnorderedMap<GLuint, bool> shader_map_is_sampler_buffer_emulated;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+UnorderedMap<GLuint, bool> zomdroid_tile_depth_shader;
+#endif
 
 namespace {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
@@ -186,6 +189,13 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         }
     }
 
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const bool is_tile_depth_source =
+        glsl_src.find("zDepthBlendToZ") != std::string::npos &&
+        (glsl_src.find("DEPTH") != std::string::npos || glsl_src.find("depth") != std::string::npos);
+    zomdroid_tile_depth_shader[shader] = is_tile_depth_source;
+#endif
+
     bool is_sampler_buffer_emulated = hardware->emulate_texture_buffer && check_if_sampler_buffer_used(glsl_src);
     GLint shader_type = 0;
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &shader_type);
@@ -217,6 +227,12 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         const bool version_normalized = normalize_essl_version_directive(essl_src);
         trace_zomdroid_shader_source(shader, shader_type, count, l, shader_route, conversion_result,
                                      version_normalized, glsl_src, essl_src);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        if (is_tile_depth_source) {
+            LOG_I("ZOMDROID_TILEDEPTH_SOURCE shader=%u type=0x%x route=%s convert=%d", shader, shader_type,
+                  shader_route, conversion_result)
+        }
+#endif
         shaderInfo.id = shader;
         shaderInfo.converted = essl_src;
         // The input fragments above have already been joined and converted into
@@ -238,6 +254,16 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint* params) {
     LOG()
     GLES.glGetShaderiv(shader, pname, params);
     if (pname == GL_COMPILE_STATUS && params) trace_zomdroid_shader_status(shader, *params);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (pname == GL_COMPILE_STATUS && params && *params != GL_TRUE) {
+        GLchar info_log[1024] = {};
+        GLES.glGetShaderInfoLog(shader, sizeof(info_log), nullptr, info_log);
+        const auto tile_it = zomdroid_tile_depth_shader.find(shader);
+        const bool is_tile_depth = tile_it != zomdroid_tile_depth_shader.end() && tile_it->second;
+        LOG_W_FORCE("ZOMDROID_SHADER_FAILURE shader=%u tiledepth=%d driver=[%s]", shader,
+                    is_tile_depth ? 1 : 0, info_log)
+    }
+#endif
     if (global_settings.ignore_error >= IgnoreErrorLevel::Partial && pname == GL_COMPILE_STATUS && !*params) {
         GLchar infoLog[512];
         GLES.glGetShaderInfoLog(shader, 512, nullptr, infoLog);
