@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <sstream>
 #include "cache.h"
+#include "shader_compat.h"
 #include "../../version.h"
 
 #define DEBUG 0
@@ -531,11 +532,11 @@ static void upgrade_legacy_texture_calls(std::string& glsl) {
     // conversion. Match a call token only, so identifiers such as
     // texture2DProj and user variables are untouched.
     if (getGLSLVersion(glsl.c_str()) < 130) return;
-    static const std::regex texture_2d_call(R"(\btexture2D\s*\()", std::regex::ECMAScript);
-    if (!std::regex_search(glsl, texture_2d_call)) return;
-    glsl = std::regex_replace(glsl, texture_2d_call, "texture(");
+    const auto rewrite = mg_glsl_compat::rewrite_legacy_texture2d_calls(glsl);
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture2D_to_texture");
+    if (rewrite.sampler_identifier_renamed)
+        write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture_sampler_identifier");
+    if (rewrite.calls_rewritten) write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture2D_to_texture");
 #endif
 }
 
