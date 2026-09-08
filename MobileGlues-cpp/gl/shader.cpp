@@ -98,8 +98,14 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     if (!essl_src.empty()) {
         shaderInfo.id = shader;
         shaderInfo.converted = essl_src;
-        const char* s[] = {essl_src.c_str()};
-        GLES.glShaderSource(shader, count, s, nullptr);
+        // The input fragments above have already been joined and converted into
+        // one owned string.  Passing the caller's original `count` here made the
+        // GLES driver read past this one-element pointer array whenever desktop
+        // GL supplied a shader in multiple fragments.  On Adreno this first
+        // surfaced as "Invalid #version" and could corrupt the native process
+        // before the Java side reached the menu.
+        const char* s = essl_src.c_str();
+        GLES.glShaderSource(shader, 1, &s, nullptr);
         if (hardware->emulate_texture_buffer)
             shader_map_is_sampler_buffer_emulated[shader] = is_sampler_buffer_emulated;
     } else
