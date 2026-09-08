@@ -439,6 +439,22 @@ static inline void replace_all(std::string& str, const std::string& from, const 
     }
 }
 
+static void upgrade_legacy_texture_calls(std::string& glsl) {
+    // texture2D was removed from the desktop core profile in GLSL 1.30; its
+    // exact replacement is texture. Desktop compatibility drivers still accept
+    // the old spelling, which is why Project Zomboid's #version 330 fragment
+    // shader works there, while glslang correctly rejects it before the ESSL
+    // conversion. Match a call token only, so identifiers such as
+    // texture2DProj and user variables are untouched.
+    if (getGLSLVersion(glsl.c_str()) < 130) return;
+    static const std::regex texture_2d_call(R"(\btexture2D\s*\()", std::regex::ECMAScript);
+    if (!std::regex_search(glsl, texture_2d_call)) return;
+    glsl = std::regex_replace(glsl, texture_2d_call, "texture(");
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture2D_to_texture");
+#endif
+}
+
 static size_t find_insertion_point(const std::string& glsl) {
     size_t pos = 0;
     size_t insertion_point = 0;
@@ -637,6 +653,7 @@ void inject_mg_macro_definition(std::string& glslCode) {
 
 std::string preprocess_glsl(const std::string& glsl, GLenum shaderType) {
     std::string ret = glsl;
+    upgrade_legacy_texture_calls(ret);
     // Remove lines beginning with `#line`
     ret = replace_line_starting_with(ret, "#line");
     // Act as if disable_GL_ARB_derivative_control is false
@@ -723,13 +740,10 @@ std::vector<unsigned int> glsl_to_spirv(GLenum shader_type, int glsl_version, co
 
     TBuiltInResource TBuiltInResource_resources = InitResources();
 
-    // Desktop games commonly keep compatibility built-ins such as texture2D
-    // in otherwise modern GLSL (Project Zomboid does so in its #version 330
-    // tile fragment shader). Passing forwardCompatible=true promotes those
-    // deprecated-but-valid calls to hard errors, after which the old fallback
-    // handed the untouched desktop shader to an ESSL driver and Adreno rejected
-    // its #version. Accept compatibility syntax here; SPIRV-Cross still emits
-    // canonical ESSL for the actual backend.
+    // Do not promote merely deprecated syntax to hard errors. Built-ins that
+    // were removed from the core profile are upgraded explicitly in
+    // preprocess_glsl() above; SPIRV-Cross then emits canonical ESSL for the
+    // actual backend.
     if (!shader.parse(&TBuiltInResource_resources, glsl_version, false, EShMsgDefault)) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
         write_log("ZOMDROID_SHADER_TRANSLATE_FAIL version=%d type=0x%x driver=[%.768s]", glsl_version, shader_type,
