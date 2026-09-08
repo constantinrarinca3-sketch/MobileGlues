@@ -590,6 +590,53 @@ static size_t find_insertion_point(const std::string& glsl) {
     return insertion_point;
 }
 
+// glslang cannot generate OpenGL SPIR-V from a compatibility-profile shader.
+// That matters for desktop GLSL 1.10/1.20: the previous path changed those
+// versions to `150 compatibility`, translation failed, and glShaderSource then
+// handed the untouched desktop source to the GLES driver. Qualcomm reports
+// "Invalid #version" for that source.  Promote the subset that has a direct,
+// semantics-preserving core equivalent.  Fixed-function inputs such as
+// gl_Vertex/gl_TexCoord deliberately remain on the old fallback until the
+// frontend can supply their replacement attributes correctly.
+static bool upgrade_legacy_desktop_shader(std::string& glsl, GLenum shader_type) {
+    const int version = getGLSLVersion(glsl.c_str());
+    if (version < 0 || version >= 130) return false;
+
+    static const std::regex unsupported_fixed_builtin(
+        R"(\bgl_(?:Vertex|Color|FrontColor|MultiTexCoord[0-9]*|TexCoord)\b)");
+    if (std::regex_search(glsl, unsupported_fixed_builtin)) return false;
+
+    // Horizontal whitespace only: `\s` would also consume the newline and
+    // mistake the first token on the next line for a profile name.
+    static const std::regex version_directive(
+        R"(#version[ \t]+(?:110|120)(?:[ \t]+[A-Za-z_][A-Za-z0-9_]*)?)");
+    glsl = std::regex_replace(glsl, version_directive, "#version 330",
+                              std::regex_constants::format_first_only);
+
+    if (shader_type == GL_VERTEX_SHADER) {
+        static const std::regex attribute_token(R"(\battribute\b)");
+        static const std::regex varying_token(R"(\bvarying\b)");
+        glsl = std::regex_replace(glsl, attribute_token, "in");
+        glsl = std::regex_replace(glsl, varying_token, "out");
+    } else if (shader_type == GL_FRAGMENT_SHADER) {
+        static const std::regex varying_token(R"(\bvarying\b)");
+        static const std::regex frag_color_token(R"(\bgl_FragColor\b)");
+        glsl = std::regex_replace(glsl, varying_token, "in");
+        if (std::regex_search(glsl, frag_color_token)) {
+            glsl = std::regex_replace(glsl, frag_color_token, "zomdroid_FragColor");
+            glsl.insert(find_insertion_point(glsl),
+                        "layout(location = 0) out vec4 zomdroid_FragColor;\n");
+        }
+    } else {
+        return false;
+    }
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=legacy_%d_to_330 type=0x%x", version, shader_type);
+#endif
+    return true;
+}
+
 void process_sampler_buffer(std::string& source) { // a simplized version, should be rewritten in the future
     if (source.find("isamplerBuffer") == std::string::npos) {
         return;
@@ -737,6 +784,7 @@ void inject_mg_macro_definition(std::string& glslCode) {
 
 std::string preprocess_glsl(const std::string& glsl, GLenum shaderType) {
     std::string ret = glsl;
+    upgrade_legacy_desktop_shader(ret, shaderType);
     upgrade_legacy_texture_calls(ret);
     // Remove lines beginning with `#line`
     ret = replace_line_starting_with(ret, "#line");
