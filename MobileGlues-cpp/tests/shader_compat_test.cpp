@@ -50,6 +50,16 @@ int main() {
         assert(source.find("texture(zomdroid_texture_sampler, vec2(0.0))") != std::string::npos);
     }
 
+    {
+        std::string storage;
+        assert(std::string(mg_glsl_compat::remap_texture_sampler_uniform_name("texture", storage)) ==
+               "zomdroid_texture_sampler");
+        assert(std::string(mg_glsl_compat::remap_texture_sampler_uniform_name("texture[0]", storage)) ==
+               "zomdroid_texture_sampler[0]");
+        const char* unchanged = mg_glsl_compat::remap_texture_sampler_uniform_name("textureScale", storage);
+        assert(std::string(unchanged) == "textureScale");
+    }
+
     std::cout << "shader compatibility tests passed\n";
     return 0;
 }

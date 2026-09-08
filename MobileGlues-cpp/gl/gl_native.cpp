@@ -11,6 +11,7 @@
 #include "log.h"
 #include "../gles/loader.h"
 #include "mg.h"
+#include "glsl/shader_compat.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
@@ -90,7 +91,29 @@ NATIVE_FUNCTION_HEAD(void, glGetTexParameterfv, GLenum target, GLenum pname, GLf
 NATIVE_FUNCTION_HEAD(void, glGetTexParameteriv, GLenum target, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetTexParameteriv, target,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetUniformfv, GLuint program, GLint location, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformfv, program,location,params)
 NATIVE_FUNCTION_HEAD(void, glGetUniformiv, GLuint program, GLint location, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformiv, program,location,params)
-NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar *name) NATIVE_FUNCTION_END(GLint, glGetUniformLocation, program,name)
+GLint glGetUniformLocation(GLuint program, const GLchar* name) {
+    LOG()
+    const GLint original_location = GLES.glGetUniformLocation(program, name);
+    if (original_location >= 0 || !name) {
+        CHECK_GL_ERROR
+        return original_location;
+    }
+
+    std::string remapped_name;
+    const GLchar* driver_name = mg_glsl_compat::remap_texture_sampler_uniform_name(name, remapped_name);
+    if (driver_name == name) {
+        CHECK_GL_ERROR
+        return original_location;
+    }
+
+    const GLint location = GLES.glGetUniformLocation(program, driver_name);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    write_log("ZOMDROID_UNIFORM_ALIAS program=%u requested=%s driver=%s location=%d", program, name, driver_name,
+              location);
+#endif
+    CHECK_GL_ERROR
+    return location;
+}
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribfv, GLuint index, GLenum pname, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribfv, index,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribiv, GLuint index, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribiv, index,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribPointerv, GLuint index, GLenum pname, void **pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribPointerv, index,pname,pointer)
