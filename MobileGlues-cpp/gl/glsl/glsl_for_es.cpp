@@ -723,7 +723,18 @@ std::vector<unsigned int> glsl_to_spirv(GLenum shader_type, int glsl_version, co
 
     TBuiltInResource TBuiltInResource_resources = InitResources();
 
-    if (!shader.parse(&TBuiltInResource_resources, glsl_version, true, EShMsgDefault)) {
+    // Desktop games commonly keep compatibility built-ins such as texture2D
+    // in otherwise modern GLSL (Project Zomboid does so in its #version 330
+    // tile fragment shader). Passing forwardCompatible=true promotes those
+    // deprecated-but-valid calls to hard errors, after which the old fallback
+    // handed the untouched desktop shader to an ESSL driver and Adreno rejected
+    // its #version. Accept compatibility syntax here; SPIRV-Cross still emits
+    // canonical ESSL for the actual backend.
+    if (!shader.parse(&TBuiltInResource_resources, glsl_version, false, EShMsgDefault)) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        write_log("ZOMDROID_SHADER_TRANSLATE_FAIL version=%d type=0x%x driver=[%.768s]", glsl_version, shader_type,
+                  shader.getInfoLog());
+#endif
         LOG_D("GLSL Compiling ERROR: \n%s", shader.getInfoLog())
         errc = -1;
         return {};
