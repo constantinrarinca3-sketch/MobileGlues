@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Builds a separately named renderer for ZomDroid experiments.  Keeping the output distinct from
+# upstream MobileGlues and the existing MobileGL renderer makes installation and rollback
+# unambiguous; it does not alter MobileGlues rendering policy.
+option(ZOMDROID_EXPERIMENTAL "Build the isolated ZomDroid ARM64 renderer" OFF)
+
 
 # glslang & SPIRV-Cross
 set(ENABLE_RTTI                ON  CACHE BOOL "Enables RTTI (will be took by glslang)" FORCE)
@@ -127,6 +132,13 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     config/settings.cpp
     config/stats.cpp
 )
+
+if (ZOMDROID_EXPERIMENTAL)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ZOMDROID_EXPERIMENTAL=1)
+    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+        OUTPUT_NAME "MobileGluesZomDroid"
+    )
+endif()
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ./includes

@@ -1,0 +1,76 @@
+name: Build ZomDroid MobileGlues ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - zomdroid-experimental
+
+permissions:
+  contents: read
+
+jobs:
+  android-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source and pinned dependencies
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned NDK and CMake
+        run: |
+          sdkmanager --install "ndk;27.3.13750724" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
+
+      - name: Configure ZomDroid ARM64 renderer
+        run: |
+          "$ANDROID_SDK_ROOT/cmake/3.22.1/bin/cmake" \
+            -S MobileGlues-cpp \
+            -B build/zomdroid-arm64 \
+            -G Ninja \
+            -DCMAKE_MAKE_PROGRAM="$ANDROID_SDK_ROOT/cmake/3.22.1/bin/ninja" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZOMDROID_EXPERIMENTAL=ON
+
+      - name: Build renderer
+        run: |
+          "$ANDROID_SDK_ROOT/cmake/3.22.1/bin/cmake" \
+            --build build/zomdroid-arm64 --target mobileglues --parallel 4
+
+      - name: Audit ZomDroid ABI
+        run: |
+          chmod +x tools/audit-zomdroid-abi.sh
+          tools/audit-zomdroid-abi.sh \
+            build/zomdroid-arm64/libMobileGluesZomDroid.so
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -d build/zomdroid-arm64/libMobileGluesZomDroid.so \
+            > build/zomdroid-arm64/dynamic-section.txt
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+            -D --defined-only build/zomdroid-arm64/libMobileGluesZomDroid.so \
+            > build/zomdroid-arm64/exported-symbols.txt
+          sha256sum build/zomdroid-arm64/libMobileGluesZomDroid.so \
+            > build/zomdroid-arm64/SHA256SUMS.txt
+          cp LICENSE ZOMDROID.md build/zomdroid-arm64/
+
+      - name: Upload experimental renderer
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileGlues-ZomDroid-experimental-arm64
+          path: |
+            build/zomdroid-arm64/libMobileGluesZomDroid.so
+            build/zomdroid-arm64/exported-symbols.txt
+            build/zomdroid-arm64/dynamic-section.txt
+            build/zomdroid-arm64/SHA256SUMS.txt
+            build/zomdroid-arm64/LICENSE
+            build/zomdroid-arm64/ZOMDROID.md
+          retention-days: 1
+          if-no-files-found: error
