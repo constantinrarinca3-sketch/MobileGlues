@@ -134,7 +134,10 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 )
 
 if (ZOMDROID_EXPERIMENTAL)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ZOMDROID_EXPERIMENTAL=1)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+        ZOMDROID_EXPERIMENTAL=1
+        ZOMDROID_GL_BREADCRUMBS=1
+    )
     set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
         OUTPUT_NAME "MobileGluesZomDroid"
     )

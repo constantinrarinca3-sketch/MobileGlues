@@ -1126,5 +1126,10 @@ void log_unique_function(const char* func_name) {
     }
 
     logged_functions.insert(func_str);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    // Keep the trace in latest.log as well: ZomDroid's bug-report exporter already collects that
+    // file. First-use-only logging stays bounded and avoids perturbing every hot draw call.
+    write_log("ZOMDROID_GL_FIRST %zu %s", logged_functions.size(), func_name);
+#endif
 }
 #endif

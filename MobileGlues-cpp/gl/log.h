@@ -13,7 +13,11 @@
 
 #define GLOBAL_DEBUG 0
 
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+#define LOG_CALLED_FUNCS 1
+#else
 #define LOG_CALLED_FUNCS 0
+#endif
 
 #ifdef __cplusplus
 extern "C"
