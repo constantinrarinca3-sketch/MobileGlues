@@ -72,8 +72,10 @@ int __android_log_print(int prio, const char* tag, const char* fmt, ...);
         printf("Use function: %s\n", __FUNCTION__);                                                                    \
         write_log("Use function: %s\n", __FUNCTION__);                                                                 \
     }                                                                                                                  \
-    log_unique_function(__FUNCTION__);
+    log_unique_function(__FUNCTION__);                                                                                 \
+    trace_zomdroid_gl_after_unmap(__FUNCTION__);
 void log_unique_function(const char* func_name);
+void trace_zomdroid_gl_after_unmap(const char* func_name);
 #else
 #define LOG()                                                                                                          \
     if (DEBUG || GLOBAL_DEBUG) {                                                                                       \

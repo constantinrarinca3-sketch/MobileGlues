@@ -1133,4 +1133,34 @@ void log_unique_function(const char* func_name) {
     write_log("ZOMDROID_GL_FIRST %zu %s", logged_functions.size(), func_name);
 #endif
 }
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+void trace_zomdroid_gl_after_unmap(const char* func_name) {
+    if (!func_name || strlen(func_name) < 2 || strncmp(func_name, "gl", 2) != 0) {
+        return;
+    }
+
+    // The first-use list cannot identify a failure in a function that was
+    // already called earlier. The current startup reaches two successful
+    // unmaps and then stops, so retain a bounded ordered window from the first
+    // unmap onward. Entry logging is intentional: if a wrapper or the driver
+    // dies, the final line names the call that did not return.
+    static std::mutex trace_mutex;
+    static bool armed = false;
+    static unsigned int sequence = 0;
+    constexpr unsigned int kTraceLimit = 1024;
+
+    std::lock_guard<std::mutex> guard(trace_mutex);
+    if (!armed) {
+        if (strcmp(func_name, "glUnmapBuffer") != 0) return;
+        armed = true;
+    }
+    if (sequence >= kTraceLimit) return;
+
+    ++sequence;
+    write_log("ZOMDROID_GL_AFTER_UNMAP %u ENTER %s", sequence, func_name);
+}
+#else
+void trace_zomdroid_gl_after_unmap(const char*) {}
+#endif
 #endif
