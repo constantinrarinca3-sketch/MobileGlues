@@ -46,6 +46,11 @@ jobs:
           "$ANDROID_SDK_ROOT/cmake/3.22.1/bin/cmake" \
             --build build/zomdroid-arm64 --target mobileglues --parallel 4
 
+      - name: Strip release-only debug data
+        run: |
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            --strip-unneeded build/zomdroid-arm64/libMobileGluesZomDroid.so
+
       - name: Audit ZomDroid ABI
         run: |
           chmod +x tools/audit-zomdroid-abi.sh
@@ -57,8 +62,8 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
             -D --defined-only build/zomdroid-arm64/libMobileGluesZomDroid.so \
             > build/zomdroid-arm64/exported-symbols.txt
-          sha256sum build/zomdroid-arm64/libMobileGluesZomDroid.so \
-            > build/zomdroid-arm64/SHA256SUMS.txt
+          (cd build/zomdroid-arm64 && \
+            sha256sum libMobileGluesZomDroid.so > SHA256SUMS.txt)
           cp LICENSE ZOMDROID.md build/zomdroid-arm64/
 
       - name: Upload experimental renderer
