@@ -10,7 +10,8 @@ Project Zomboid Build 42 in ZomDroid; it is not a release replacement for NG-GL4
 - system EGL/GLES are loaded dynamically by MobileGlues;
 - the launcher must set `MG_DIR_PATH` to an app-private directory before loading the library;
 - no ANGLE library is bundled or selected by this build;
-- the Actions gate requires ARM64 ELF and the EGL/GL/GLX entry points used by ZomDroid GLFW;
+- the Actions gate requires ARM64 ELF, 16 KB page compatibility and the EGL/GL/GLX entry points
+  used by ZomDroid GLFW;
 - LGPL-2.1 license and corresponding source must accompany any redistributed binary.
 
 ## First device gate

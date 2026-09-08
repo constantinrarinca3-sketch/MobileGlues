@@ -19,6 +19,13 @@ header=$($readelf_tool -h "$library")
 grep -q 'Class:.*ELF64' <<<"$header"
 grep -q 'Machine:.*AArch64' <<<"$header"
 
+while read -r alignment; do
+    if (( alignment < 0x4000 )); then
+        echo "LOAD segment is not Android 16 KB compatible: alignment=$alignment" >&2
+        exit 1
+    fi
+done < <($readelf_tool -lW "$library" | awk '$1 == "LOAD" { print $NF }')
+
 symbols=$($nm_tool -D --defined-only "$library")
 required=(
     mg_zomdroid_build_id
