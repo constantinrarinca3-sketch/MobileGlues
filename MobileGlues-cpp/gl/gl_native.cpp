@@ -91,8 +91,7 @@ NATIVE_FUNCTION_HEAD(void, glGetTexParameterfv, GLenum target, GLenum pname, GLf
 NATIVE_FUNCTION_HEAD(void, glGetTexParameteriv, GLenum target, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetTexParameteriv, target,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetUniformfv, GLuint program, GLint location, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformfv, program,location,params)
 NATIVE_FUNCTION_HEAD(void, glGetUniformiv, GLuint program, GLint location, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformiv, program,location,params)
-GLint glGetUniformLocation(GLuint program, const GLchar* name) {
-    LOG()
+NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar* name)
     const GLint original_location = GLES.glGetUniformLocation(program, name);
     if (original_location >= 0 || !name) {
         CHECK_GL_ERROR
