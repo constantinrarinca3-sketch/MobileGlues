@@ -47,7 +47,11 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         GLES.glGetIntegerv(pname - GL_BACKEND_GETTER_MG, params);
         return;
     case GL_CONTEXT_PROFILE_MASK:
-        (*params) = GL_CONTEXT_CORE_PROFILE_BIT;
+        // The GLES backend is core-style internally, but MobileGlues exposes a
+        // compatibility facade too (for example glAlphaFunc).  LWJGL omits
+        // legacy entry points when a 3.2+ context claims to be core-only, then
+        // Project Zomboid aborts at its first legacy call.
+        (*params) = GL_CONTEXT_COMPATIBILITY_PROFILE_BIT;
         break;
     case GL_NUM_EXTENSIONS:
         static GLint num_extensions = -1;
@@ -116,11 +120,11 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         break;
     }
     case GL_CONTEXT_FLAGS: {
-        // Reported from what the context was actually created with. Claiming
-        // flags the application never asked for -- as this did before it was
-        // reduced to 0 -- makes a loader believe it has a debug or robust context
-        // that does not behave like one.
-        (*params) = g_current_ctx ? g_current_ctx->context_flags : 0;
+        // Preserve real debug/robustness flags, but do not advertise a
+        // forward-compatible context: LWJGL treats it like core-only and skips
+        // loading the legacy facade exported by this library.
+        const GLint flags = g_current_ctx ? g_current_ctx->context_flags : 0;
+        (*params) = flags & ~GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT;
         break;
     }
     case GL_ARRAY_BUFFER_BINDING:
