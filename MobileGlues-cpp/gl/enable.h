@@ -118,6 +118,10 @@ extern "C"
     // called from mg_context_make_current(). Runs once per context.
     void mg_enable_sync_driver(struct mg_enable_state_t* state);
 
+    // Restore the parts of an enable snapshot owned by glPushAttrib. Returns
+    // how many virtual values changed; only changed native values reach GLES.
+    unsigned mg_enable_restore(const struct mg_enable_state_t* saved, bool restore_all, bool restore_scissor);
+
 #ifdef __cplusplus
 }
 #endif

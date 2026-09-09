@@ -110,6 +110,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gl/buffer.cpp
     gl/getter.cpp
     gl/enable.cpp
+    gl/server_attrib.cpp
     gl/restart.cpp
     egl/context.cpp
     gl/pixel.cpp

@@ -540,6 +540,51 @@ static void mg_set_enabled(GLenum cap, GLuint index, bool indexed, GLboolean val
         GLES.glDisable(cap);
 }
 
+unsigned mg_enable_restore(const mg_enable_state_t* saved, bool restore_all, bool restore_scissor) {
+    if (saved == nullptr) return 0;
+    mg_enable_state_t* current = mg_enable_state();
+    unsigned changed = 0;
+
+    if (restore_all) {
+        for (const auto& d : k_caps) {
+            if (d.cap == GL_BLEND || d.cap == GL_SCISSOR_TEST) continue;
+            if (current->scalar[d.index] == saved->scalar[d.index]) continue;
+            ++changed;
+            mg_set_enabled(d.cap, 0, false, saved->scalar[d.index]);
+        }
+
+        for (GLuint i = 0; i < MG_MAX_DRAW_BUFFERS; ++i) {
+            if (current->blend_indexed[i] == saved->blend_indexed[i]) continue;
+            ++changed;
+            mg_set_enabled(GL_BLEND, i, true, saved->blend_indexed[i]);
+        }
+
+        for (GLuint i = 0; i < MG_MAX_CLIP_DISTANCES; ++i) {
+            const GLenum cap = GL_CLIP_DISTANCE0 + i;
+            const GLboolean wanted = (saved->clip_distance_mask & (1u << i)) ? GL_TRUE : GL_FALSE;
+            if (mg_enable_get(cap, 0) == wanted) continue;
+            ++changed;
+            mg_set_enabled(cap, 0, false, wanted);
+        }
+    }
+
+    if (restore_all || restore_scissor) {
+        const GLboolean wanted = saved->scissor_indexed[0];
+        if (current->scissor_indexed[0] != wanted) {
+            ++changed;
+            mg_set_enabled(GL_SCISSOR_TEST, 0, true, wanted);
+        }
+        // Viewport arrays are virtual for now. The scalar setter above writes
+        // all slots, so restore the remaining query-visible values afterwards.
+        for (GLuint i = 1; i < MG_MAX_VIEWPORTS; ++i) {
+            if (current->scissor_indexed[i] != saved->scissor_indexed[i]) ++changed;
+            current->scissor_indexed[i] = saved->scissor_indexed[i];
+        }
+    }
+
+    return changed;
+}
+
 extern "C"
 {
 

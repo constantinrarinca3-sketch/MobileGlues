@@ -39,9 +39,9 @@ STUB_FUNCTION_HEAD(void, glEnableClientState, GLenum cap ) STUB_FUNCTION_END_NO_
 STUB_FUNCTION_HEAD(void, glDisableClientState, GLenum cap ) STUB_FUNCTION_END_NO_RETURN(void, glDisableClientState,cap)
 // STUB_FUNCTION_HEAD(void, glGetDoublev, GLenum pname, GLdouble *params ) STUB_FUNCTION_END_NO_RETURN(void, glGetDoublev,pname,params)   // implemented in gl/enable.cpp (was a no-op that never wrote params)
 
+#if !defined(ZOMDROID_EXPERIMENTAL)
 STUB_FUNCTION_HEAD(void, glPushAttrib, GLbitfield mask ) STUB_FUNCTION_END_NO_RETURN(void, glPushAttrib,mask)
 STUB_FUNCTION_HEAD(void, glPopAttrib) STUB_FUNCTION_END_NO_RETURN(void, glPopAttrib)
-#if !defined(ZOMDROID_EXPERIMENTAL)
 STUB_FUNCTION_HEAD(void, glPushClientAttrib, GLbitfield mask ) STUB_FUNCTION_END_NO_RETURN(void, glPushClientAttrib,mask)
 STUB_FUNCTION_HEAD(void, glPopClientAttrib) STUB_FUNCTION_END_NO_RETURN(void, glPopClientAttrib)
 #endif
@@ -51,7 +51,9 @@ STUB_FUNCTION_HEAD(GLint, glRenderMode, GLenum mode) STUB_FUNCTION_END(GLint, gl
 * Depth Buffer
 */
 
+#if !defined(ZOMDROID_EXPERIMENTAL)
 STUB_FUNCTION_HEAD(void, glDepthRange, GLclampd near_val, GLclampd far_val ) STUB_FUNCTION_END_NO_RETURN(void, glDepthRange, near_val, far_val)
+#endif
 /*
 * Accumulation Buffer
 */

@@ -18,6 +18,7 @@
 #include "log.h"
 #include "mg.h"
 #include "pixel.h"
+#include "server_attrib.h"
 #include "random_string_gen.h"
 #include "../config/settings.h"
 
@@ -128,6 +129,12 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         break;
     }
 #if defined(ZOMDROID_EXPERIMENTAL)
+    case GL_ATTRIB_STACK_DEPTH:
+        (*params) = mg_server_attrib_stack_depth();
+        break;
+    case GL_MAX_ATTRIB_STACK_DEPTH:
+        (*params) = MG_SERVER_ATTRIB_STACK_LIMIT;
+        break;
     case GL_CLIENT_ATTRIB_STACK_DEPTH:
         (*params) = mg_client_attrib_stack_depth();
         break;

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: LGPL-2.1-only
 // End of Source File Header
 #include "FSR1.h"
+#include "../server_attrib.h"
 #include <mutex>
 #include <ska/flat_hash_map.hpp>
 #include "FSRShaderSource.h"
@@ -528,6 +529,8 @@ void OnResize(int width, int height) {
 void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
     LOG()
     LOG_D("glViewport: x=%d, y=%d, w=%d, h=%d", x, y, w, h);
+
+    mg_server_attrib_note_viewport(x, y, w, h);
 
     if (w > FSR1_Context::g_pendingWidth || h > FSR1_Context::g_pendingHeight) {
         FSR1_Context::g_pendingWidth = w;

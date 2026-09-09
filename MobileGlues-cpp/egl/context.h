@@ -11,6 +11,7 @@
 #include "../includes.h"
 #include "../gl/enable.h"
 #include "../gl/mg.h"
+#include "../gl/server_attrib.h"
 #include <memory>
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@ struct MGContext {
 
     mg_enable_state_t enable; // per-context by definition: enable state is not shared
     gl_state_s gl;            // current program / texture unit / draw fbo, all per-context
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_server_attrib_state_t server_attrib; // legacy server-state push/pop stack
+#endif
 
     EGLSurface draw;
     EGLSurface read;
