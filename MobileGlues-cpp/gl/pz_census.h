@@ -20,7 +20,6 @@ extern bool mg_pz_attrib_fastpath_active;
 extern bool mg_pz_uniform_fastpath_active;
 extern bool mg_pz_buffer_streaming_active;
 extern bool mg_pz_buffer_discard_coalesce_active;
-extern bool mg_pz_draw_batch_active;
 extern bool mg_pz_state_shadow_active;
 extern bool mg_pz_runtime_mipmap_skip_active;
 
@@ -58,14 +57,11 @@ void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* val
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data);
 void mg_pz_census_buffer_map(GLsizeiptr bytes);
 void mg_pz_census_present(bool succeeded);
-uint64_t mg_pz_resource_epoch(void);
-void mg_pz_set_draw_batch_flush(void (*flush)(void));
-void mg_pz_flush_draw_batch(void);
 
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_PZ_CENSUS(call)                                                                                             \
     do {                                                                                                               \
-        if (mg_pz_census_active || mg_pz_draw_batch_active) call;                                                     \
+        if (mg_pz_census_active) call;                                                                                 \
     } while (0)
 #else
 #define MG_PZ_CENSUS(call)                                                                                             \
@@ -76,7 +72,7 @@ void mg_pz_flush_draw_batch(void);
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_PZ_UNIFORM_STATE(call)                                                                                      \
     do {                                                                                                               \
-        if (mg_pz_census_active || mg_pz_uniform_fastpath_active || mg_pz_draw_batch_active) call;                    \
+        if (mg_pz_census_active || mg_pz_uniform_fastpath_active) call;                                                \
     } while (0)
 #else
 #define MG_PZ_UNIFORM_STATE(call)                                                                                      \

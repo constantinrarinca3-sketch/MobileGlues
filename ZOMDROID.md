@@ -45,19 +45,6 @@ All associated
 comparison/cache work remains inside `MOBILEGLUES_PZ_CENSUS=1`; disabling or omitting the variable
 removes that work from the rendering path.
 
-The indexed draw batching experiment is independent and opt-in:
-
-```text
-MOBILEGLUES_PZ_DRAW_BATCH=1  # fuse compatible staged triangle draws
-MOBILEGLUES_PZ_DRAW_BATCH=0  # submit draws individually (default)
-```
-
-It only holds adjacent triangle draws using the same program and staged element buffer. Any effective
-state or resource change flushes the run first. Runs of at least two draws are rebased into one
-32-bit scratch index stream and submitted once; unsupported or uncertain cases retain the original
-draw sequence. `ZOMDROID_PZ_DRAW_BATCH` reports candidates, fused batches, saved driver draws,
-fallbacks and snapshot misses.
-
 The independent VAO optimization is selected through the renderer environment:
 
 ```text

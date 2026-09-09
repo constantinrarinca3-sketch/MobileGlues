@@ -858,7 +858,6 @@ extern "C"
 
     EGL_API EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         LOG_D("eglSwapBuffers, dpy: %p, surface: %p", dpy, surface);
-        mg_pz_flush_draw_batch();
         const EGLBoolean result = presentSurface(dpy, surface);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
@@ -874,7 +873,6 @@ extern "C"
     EGL_API EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageKHR, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageKHR");
-        mg_pz_flush_draw_batch();
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
@@ -883,7 +881,6 @@ extern "C"
     EGL_API EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageEXT, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageEXT");
-        mg_pz_flush_draw_batch();
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
