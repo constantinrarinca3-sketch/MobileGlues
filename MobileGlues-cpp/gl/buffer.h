@@ -74,6 +74,10 @@ extern "C"
 #if defined(ZOMDROID_EXPERIMENTAL)
     // Depth of the emulated desktop client-attribute stack for this context.
     GLint mg_client_attrib_stack_depth();
+    // Advance the retirement clock used by the dynamic GPU buffer ring.
+    void mg_pz_gpu_buffer_ring_present();
+    // Record the ring backings referenced by the current vertex input.
+    void mg_pz_gpu_buffer_ring_note_draw();
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);

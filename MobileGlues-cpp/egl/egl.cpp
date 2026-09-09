@@ -9,6 +9,7 @@
 #include "context.h"
 #include "../config/settings.h"
 #include "../gl/FSR1/FSR1.h"
+#include "../gl/buffer.h"
 #include "../gl/log.h"
 #include "../gl/mg.h"
 #include "../gl/pz_census.h"
@@ -859,6 +860,9 @@ extern "C"
     EGL_API EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         LOG_D("eglSwapBuffers, dpy: %p, surface: %p", dpy, surface);
         const EGLBoolean result = presentSurface(dpy, surface);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (result == EGL_TRUE && mg_pz_gpu_buffer_ring_active) mg_pz_gpu_buffer_ring_present();
+#endif
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
     }
@@ -874,6 +878,9 @@ extern "C"
         LOG_D("eglSwapBuffersWithDamageKHR, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageKHR");
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (result == EGL_TRUE && mg_pz_gpu_buffer_ring_active) mg_pz_gpu_buffer_ring_present();
+#endif
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
     }
@@ -882,6 +889,9 @@ extern "C"
         LOG_D("eglSwapBuffersWithDamageEXT, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageEXT");
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (result == EGL_TRUE && mg_pz_gpu_buffer_ring_active) mg_pz_gpu_buffer_ring_present();
+#endif
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
     }

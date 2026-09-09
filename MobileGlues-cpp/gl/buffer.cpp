@@ -51,6 +51,8 @@ constexpr size_t kClientAttribStackLimit = 16;
 
 struct vertex_binding_state_t {
     GLuint buffer = 0; // MobileGlues/frontend name, never the renamed GLES id
+    uint64_t buffer_lifetime = 0;
+    GLuint driver_buffer = 0;
     GLintptr offset = 0;
     GLsizei stride = 16;
     GLuint divisor = 0;
@@ -65,6 +67,8 @@ struct vertex_attrib_state_t {
     GLsizei stride = 0;
     uintptr_t pointer = 0;
     GLuint buffer = 0; // MobileGlues/frontend name
+    uint64_t buffer_lifetime = 0;
+    GLuint driver_buffer = 0;
     GLuint divisor = 0;
     GLuint binding = 0;
     GLuint relative_offset = 0;
@@ -76,6 +80,7 @@ struct vertex_attrib_state_t {
 struct vertex_array_state_t {
     std::array<vertex_attrib_state_t, kTrackedVertexAttribs> attribs{};
     std::array<vertex_binding_state_t, kTrackedVertexAttribs> bindings{};
+    GLuint driver_element_buffer = 0;
 };
 
 struct client_attrib_snapshot_t {
@@ -121,6 +126,32 @@ struct buffer_streaming_stats_t {
     unsigned long long miss_busy = 0;
     unsigned long long allocation_failures = 0;
 };
+
+constexpr size_t kGpuBufferRingDepth = 3;
+constexpr uint64_t kGpuBufferRingRetireFrames = 3;
+
+struct gpu_buffer_ring_slot_t {
+    GLuint driver_buffer = 0;
+    uint64_t last_use_frame = 0;
+};
+
+struct gpu_buffer_ring_t {
+    std::array<gpu_buffer_ring_slot_t, kGpuBufferRingDepth> slots{};
+    uint8_t count = 0;
+    uint8_t current = 0;
+    bool primed = false;
+};
+
+struct gpu_buffer_ring_stats_t {
+    unsigned long long attempts = 0;
+    unsigned long long rotations = 0;
+    unsigned long long allocations = 0;
+    unsigned long long reuses = 0;
+    unsigned long long cool_updates = 0;
+    unsigned long long busy_fallbacks = 0;
+    unsigned long long unsafe = 0;
+    unsigned long long shared_context = 0;
+};
 #endif
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
@@ -150,7 +181,11 @@ struct buffer_group_state_t { // shared across a share group
 #if defined(ZOMDROID_EXPERIMENTAL)
     std::vector<GLenum> buffer_usage;
     std::vector<buffer_storage_kind_t> buffer_storage_kind;
+    std::vector<char> gpu_ring_safe;
     ska::flat_hash_map<GLuint, buffer_staging_map_t> buffer_staging_maps;
+    ska::flat_hash_map<GLuint, gpu_buffer_ring_t> gpu_buffer_rings;
+    unsigned int context_count = 0;
+    bool multiple_contexts_seen = false;
 #endif
 };
 
@@ -164,9 +199,13 @@ struct buffer_ctx_state_t { // private to one context
     GLuint driver_bound_array = 0;
     bool driver_bound_array_known = false;
 #if defined(ZOMDROID_EXPERIMENTAL)
+    buffer_group_state_t* group = nullptr;
+    unsigned long long context_id = 0;
+    uint64_t present_serial = 0;
     ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
     std::vector<client_attrib_snapshot_t> client_attrib_stack;
     buffer_streaming_stats_t buffer_streaming_stats;
+    gpu_buffer_ring_stats_t gpu_buffer_ring_stats;
     unsigned long long client_attrib_push_hits = 0;
     unsigned long long client_attrib_pop_hits = 0;
     unsigned long long client_attrib_restore_hits = 0;
@@ -205,7 +244,15 @@ void mg_buffer_bind_context(unsigned long long ctx_id, unsigned long long group_
     std::unique_ptr<buffer_group_state_t>& group = g_buf_groups[group_id];
     if (!group) group = std::make_unique<buffer_group_state_t>();
     std::unique_ptr<buffer_ctx_state_t>& ctx = g_buf_ctxs[ctx_id];
-    if (!ctx) ctx = std::make_unique<buffer_ctx_state_t>();
+    if (!ctx) {
+        ctx = std::make_unique<buffer_ctx_state_t>();
+#if defined(ZOMDROID_EXPERIMENTAL)
+        ctx->group = group.get();
+        ctx->context_id = ctx_id;
+        ++group->context_count;
+        if (group->context_count > 1) group->multiple_contexts_seen = true;
+#endif
+    }
     g_bg = group.get();
     g_bc = ctx.get();
 }
@@ -216,6 +263,10 @@ void mg_buffer_forget_context(unsigned long long ctx_id) {
     const auto it = g_buf_ctxs.find(ctx_id);
     if (it == g_buf_ctxs.end()) return;
     if (g_bc == it->second.get()) g_bc = &g_buf_ctx_default;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (it->second->group != nullptr && it->second->group->context_count != 0)
+        --it->second->group->context_count;
+#endif
     g_buf_ctxs.erase(it);
 }
 
@@ -228,6 +279,12 @@ void mg_driver_vertex_array_unknown() {
     g_bc->driver_bound_array_known = false;
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+void mg_pz_gpu_buffer_ring_present() {
+    if (mg_pz_gpu_buffer_ring_active && g_bc->context_id != 0) ++g_bc->present_serial;
+}
+#endif
+
 #define g_gen_buffers (g_bg->gen_buffers)
 #define g_gen_buffer_exists (g_bg->gen_buffer_exists)
 #define g_free_buffer_ids (g_bg->free_buffer_ids)
@@ -236,7 +293,9 @@ void mg_driver_vertex_array_unknown() {
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define g_buffer_usage (g_bg->buffer_usage)
 #define g_buffer_storage_kind (g_bg->buffer_storage_kind)
+#define g_gpu_ring_safe (g_bg->gpu_ring_safe)
 #define g_buffer_staging_maps (g_bg->buffer_staging_maps)
+#define g_gpu_buffer_rings (g_bg->gpu_buffer_rings)
 #endif
 #define g_gen_arrays (g_bc->gen_arrays)
 #define g_gen_array_exists (g_bc->gen_array_exists)
@@ -263,21 +322,25 @@ enum BindingIndex : int {
 #define g_bound_buffers_arr (g_bc->bound_buffers)
 static_assert(BINDING_COUNT == 13, "buffer_ctx_state_t::bound_buffers must match BindingIndex");
 
+static inline int ensure_buffer_capacity(GLuint id);
+GLuint get_ibo_by_vao(GLuint vao);
+
 #if defined(ZOMDROID_EXPERIMENTAL)
 static vertex_array_state_t& current_vertex_array_state() {
     return g_bc->vertex_array_states[g_bound_array];
 }
 
 static bool same_vertex_binding(const vertex_binding_state_t& a, const vertex_binding_state_t& b) {
-    return a.buffer == b.buffer && a.offset == b.offset && a.stride == b.stride && a.divisor == b.divisor &&
-           a.configured == b.configured;
+    return a.buffer == b.buffer && a.buffer_lifetime == b.buffer_lifetime && a.offset == b.offset &&
+           a.stride == b.stride && a.divisor == b.divisor && a.configured == b.configured;
 }
 
 static bool same_vertex_attrib(const vertex_attrib_state_t& a, const vertex_attrib_state_t& b) {
     return a.enabled == b.enabled && a.size == b.size && a.type == b.type && a.normalized == b.normalized &&
            a.stride == b.stride && a.pointer == b.pointer && a.buffer == b.buffer && a.divisor == b.divisor &&
-           a.binding == b.binding && a.relative_offset == b.relative_offset && a.integer == b.integer &&
-           a.configured == b.configured && a.uses_binding_model == b.uses_binding_model;
+           a.buffer_lifetime == b.buffer_lifetime && a.binding == b.binding &&
+           a.relative_offset == b.relative_offset && a.integer == b.integer && a.configured == b.configured &&
+           a.uses_binding_model == b.uses_binding_model;
 }
 
 static GLuint driver_buffer_name(GLuint frontend_name) {
@@ -287,9 +350,258 @@ static GLuint driver_buffer_name(GLuint frontend_name) {
     return real != 0 ? real : frontend_name;
 }
 
+static uint64_t frontend_buffer_lifetime(GLuint buffer) {
+    return buffer < g_buffer_lifetimes.size() ? g_buffer_lifetimes[buffer] : 0;
+}
+
+static bool frontend_buffer_identity_alive(GLuint buffer, uint64_t lifetime) {
+    return buffer != 0 && has_buffer(buffer) && lifetime != 0 && frontend_buffer_lifetime(buffer) == lifetime;
+}
+
+static bool ring_driver_vao_matches_frontend() {
+    if (!g_bc->driver_bound_array_known) return false;
+    if (g_bound_array == 0) return g_bc->driver_bound_array == 0;
+    if (!has_array(g_bound_array)) return false;
+    const GLuint real_array = find_real_array(g_bound_array);
+    return real_array != 0 && g_bc->driver_bound_array == real_array;
+}
+
+static void refresh_bound_vao_backings() {
+    if (!mg_pz_gpu_buffer_ring_active || !ring_driver_vao_matches_frontend()) return;
+    vertex_array_state_t& state = current_vertex_array_state();
+
+    const GLuint element = get_ibo_by_vao(g_bound_array);
+    const GLuint wanted_element = driver_buffer_name(element);
+    if (state.driver_element_buffer != wanted_element) {
+        GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, wanted_element);
+        state.driver_element_buffer = wanted_element;
+    }
+
+    const GLuint restore_array = driver_buffer_name(find_bound_buffer_by_target(GL_ARRAY_BUFFER));
+    GLuint driver_array = restore_array;
+    bool array_binding_changed = false;
+    for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+        vertex_attrib_state_t& attrib = state.attribs[i];
+        if (!attrib.configured || attrib.uses_binding_model || attrib.buffer == 0 ||
+            !frontend_buffer_identity_alive(attrib.buffer, attrib.buffer_lifetime))
+            continue;
+        const GLuint wanted = driver_buffer_name(attrib.buffer);
+        if (attrib.driver_buffer == wanted) continue;
+        if (driver_array != wanted) {
+            GLES.glBindBuffer(GL_ARRAY_BUFFER, wanted);
+            driver_array = wanted;
+            array_binding_changed = true;
+        }
+        const void* pointer = reinterpret_cast<const void*>(attrib.pointer);
+        if (attrib.integer)
+            GLES.glVertexAttribIPointer(i, attrib.size, attrib.type, attrib.stride, pointer);
+        else
+            GLES.glVertexAttribPointer(i, attrib.size, attrib.type, attrib.normalized, attrib.stride, pointer);
+        attrib.driver_buffer = wanted;
+    }
+
+    if (GLES.glBindVertexBuffer) {
+        for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+            vertex_binding_state_t& binding = state.bindings[i];
+            if (!binding.configured || binding.buffer == 0 ||
+                !frontend_buffer_identity_alive(binding.buffer, binding.buffer_lifetime))
+                continue;
+            const GLuint wanted = driver_buffer_name(binding.buffer);
+            if (binding.driver_buffer == wanted) continue;
+            GLES.glBindVertexBuffer(i, wanted, binding.offset, binding.stride);
+            binding.driver_buffer = wanted;
+        }
+    }
+
+    if (array_binding_changed && driver_array != restore_array) GLES.glBindBuffer(GL_ARRAY_BUFFER, restore_array);
+}
+
+static bool ring_slot_retired(uint64_t frame, uint64_t last_use) {
+    return frame >= last_use && frame - last_use >= kGpuBufferRingRetireFrames;
+}
+
+// -2 means the current backing has aged enough to reuse, -1 means all three
+// backings may still be referenced by recent frames, otherwise the returned
+// index is an alternate slot to use now.
+static int choose_gpu_ring_slot(const gpu_buffer_ring_t& ring, uint64_t frame) {
+    if (!ring.primed || ring.count == 0 || ring.current >= ring.count ||
+        ring_slot_retired(frame, ring.slots[ring.current].last_use_frame))
+        return -2;
+    for (uint8_t i = 0; i < ring.count; ++i) {
+        if (i != ring.current && ring_slot_retired(frame, ring.slots[i].last_use_frame)) return i;
+    }
+    return ring.count < kGpuBufferRingDepth ? ring.count : -1;
+}
+
+static bool gpu_ring_trace_milestone(unsigned long long attempts) {
+    return attempts <= 8 || attempts == 1024 || attempts == 65536;
+}
+
+static void trace_gpu_ring(const char* result, GLuint buffer, GLuint driver_buffer) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const gpu_buffer_ring_stats_t& stats = g_bc->gpu_buffer_ring_stats;
+    if (gpu_ring_trace_milestone(stats.attempts)) {
+        write_log("ZOMDROID_PZ_GPU_BUFFER_RING attempt=%llu rotations=%llu allocations=%llu reuse=%llu "
+                  "cool=%llu busy=%llu unsafe=%llu shared=%llu buffer=%u backing=%u frame=%llu result=%s",
+                  stats.attempts, stats.rotations, stats.allocations, stats.reuses, stats.cool_updates,
+                  stats.busy_fallbacks, stats.unsafe, stats.shared_context, buffer, driver_buffer,
+                  static_cast<unsigned long long>(g_bc->present_serial), result);
+    }
+#else
+    (void)result;
+    (void)buffer;
+    (void)driver_buffer;
+#endif
+}
+
+static bool gpu_ring_target(GLenum target) {
+    return target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER;
+}
+
+static void mark_gpu_ring_role(GLuint buffer, GLenum target) {
+    if (!mg_pz_gpu_buffer_ring_active || buffer == 0 || !has_buffer(buffer)) return;
+    ensure_buffer_capacity(buffer);
+    if (!gpu_ring_target(target)) g_gpu_ring_safe[buffer] = 0;
+}
+
+static GLuint select_gpu_ring_backing(GLenum target, GLuint buffer, GLsizeiptr size, bool* rotated) {
+    *rotated = false;
+    if (!mg_pz_gpu_buffer_ring_active) return driver_buffer_name(buffer);
+
+    gpu_buffer_ring_stats_t& stats = g_bc->gpu_buffer_ring_stats;
+    ++stats.attempts;
+    const GLuint current = driver_buffer_name(buffer);
+    if (!mg_pz_buffer_streaming_active || !gpu_ring_target(target) || buffer == 0 || !has_buffer(buffer) ||
+        size <= 0 || buffer >= g_gpu_ring_safe.size() || g_gpu_ring_safe[buffer] == 0 || current == 0) {
+        ++stats.unsafe;
+        trace_gpu_ring("unsafe", buffer, current);
+        return current;
+    }
+    if (g_bg->multiple_contexts_seen || g_bc->context_id == 0) {
+        ++stats.shared_context;
+        trace_gpu_ring("shared_context", buffer, current);
+        return current;
+    }
+
+    gpu_buffer_ring_t& ring = g_gpu_buffer_rings[buffer];
+    if (ring.count == 0 || ring.current >= ring.count || ring.slots[ring.current].driver_buffer != current) {
+        ring = {};
+        ring.count = 1;
+        ring.current = 0;
+        ring.slots[0].driver_buffer = current;
+    }
+
+    const int selected = choose_gpu_ring_slot(ring, g_bc->present_serial);
+    if (selected == -2) {
+        ++stats.cool_updates;
+        trace_gpu_ring(ring.primed ? "retired_current" : "prime", buffer, current);
+        return current;
+    }
+    if (selected < 0) {
+        ++stats.busy_fallbacks;
+        trace_gpu_ring("all_slots_recent", buffer, current);
+        return current;
+    }
+
+    const uint8_t slot = static_cast<uint8_t>(selected);
+    if (slot == ring.count) {
+        GLuint created = 0;
+        GLES.glGenBuffers(1, &created);
+        if (created == 0) {
+            ++stats.busy_fallbacks;
+            trace_gpu_ring("allocation_failed", buffer, current);
+            return current;
+        }
+        ring.slots[slot].driver_buffer = created;
+        ++ring.count;
+        ++stats.allocations;
+    } else {
+        ++stats.reuses;
+    }
+    ring.current = slot;
+    ++stats.rotations;
+    *rotated = true;
+    trace_gpu_ring(slot + 1 == ring.count ? "new_slot" : "reuse_slot", buffer,
+                   ring.slots[slot].driver_buffer);
+    return ring.slots[slot].driver_buffer;
+}
+
+static void note_gpu_ring_upload(GLenum target, GLuint buffer, GLuint driver_buffer) {
+    if (!mg_pz_gpu_buffer_ring_active || !gpu_ring_target(target) || buffer == 0 || driver_buffer == 0 ||
+        !has_buffer(buffer) || buffer >= g_gpu_ring_safe.size() || g_gpu_ring_safe[buffer] == 0)
+        return;
+    gpu_buffer_ring_t& ring = g_gpu_buffer_rings[buffer];
+    if (ring.count == 0) {
+        ring.count = 1;
+        ring.current = 0;
+        ring.slots[0].driver_buffer = driver_buffer;
+    }
+    for (uint8_t i = 0; i < ring.count; ++i) {
+        if (ring.slots[i].driver_buffer != driver_buffer) continue;
+        ring.current = i;
+        ring.slots[i].last_use_frame = g_bc->present_serial;
+        ring.primed = true;
+        return;
+    }
+}
+
+static bool delete_gpu_ring_backings(GLuint buffer) {
+    const auto found = g_gpu_buffer_rings.find(buffer);
+    if (found == g_gpu_buffer_rings.end()) return false;
+    std::array<GLuint, kGpuBufferRingDepth> names{};
+    GLsizei count = 0;
+    for (uint8_t i = 0; i < found->second.count; ++i) {
+        const GLuint name = found->second.slots[i].driver_buffer;
+        if (name != 0) names[count++] = name;
+    }
+    if (count != 0) GLES.glDeleteBuffers(count, names.data());
+    g_gpu_buffer_rings.erase(found);
+    return count != 0;
+}
+
+static void note_gpu_ring_buffer_use(GLuint buffer) {
+    if (buffer == 0) return;
+    const auto found = g_gpu_buffer_rings.find(buffer);
+    if (found == g_gpu_buffer_rings.end()) return;
+    gpu_buffer_ring_t& ring = found->second;
+    const GLuint current = driver_buffer_name(buffer);
+    for (uint8_t i = 0; i < ring.count; ++i) {
+        if (ring.slots[i].driver_buffer != current) continue;
+        ring.current = i;
+        ring.slots[i].last_use_frame = g_bc->present_serial;
+        return;
+    }
+}
+
+void mg_pz_gpu_buffer_ring_note_draw() {
+    if (!mg_pz_gpu_buffer_ring_active || g_bc->context_id == 0) return;
+    vertex_array_state_t& state = current_vertex_array_state();
+    for (const vertex_attrib_state_t& attrib : state.attribs) {
+        if (attrib.enabled != GL_TRUE || !attrib.configured) continue;
+        if (attrib.uses_binding_model) {
+            if (attrib.binding < kTrackedVertexAttribs) note_gpu_ring_buffer_use(state.bindings[attrib.binding].buffer);
+        } else {
+            note_gpu_ring_buffer_use(attrib.buffer);
+        }
+    }
+    note_gpu_ring_buffer_use(get_ibo_by_vao(g_bound_array));
+}
+
 static bool client_attrib_trace_milestone(unsigned long long hits) {
     return hits == 1 || hits == 1024 || hits == 65536;
 }
+
+#if defined(MOBILEGLUES_TESTING)
+int mg_test_choose_gpu_ring_slot(const uint64_t* last_uses, size_t count, size_t current, uint64_t frame,
+                                 bool primed) {
+    gpu_buffer_ring_t ring;
+    ring.count = static_cast<uint8_t>(std::min(count, kGpuBufferRingDepth));
+    ring.current = static_cast<uint8_t>(current);
+    ring.primed = primed;
+    for (size_t i = 0; i < ring.count; ++i) ring.slots[i].last_use_frame = last_uses[i];
+    return choose_gpu_ring_slot(ring, frame);
+}
+#endif
 #endif
 
 static inline int ensure_buffer_capacity(GLuint id) {
@@ -302,6 +614,7 @@ static inline int ensure_buffer_capacity(GLuint id) {
         if (g_buffer_usage.size() <= (size_t)id) g_buffer_usage.resize(id + 1, GL_STATIC_DRAW);
         if (g_buffer_storage_kind.size() <= (size_t)id)
             g_buffer_storage_kind.resize(id + 1, buffer_storage_kind_t::none);
+        if (g_gpu_ring_safe.size() <= (size_t)id) g_gpu_ring_safe.resize(id + 1, 1);
 #endif
     }
     return 0;
@@ -338,7 +651,9 @@ GLuint gen_buffer() {
 #if defined(ZOMDROID_EXPERIMENTAL)
         g_buffer_usage[id] = GL_STATIC_DRAW;
         g_buffer_storage_kind[id] = buffer_storage_kind_t::none;
+        g_gpu_ring_safe[id] = 1;
         g_buffer_staging_maps.erase(id);
+        g_gpu_buffer_rings.erase(id);
 #endif
         begin_buffer_lifetime(id);
         if (id > (GLuint)maxBufferId) maxBufferId = id;
@@ -352,6 +667,7 @@ GLuint gen_buffer() {
 #if defined(ZOMDROID_EXPERIMENTAL)
     g_buffer_usage[maxBufferId] = GL_STATIC_DRAW;
     g_buffer_storage_kind[maxBufferId] = buffer_storage_kind_t::none;
+    g_gpu_ring_safe[maxBufferId] = 1;
 #endif
     begin_buffer_lifetime((GLuint)maxBufferId);
     return (GLuint)maxBufferId;
@@ -375,7 +691,9 @@ void remove_buffer(GLuint key) {
         if (key < g_buffer_datasize.size()) g_buffer_datasize[key] = 0;
 #if defined(ZOMDROID_EXPERIMENTAL)
         if (key < g_buffer_storage_kind.size()) g_buffer_storage_kind[key] = buffer_storage_kind_t::none;
+        if (key < g_gpu_ring_safe.size()) g_gpu_ring_safe[key] = 1;
         g_buffer_staging_maps.erase(key);
+        g_gpu_buffer_rings.erase(key);
 #endif
         g_free_buffer_ids.push_back(key);
     }
@@ -835,7 +1153,9 @@ void InitBufferMap(size_t expectedSize) {
 #if defined(ZOMDROID_EXPERIMENTAL)
     g_buffer_usage.reserve(expectedSize + 2);
     g_buffer_storage_kind.reserve(expectedSize + 2);
+    g_gpu_ring_safe.reserve(expectedSize + 2);
     g_buffer_staging_maps.reserve(expectedSize + 2);
+    g_gpu_buffer_rings.reserve(expectedSize + 2);
 #endif
     g_gen_buffers.resize(1, 0);
     g_gen_buffer_exists.resize(1, 0);
@@ -844,6 +1164,7 @@ void InitBufferMap(size_t expectedSize) {
 #if defined(ZOMDROID_EXPERIMENTAL)
     g_buffer_usage.resize(1, GL_STATIC_DRAW);
     g_buffer_storage_kind.resize(1, buffer_storage_kind_t::none);
+    g_gpu_ring_safe.resize(1, 1);
 #endif
 }
 
@@ -876,7 +1197,11 @@ void glDeleteBuffers(GLsizei n, const GLuint* buffers) {
         if (buffers[i] != 0 && find_bound_buffer(GL_PARAMETER_BUFFER_BINDING) == buffers[i]) {
             set_bound_buffer_by_target(GL_PARAMETER_BUFFER, 0);
         }
-        if (find_real_buffer(buffers[i])) {
+        bool ring_deleted = false;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        ring_deleted = delete_gpu_ring_backings(buffers[i]);
+#endif
+        if (!ring_deleted && find_real_buffer(buffers[i])) {
             GLuint real_buff = find_real_buffer(buffers[i]);
             GLES.glDeleteBuffers(1, &real_buff);
             CHECK_GL_ERROR
@@ -896,6 +1221,9 @@ void glBindBuffer(GLenum target, GLuint buffer) {
     LOG_D("glBindBuffer, target = %s, buffer = %d", glEnumToString(target), buffer)
     MG_PZ_CENSUS(mg_pz_census_bind_buffer(find_bound_buffer_by_target(target) == buffer));
     set_bound_buffer_by_target(target, buffer);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mark_gpu_ring_role(buffer, target);
+#endif
 
     if (target == GL_PARAMETER_BUFFER) {
         // GLES has no GL_PARAMETER_BUFFER. The binding is tracked here and read
@@ -918,6 +1246,9 @@ void glBindBuffer(GLenum target, GLuint buffer) {
 
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glBindBuffer(target, buffer);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (target == GL_ELEMENT_ARRAY_BUFFER) current_vertex_array_state().driver_element_buffer = buffer;
+#endif
         CHECK_GL_ERROR
         return;
     }
@@ -929,6 +1260,9 @@ void glBindBuffer(GLenum target, GLuint buffer) {
     }
     LOG_D("glBindBuffer: %d -> %d", buffer, real_buffer)
     GLES.glBindBuffer(target, real_buffer);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (target == GL_ELEMENT_ARRAY_BUFFER) current_vertex_array_state().driver_element_buffer = real_buffer;
+#endif
     CHECK_GL_ERROR
 }
 
@@ -938,6 +1272,9 @@ void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offs
     LOG()
     LOG_D("glBindBufferRange, target = %s, index = %d, buffer = %d, offset = %p, size = %zi", glEnumToString(target),
           index, buffer, (void*)offset, size)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mark_gpu_ring_role(buffer, target);
+#endif
 
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glBindBufferRange(target, index, buffer, offset, size);
@@ -957,6 +1294,9 @@ void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offs
 void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
     LOG()
     LOG_D("glBindBufferBase, target = %s, index = %d, buffer = %d", glEnumToString(target), index, buffer)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mark_gpu_ring_role(buffer, target);
+#endif
 
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glBindBufferBase(target, index, buffer);
@@ -984,10 +1324,12 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
     LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
           stride)
 #if defined(ZOMDROID_EXPERIMENTAL)
+    const uint64_t lifetime = frontend_buffer_lifetime(buffer);
     if (mg_pz_census_active) {
         const bool tracked = bindingindex < kTrackedVertexAttribs;
         const bool exact = tracked && current_vertex_array_state().bindings[bindingindex].configured &&
                            current_vertex_array_state().bindings[bindingindex].buffer == buffer &&
+                           current_vertex_array_state().bindings[bindingindex].buffer_lifetime == lifetime &&
                            current_vertex_array_state().bindings[bindingindex].offset == offset &&
                            current_vertex_array_state().bindings[bindingindex].stride == stride;
         mg_pz_census_attrib(mg_pz_attrib_kind::vertex_buffer, tracked, exact);
@@ -995,6 +1337,8 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
     if (bindingindex < kTrackedVertexAttribs) {
         auto& binding = current_vertex_array_state().bindings[bindingindex];
         binding.buffer = buffer;
+        binding.buffer_lifetime = lifetime;
+        binding.driver_buffer = driver_buffer_name(buffer);
         binding.offset = offset;
         binding.stride = stride;
         binding.configured = true;
@@ -1002,6 +1346,10 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
 #endif
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glBindVertexBuffer(bindingindex, buffer, offset, stride);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (bindingindex < kTrackedVertexAttribs)
+            current_vertex_array_state().bindings[bindingindex].driver_buffer = buffer;
+#endif
         CHECK_GL_ERROR
         return;
     }
@@ -1012,6 +1360,9 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
         CHECK_GL_ERROR
     }
     GLES.glBindVertexBuffer(bindingindex, real_buffer, offset, stride);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (bindingindex < kTrackedVertexAttribs) current_vertex_array_state().bindings[bindingindex].driver_buffer = real_buffer;
+#endif
     CHECK_GL_ERROR
 }
 
@@ -1200,6 +1551,9 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {
     LOG_D("glTexBuffer, target = %s, internalformat = %s, buffer = %d", glEnumToString(target),
           glEnumToString(internalformat), buffer)
     if (target != GL_TEXTURE_BUFFER) return;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mark_gpu_ring_role(buffer, GL_TEXTURE_BUFFER);
+#endif
 
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glTexBuffer(target, internalformat, buffer);
@@ -1368,6 +1722,9 @@ void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLint
     LOG()
     LOG_D("glTexBufferRange, target = %s, internalformat = %s, buffer = %d, offset = %p, size = %zi",
           glEnumToString(target), glEnumToString(internalformat), buffer, (void*)offset, size)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mark_gpu_ring_role(buffer, GL_TEXTURE_BUFFER);
+#endif
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glTexBufferRange(target, internalformat, buffer, offset, size);
         CHECK_GL_ERROR
@@ -1437,6 +1794,8 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
     // existing immutable record instead of making a later map eligible.
     if (!immutable_storage)
         record_buffer_storage(frontend_buffer, size, usage, buffer_storage_kind_t::mutable_store);
+    if (!immutable_storage && data != nullptr)
+        note_gpu_ring_upload(target, frontend_buffer, driver_buffer_name(frontend_buffer));
 #else
     set_buffer_data_size(frontend_buffer, size);
 #endif
@@ -1631,7 +1990,17 @@ GLboolean glUnmapBuffer(GLenum target) {
         borrowed_target_t t(target);
         const GLenum usage = frontend_buffer < g_buffer_usage.size() ? g_buffer_usage[frontend_buffer]
                                                                      : GL_STREAM_DRAW;
+        bool rotated = false;
+        const GLuint previous_backing = driver_buffer_name(frontend_buffer);
+        const GLuint upload_backing =
+            select_gpu_ring_backing(target, frontend_buffer, staged->second.size, &rotated);
+        if (upload_backing != previous_backing) GLES.glBindBuffer(t.target, upload_backing);
         GLES.glBufferData(t.target, staged->second.size, staged->second.pointer, usage);
+        if (rotated) {
+            modify_buffer(frontend_buffer, upload_backing);
+            refresh_bound_vao_backings();
+        }
+        note_gpu_ring_upload(target, frontend_buffer, upload_backing);
         staged->second.mapped = false;
         staged->second.pointer = nullptr;
         trace_zomdroid_buffer_call("UNMAP_STAGING_UPLOAD", target, 0, staged->second.size, staged->second.access,
@@ -1752,12 +2121,20 @@ void glBindVertexArray(GLuint array) {
         const bool skip = false;
 #endif
         MG_PZ_CENSUS(mg_pz_census_bind_vao(same_frontend, driver_confirmed, skip));
-        if (skip) return;
+        if (skip) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+            refresh_bound_vao_backings();
+#endif
+            return;
+        }
         GLES.glBindVertexArray(array);
         if (array == 0)
             mg_driver_vertex_array_bound(0);
         else
             mg_driver_vertex_array_unknown();
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (array == 0) refresh_bound_vao_backings();
+#endif
         CHECK_GL_ERROR
         return;
     }
@@ -1777,9 +2154,17 @@ void glBindVertexArray(GLuint array) {
     const bool skip = false;
 #endif
     MG_PZ_CENSUS(mg_pz_census_bind_vao(same_frontend, driver_confirmed, skip));
-    if (skip) return;
+    if (skip) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+        refresh_bound_vao_backings();
+#endif
+        return;
+    }
     GLES.glBindVertexArray(real_array);
     mg_driver_vertex_array_bound(real_array);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    refresh_bound_vao_backings();
+#endif
     CHECK_GL_ERROR
 }
 
@@ -1831,7 +2216,8 @@ void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
             const bool pointer_changed = !old.configured || old.uses_binding_model || old.size != saved.size ||
                                          old.type != saved.type || old.normalized != saved.normalized ||
                                          old.stride != saved.stride || old.pointer != saved.pointer ||
-                                         old.buffer != saved.buffer || old.integer != saved.integer;
+                                         old.buffer != saved.buffer || old.buffer_lifetime != saved.buffer_lifetime ||
+                                         old.integer != saved.integer;
             if (pointer_changed) {
                 GLES.glBindBuffer(GL_ARRAY_BUFFER, driver_buffer_name(saved.buffer));
                 const void* pointer = reinterpret_cast<const void*>(saved.pointer);
@@ -1897,6 +2283,17 @@ void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, snapshot.element_array_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, snapshot.array_buffer);
     active = snapshot.vertex_state;
+    for (auto& attrib : active.attribs) {
+        if (attrib.configured && attrib.buffer != 0 &&
+            frontend_buffer_identity_alive(attrib.buffer, attrib.buffer_lifetime))
+            attrib.driver_buffer = driver_buffer_name(attrib.buffer);
+    }
+    for (auto& binding : active.bindings) {
+        if (binding.configured && binding.buffer != 0 &&
+            frontend_buffer_identity_alive(binding.buffer, binding.buffer_lifetime))
+            binding.driver_buffer = driver_buffer_name(binding.buffer);
+    }
+    active.driver_element_buffer = driver_buffer_name(snapshot.element_array_buffer);
 
     ++g_bc->client_attrib_pop_hits;
     if (changed) {
@@ -1977,13 +2374,14 @@ NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized,
                      GLsizei stride, const void* pointer)
     const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    const uint64_t frontend_lifetime = frontend_buffer_lifetime(frontend_buffer);
     if (mg_pz_census_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
         const bool exact = previous && previous->configured && !previous->uses_binding_model && !previous->integer &&
                            previous->size == size && previous->type == type && previous->normalized == normalized &&
                            previous->stride == stride && previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
-                           previous->buffer == frontend_buffer;
+                           previous->buffer == frontend_buffer && previous->buffer_lifetime == frontend_lifetime;
         mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
     }
     if (index < kTrackedVertexAttribs) {
@@ -1994,6 +2392,7 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLen
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
         attrib.buffer = frontend_buffer;
+        attrib.buffer_lifetime = frontend_lifetime;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = false;
@@ -2001,18 +2400,21 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLen
         attrib.uses_binding_model = false;
     }
     GLES.glVertexAttribPointer(index, size, type, normalized, stride, pointer);
+    if (index < kTrackedVertexAttribs)
+        current_vertex_array_state().attribs[index].driver_buffer = driver_buffer_name(frontend_buffer);
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride,
                      const void* pointer)
     const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    const uint64_t frontend_lifetime = frontend_buffer_lifetime(frontend_buffer);
     if (mg_pz_census_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
         const bool exact = previous && previous->configured && !previous->uses_binding_model && previous->integer &&
                            previous->size == size && previous->type == type && previous->stride == stride &&
                            previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
-                           previous->buffer == frontend_buffer;
+                           previous->buffer == frontend_buffer && previous->buffer_lifetime == frontend_lifetime;
         mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
     }
     if (index < kTrackedVertexAttribs) {
@@ -2023,6 +2425,7 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
         attrib.buffer = frontend_buffer;
+        attrib.buffer_lifetime = frontend_lifetime;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = true;
@@ -2030,6 +2433,8 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
         attrib.uses_binding_model = false;
     }
     GLES.glVertexAttribIPointer(index, size, type, stride, pointer);
+    if (index < kTrackedVertexAttribs)
+        current_vertex_array_state().attribs[index].driver_buffer = driver_buffer_name(frontend_buffer);
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)

@@ -17,6 +17,7 @@ bool mg_pz_vao_fastpath_active = false;
 bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = false;
+bool mg_pz_gpu_buffer_ring_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 
@@ -296,6 +297,8 @@ void mg_pz_census_init(void) {
     mg_pz_uniform_fastpath_active = uniform_value != nullptr && std::strcmp(uniform_value, "1") == 0;
     const char* streaming_value = std::getenv("MOBILEGLUES_PZ_BUFFER_STREAMING");
     mg_pz_buffer_streaming_active = streaming_value != nullptr && std::strcmp(streaming_value, "1") == 0;
+    const char* gpu_ring_value = std::getenv("MOBILEGLUES_PZ_GPU_BUFFER_RING");
+    mg_pz_gpu_buffer_ring_active = gpu_ring_value != nullptr && std::strcmp(gpu_ring_value, "1") == 0;
     const char* state_shadow_value = std::getenv("MOBILEGLUES_PZ_STATE_SHADOW");
     mg_pz_state_shadow_active = state_shadow_value != nullptr && std::strcmp(state_shadow_value, "1") == 0;
     const char* runtime_mipmap_value = std::getenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
@@ -313,6 +316,7 @@ void mg_pz_census_init(void) {
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
     if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
     if (mg_pz_buffer_streaming_active) LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging")
+    if (mg_pz_gpu_buffer_ring_active) LOG_I("ZOMDROID_PZ_GPU_BUFFER_RING enabled=1 depth=3")
     if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
     if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
 #endif

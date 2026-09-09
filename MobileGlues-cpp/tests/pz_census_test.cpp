@@ -36,6 +36,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "0", 1);
+    setenv("MOBILEGLUES_PZ_GPU_BUFFER_RING", "0", 1);
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
@@ -45,6 +46,7 @@ int main() {
     expect(!mg_pz_attrib_fastpath_active, "0 must disable the attribute fast path");
     expect(!mg_pz_uniform_fastpath_active, "0 must disable the uniform fast path");
     expect(!mg_pz_buffer_streaming_active, "0 must disable buffer streaming");
+    expect(!mg_pz_gpu_buffer_ring_active, "0 must disable the GPU buffer ring");
     expect(!mg_pz_state_shadow_active, "0 must disable the fixed-state shadow");
     expect(!mg_pz_runtime_mipmap_skip_active, "0 must disable runtime mipmap skipping");
 
@@ -56,6 +58,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "true", 1);
+    setenv("MOBILEGLUES_PZ_GPU_BUFFER_RING", "true", 1);
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "true", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "true", 1);
     mg_pz_census_init();
@@ -63,6 +66,7 @@ int main() {
     expect(!mg_pz_attrib_fastpath_active, "only the exact value 1 may enable the attribute fast path");
     expect(!mg_pz_uniform_fastpath_active, "only the exact value 1 may enable the uniform fast path");
     expect(!mg_pz_buffer_streaming_active, "only the exact value 1 may enable buffer streaming");
+    expect(!mg_pz_gpu_buffer_ring_active, "only the exact value 1 may enable the GPU buffer ring");
     expect(!mg_pz_state_shadow_active, "only the exact value 1 may enable the fixed-state shadow");
     expect(!mg_pz_runtime_mipmap_skip_active, "only the exact value 1 may enable runtime mipmap skipping");
 
@@ -70,6 +74,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "1", 1);
+    setenv("MOBILEGLUES_PZ_GPU_BUFFER_RING", "1", 1);
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "1", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
@@ -79,6 +84,7 @@ int main() {
     expect(mg_pz_attrib_fastpath_active, "1 must enable the attribute fast path");
     expect(mg_pz_uniform_fastpath_active, "1 must enable the uniform fast path");
     expect(mg_pz_buffer_streaming_active, "1 must enable buffer streaming");
+    expect(mg_pz_gpu_buffer_ring_active, "1 must enable the GPU buffer ring");
     expect(mg_pz_state_shadow_active, "1 must enable the fixed-state shadow");
     expect(mg_pz_runtime_mipmap_skip_active, "1 must enable runtime mipmap skipping");
 
@@ -123,12 +129,13 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "0", 1);
+    setenv("MOBILEGLUES_PZ_GPU_BUFFER_RING", "0", 1);
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active &&
                !mg_pz_uniform_fastpath_active && !mg_pz_buffer_streaming_active && !mg_pz_state_shadow_active &&
-               !mg_pz_runtime_mipmap_skip_active,
+               !mg_pz_gpu_buffer_ring_active && !mg_pz_runtime_mipmap_skip_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);
