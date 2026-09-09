@@ -58,11 +58,15 @@ NATIVE_FUNCTION_HEAD(void, glDepthMask, GLboolean flag) NATIVE_FUNCTION_END_NO_R
 NATIVE_FUNCTION_HEAD(void, glDepthRangef, GLfloat n, GLfloat f) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthRangef, n,f)
 NATIVE_FUNCTION_HEAD(void, glDetachShader, GLuint program, GLuint shader) mg_shader_detached(program, shader); NATIVE_FUNCTION_END_NO_RETURN(void, glDetachShader, program,shader)
 // NATIVE_FUNCTION_HEAD(void, glDisable, GLenum cap) NATIVE_FUNCTION_END_NO_RETURN(void, glDisable, cap)   // moved to gl/enable.cpp (virtual enable state table)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index) NATIVE_FUNCTION_END_NO_RETURN(void, glDisableVertexAttribArray, index)
+#endif
 // NATIVE_FUNCTION_HEAD(void, glDrawArrays, GLenum mode, GLint first, GLsizei count) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawArrays, mode,first,count)   // moved to gl/drawing.cpp: converts desktop GL_QUADS to GLES triangles
 //NATIVE_FUNCTION_HEAD(void, glDrawElements, GLenum mode, GLsizei count, GLenum type, const void *indices) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawElements, mode,count,type,indices)
 // NATIVE_FUNCTION_HEAD(void, glEnable, GLenum cap) NATIVE_FUNCTION_END_NO_RETURN(void, glEnable, cap)   // moved to gl/enable.cpp (virtual enable state table)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glEnableVertexAttribArray, GLuint index) NATIVE_FUNCTION_END_NO_RETURN(void, glEnableVertexAttribArray, index)
+#endif
 NATIVE_FUNCTION_HEAD(void, glFinish) NATIVE_FUNCTION_END_NO_RETURN(void, glFinish)
 NATIVE_FUNCTION_HEAD(void, glFlush) NATIVE_FUNCTION_END_NO_RETURN(void, glFlush)
 // NATIVE_FUNCTION_HEAD(void, glFramebufferRenderbuffer, GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferRenderbuffer, target,attachment,renderbuffertarget,renderbuffer)   // implemented in gl/framebuffer.cpp
@@ -181,7 +185,9 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttrib3f, GLuint index, GLfloat x, GLfloat y,
 NATIVE_FUNCTION_HEAD(void, glVertexAttrib3fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib3fv, index,v)
 NATIVE_FUNCTION_HEAD(void, glVertexAttrib4f, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib4f, index,x,y,z,w)
 NATIVE_FUNCTION_HEAD(void, glVertexAttrib4fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib4fv, index,v)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribPointer, index,size,type,normalized,stride,pointer)
+#endif
 //NATIVE_FUNCTION_HEAD(void, glViewport, GLint x, GLint y, GLsizei width, GLsizei height) NATIVE_FUNCTION_END_NO_RETURN(void, glViewport, x,y,width,height)
 //NATIVE_FUNCTION_HEAD(void, glReadBuffer, GLenum src) NATIVE_FUNCTION_END_NO_RETURN(void, glReadBuffer, src)
 // NATIVE_FUNCTION_HEAD(void, glDrawRangeElements, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawRangeElements, mode,start,end,count,type,indices)   // moved to gl/drawing.cpp: honours GL_PRIMITIVE_RESTART
@@ -221,7 +227,9 @@ NATIVE_FUNCTION_HEAD(void, glEndTransformFeedback) NATIVE_FUNCTION_END_NO_RETURN
 //NATIVE_FUNCTION_HEAD(void, glBindBufferBase, GLenum target, GLuint index, GLuint buffer) NATIVE_FUNCTION_END_NO_RETURN(void, glBindBufferBase, target,index,buffer)
 NATIVE_FUNCTION_HEAD(void, glTransformFeedbackVaryings, GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode) NATIVE_FUNCTION_END_NO_RETURN(void, glTransformFeedbackVaryings, program,count,varyings,bufferMode)
 NATIVE_FUNCTION_HEAD(void, glGetTransformFeedbackVarying, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLsizei *size, GLenum *type, GLchar *name) NATIVE_FUNCTION_END_NO_RETURN(void, glGetTransformFeedbackVarying, program,index,bufSize,length,size,type,name)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribIPointer, index,size,type,stride,pointer)
+#endif
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIiv, GLuint index, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIiv, index,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIuiv, GLuint index, GLenum pname, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIuiv, index,pname,params)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribI4i, GLuint index, GLint x, GLint y, GLint z, GLint w) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribI4i, index,x,y,z,w)
@@ -270,7 +278,9 @@ NATIVE_FUNCTION_HEAD(void, glSamplerParameterf, GLuint sampler, GLenum pname, GL
 NATIVE_FUNCTION_HEAD(void, glSamplerParameterfv, GLuint sampler, GLenum pname, const GLfloat *param) NATIVE_FUNCTION_END_NO_RETURN(void, glSamplerParameterfv, sampler,pname,param)
 NATIVE_FUNCTION_HEAD(void, glGetSamplerParameteriv, GLuint sampler, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetSamplerParameteriv, sampler,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetSamplerParameterfv, GLuint sampler, GLenum pname, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetSamplerParameterfv, sampler,pname,params)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribDivisor, index,divisor)
+#endif
 NATIVE_FUNCTION_HEAD(void, glBindTransformFeedback, GLenum target, GLuint id) NATIVE_FUNCTION_END_NO_RETURN(void, glBindTransformFeedback, target,id)
 NATIVE_FUNCTION_HEAD(void, glDeleteTransformFeedbacks, GLsizei n, const GLuint *ids) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteTransformFeedbacks, n,ids)
 NATIVE_FUNCTION_HEAD(void, glGenTransformFeedbacks, GLsizei n, GLuint *ids) NATIVE_FUNCTION_END_NO_RETURN(void, glGenTransformFeedbacks, n,ids)
@@ -349,10 +359,12 @@ NATIVE_FUNCTION_HEAD(void, glSampleMaski, GLuint maskNumber, GLbitfield mask) NA
 //NATIVE_FUNCTION_HEAD(void, glGetTexLevelParameteriv, GLenum target, GLint level, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetTexLevelParameteriv, target,level,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glGetTexLevelParameterfv, GLenum target, GLint level, GLenum pname, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetTexLevelParameterfv, target,level,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glBindVertexBuffer, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) NATIVE_FUNCTION_END_NO_RETURN(void, glBindVertexBuffer, bindingindex,buffer,offset,stride)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribFormat, attribindex,size,type,normalized,relativeoffset)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribIFormat, attribindex,size,type,relativeoffset)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bindingindex) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribBinding, attribindex,bindingindex)
 NATIVE_FUNCTION_HEAD(void, glVertexBindingDivisor, GLuint bindingindex, GLuint divisor) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexBindingDivisor, bindingindex,divisor)
+#endif
 NATIVE_FUNCTION_HEAD(void, glBlendBarrier) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendBarrier)
 NATIVE_FUNCTION_HEAD(void, glCopyImageSubData, GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) NATIVE_FUNCTION_END_NO_RETURN(void, glCopyImageSubData, srcName,srcTarget,srcLevel,srcX,srcY,srcZ,dstName,dstTarget,dstLevel,dstX,dstY,dstZ,srcWidth,srcHeight,srcDepth)
 NATIVE_FUNCTION_HEAD(void, glDebugMessageControl, GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) NATIVE_FUNCTION_END_NO_RETURN(void, glDebugMessageControl, source,type,severity,count,ids,enabled)

@@ -66,6 +66,11 @@ extern "C"
 
     void InitVertexArrayMap(size_t expectedSize);
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Depth of the emulated desktop client-attribute stack for this context.
+    GLint mg_client_attrib_stack_depth();
+#endif
+
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);
 
     GLAPI GLAPIENTRY void glDeleteBuffers(GLsizei n, const GLuint* buffers);

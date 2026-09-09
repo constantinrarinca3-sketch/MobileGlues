@@ -127,6 +127,14 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         (*params) = flags & ~GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT;
         break;
     }
+#if defined(ZOMDROID_EXPERIMENTAL)
+    case GL_CLIENT_ATTRIB_STACK_DEPTH:
+        (*params) = mg_client_attrib_stack_depth();
+        break;
+    case GL_MAX_CLIENT_ATTRIB_STACK_DEPTH:
+        (*params) = 16;
+        break;
+#endif
     case GL_ARRAY_BUFFER_BINDING:
     case GL_ATOMIC_COUNTER_BUFFER_BINDING:
     case GL_COPY_READ_BUFFER_BINDING:

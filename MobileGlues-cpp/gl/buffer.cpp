@@ -10,13 +10,13 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
+#include <cstdint>
 #include <ska/flat_hash_map.hpp>
 #include <array>
 #include "texture.h"
 
 #define DEBUG 0
 
-GLuint bound_array;
 static GLint maxBufferId = 0;
 static GLint maxArrayId = 0;
 
@@ -37,6 +37,52 @@ static GLint maxArrayId = 0;
 // ---------------------------------------------------------------------------
 
 namespace {
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+// P15 compatibility state.  Desktop glPushClientAttrib snapshots the generic
+// vertex input owned by the current VAO; GLES has no equivalent entry point.
+// Keep a compact frontend mirror so a push/pop pair does not have to issue
+// hundreds of glGet* round trips on a render-hot path.
+constexpr size_t kTrackedVertexAttribs = 32;
+constexpr size_t kClientAttribStackLimit = 16;
+
+struct vertex_binding_state_t {
+    GLuint buffer = 0; // MobileGlues/frontend name, never the renamed GLES id
+    GLintptr offset = 0;
+    GLsizei stride = 16;
+    GLuint divisor = 0;
+    bool configured = false;
+};
+
+struct vertex_attrib_state_t {
+    GLboolean enabled = GL_FALSE;
+    GLint size = 4;
+    GLenum type = GL_FLOAT;
+    GLboolean normalized = GL_FALSE;
+    GLsizei stride = 0;
+    uintptr_t pointer = 0;
+    GLuint buffer = 0; // MobileGlues/frontend name
+    GLuint divisor = 0;
+    GLuint binding = 0;
+    GLuint relative_offset = 0;
+    bool integer = false;
+    bool configured = false;
+    bool uses_binding_model = false;
+};
+
+struct vertex_array_state_t {
+    std::array<vertex_attrib_state_t, kTrackedVertexAttribs> attribs{};
+    std::array<vertex_binding_state_t, kTrackedVertexAttribs> bindings{};
+};
+
+struct client_attrib_snapshot_t {
+    GLbitfield mask = 0;
+    GLuint vertex_array = 0;
+    GLuint array_buffer = 0;
+    GLuint element_array_buffer = 0;
+    vertex_array_state_t vertex_state{};
+};
+#endif
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 // First-use breadcrumbs go quiet after an entry point has been seen. Map/unmap
@@ -69,6 +115,14 @@ struct buffer_ctx_state_t { // private to one context
     std::vector<GLuint> free_array_ids;
     std::vector<GLuint> element_array_buffer_per_vao;
     std::array<GLuint, 13> bound_buffers{};
+    GLuint bound_array = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
+    std::vector<client_attrib_snapshot_t> client_attrib_stack;
+    unsigned long long client_attrib_push_hits = 0;
+    unsigned long long client_attrib_pop_hits = 0;
+    unsigned long long client_attrib_restore_hits = 0;
+#endif
 };
 
 std::mutex g_buf_mutex;
@@ -120,6 +174,7 @@ void mg_buffer_forget_context(unsigned long long ctx_id) {
 #define g_gen_array_exists (g_bc->gen_array_exists)
 #define g_free_array_ids (g_bc->free_array_ids)
 #define g_element_array_buffer_per_vao (g_bc->element_array_buffer_per_vao)
+#define g_bound_array (g_bc->bound_array)
 
 enum BindingIndex : int {
     BI_ARRAY_BUFFER = 0,
@@ -139,6 +194,35 @@ enum BindingIndex : int {
 };
 #define g_bound_buffers_arr (g_bc->bound_buffers)
 static_assert(BINDING_COUNT == 13, "buffer_ctx_state_t::bound_buffers must match BindingIndex");
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+static vertex_array_state_t& current_vertex_array_state() {
+    return g_bc->vertex_array_states[g_bound_array];
+}
+
+static bool same_vertex_binding(const vertex_binding_state_t& a, const vertex_binding_state_t& b) {
+    return a.buffer == b.buffer && a.offset == b.offset && a.stride == b.stride && a.divisor == b.divisor &&
+           a.configured == b.configured;
+}
+
+static bool same_vertex_attrib(const vertex_attrib_state_t& a, const vertex_attrib_state_t& b) {
+    return a.enabled == b.enabled && a.size == b.size && a.type == b.type && a.normalized == b.normalized &&
+           a.stride == b.stride && a.pointer == b.pointer && a.buffer == b.buffer && a.divisor == b.divisor &&
+           a.binding == b.binding && a.relative_offset == b.relative_offset && a.integer == b.integer &&
+           a.configured == b.configured && a.uses_binding_model == b.uses_binding_model;
+}
+
+static GLuint driver_buffer_name(GLuint frontend_name) {
+    if (frontend_name == 0) return 0;
+    if (!has_buffer(frontend_name)) return frontend_name;
+    const GLuint real = find_real_buffer(frontend_name);
+    return real != 0 ? real : frontend_name;
+}
+
+static bool client_attrib_trace_milestone(unsigned long long hits) {
+    return hits == 1 || hits == 1024 || hits == 65536;
+}
+#endif
 
 static inline int ensure_buffer_capacity(GLuint id) {
     if ((int)g_gen_buffers.size() <= (int)id) {
@@ -208,7 +292,7 @@ GLuint get_ibo_by_vao(GLuint vao) {
 }
 
 GLuint find_bound_array() {
-    return bound_array;
+    return g_bound_array;
 }
 
 void update_vao_ibo_binding(GLuint vao, GLuint ibo) {
@@ -430,6 +514,9 @@ void remove_array(GLuint key) {
         if (key < g_element_array_buffer_per_vao.size()) g_element_array_buffer_per_vao[key] = 0;
         g_free_array_ids.push_back(key);
     }
+#if defined(ZOMDROID_EXPERIMENTAL)
+    g_bc->vertex_array_states.erase(key);
+#endif
 }
 
 GLuint find_real_array(GLuint key) {
@@ -612,8 +699,15 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
     LOG()
     LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
           stride)
-    // Todo: should record fake buffer binding here, when glGetVertexArrayIntegeri_v is called, should return fake
-    // buffer id
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (bindingindex < kTrackedVertexAttribs) {
+        auto& binding = current_vertex_array_state().bindings[bindingindex];
+        binding.buffer = buffer;
+        binding.offset = offset;
+        binding.stride = stride;
+        binding.configured = true;
+    }
+#endif
     if (!has_buffer(buffer) || buffer == 0) {
         GLES.glBindVertexBuffer(bindingindex, buffer, offset, stride);
         CHECK_GL_ERROR
@@ -1208,7 +1302,7 @@ GLboolean glIsVertexArray(GLuint array) {
 void glBindVertexArray(GLuint array) {
     LOG()
     LOG_D("glBindVertexArray(%d)", array)
-    bound_array = array;
+    g_bound_array = array;
 
     // update bound ibo
     set_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER, get_ibo_by_vao(array));
@@ -1231,3 +1325,269 @@ void glBindVertexArray(GLuint array) {
     GLES.glBindVertexArray(real_array);
     CHECK_GL_ERROR
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+namespace {
+
+bool binding_used_by_model(const vertex_array_state_t& state, GLuint binding) {
+    for (const auto& attrib : state.attribs) {
+        if (attrib.configured && attrib.uses_binding_model && attrib.binding == binding) return true;
+    }
+    return false;
+}
+
+void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
+    // Restore the frontend VAO name first.  The wrapper maps it back to the
+    // driver's renamed object and also reselects the VAO-owned index binding.
+    glBindVertexArray(snapshot.vertex_array);
+    vertex_array_state_t& active = current_vertex_array_state();
+    const vertex_array_state_t before = active;
+
+    uint32_t changed_attrib_mask = 0;
+    bool changed = false;
+    for (size_t i = 0; i < kTrackedVertexAttribs; ++i) {
+        if (!same_vertex_attrib(before.attribs[i], snapshot.vertex_state.attribs[i])) {
+            changed = true;
+            changed_attrib_mask |= uint32_t{1} << i;
+        }
+        if (!same_vertex_binding(before.bindings[i], snapshot.vertex_state.bindings[i])) changed = true;
+    }
+
+    if (changed) {
+        // Legacy glVertexAttrib*Pointer owns its buffer/pointer tuple.  Restore
+        // those first; the calls may rewrite the corresponding GLES binding
+        // slots, which the explicit binding-model pass below intentionally wins
+        // for attributes that use that newer model.
+        for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+            const auto& saved = snapshot.vertex_state.attribs[i];
+            const auto& old = before.attribs[i];
+            if (!saved.configured || saved.uses_binding_model) continue;
+
+            const bool pointer_changed = !old.configured || old.uses_binding_model || old.size != saved.size ||
+                                         old.type != saved.type || old.normalized != saved.normalized ||
+                                         old.stride != saved.stride || old.pointer != saved.pointer ||
+                                         old.buffer != saved.buffer || old.integer != saved.integer;
+            if (pointer_changed) {
+                GLES.glBindBuffer(GL_ARRAY_BUFFER, driver_buffer_name(saved.buffer));
+                const void* pointer = reinterpret_cast<const void*>(saved.pointer);
+                if (saved.integer) {
+                    GLES.glVertexAttribIPointer(i, saved.size, saved.type, saved.stride, pointer);
+                } else {
+                    GLES.glVertexAttribPointer(i, saved.size, saved.type, saved.normalized, saved.stride, pointer);
+                }
+            }
+            if (old.divisor != saved.divisor) GLES.glVertexAttribDivisor(i, saved.divisor);
+        }
+
+        // Restore only binding points that feed an attribute captured through
+        // the GL 4.3 binding model.  PZ normally uses the legacy pointer route,
+        // but DSA helpers in the same VAO must not be silently discarded.
+        if (GLES.glBindVertexBuffer && GLES.glVertexBindingDivisor) {
+            for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+                const auto& saved = snapshot.vertex_state.bindings[i];
+                const auto& old = before.bindings[i];
+                if (!saved.configured || !binding_used_by_model(snapshot.vertex_state, i)) continue;
+                if (old.buffer != saved.buffer || old.offset != saved.offset || old.stride != saved.stride ||
+                    !old.configured) {
+                    GLES.glBindVertexBuffer(i, driver_buffer_name(saved.buffer), saved.offset, saved.stride);
+                }
+                if (old.divisor != saved.divisor || !old.configured) {
+                    GLES.glVertexBindingDivisor(i, saved.divisor);
+                }
+            }
+        }
+
+        for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+            const auto& saved = snapshot.vertex_state.attribs[i];
+            const auto& old = before.attribs[i];
+            if (saved.configured && saved.uses_binding_model && GLES.glVertexAttribBinding) {
+                const bool format_changed = !old.configured || !old.uses_binding_model || old.size != saved.size ||
+                                            old.type != saved.type || old.normalized != saved.normalized ||
+                                            old.integer != saved.integer ||
+                                            old.relative_offset != saved.relative_offset;
+                if (format_changed) {
+                    if (saved.integer && GLES.glVertexAttribIFormat) {
+                        GLES.glVertexAttribIFormat(i, saved.size, saved.type, saved.relative_offset);
+                    } else if (!saved.integer && GLES.glVertexAttribFormat) {
+                        GLES.glVertexAttribFormat(i, saved.size, saved.type, saved.normalized, saved.relative_offset);
+                    }
+                }
+                if (!old.uses_binding_model || old.binding != saved.binding) {
+                    GLES.glVertexAttribBinding(i, saved.binding);
+                }
+            }
+
+            if (old.enabled != saved.enabled) {
+                if (saved.enabled) {
+                    GLES.glEnableVertexAttribArray(i);
+                } else {
+                    GLES.glDisableVertexAttribArray(i);
+                }
+            }
+        }
+    }
+
+    // These are frontend names.  Going through the wrappers keeps MobileGlues'
+    // virtual-name bookkeeping aligned with the GLES state changed above.
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, snapshot.element_array_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, snapshot.array_buffer);
+    active = snapshot.vertex_state;
+
+    ++g_bc->client_attrib_pop_hits;
+    if (changed) {
+        ++g_bc->client_attrib_restore_hits;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        if (client_attrib_trace_milestone(g_bc->client_attrib_restore_hits)) {
+            write_log("ZOMDROID_P15_CLIENT_ATTRIB_RESTORE vao=%u changed_attr_mask=0x%x semantic_applied=1 hit=%llu",
+                      snapshot.vertex_array, changed_attrib_mask, g_bc->client_attrib_restore_hits);
+        }
+#endif
+    }
+}
+
+} // namespace
+
+extern "C" GLAPI GLAPIENTRY void glPushClientAttrib(GLbitfield mask) {
+    LOG()
+    if (g_bc->client_attrib_stack.size() >= kClientAttribStackLimit) {
+        mg_set_gl_error(GL_STACK_OVERFLOW);
+        return;
+    }
+
+    client_attrib_snapshot_t snapshot;
+    snapshot.mask = mask;
+    if ((mask & GL_CLIENT_VERTEX_ARRAY_BIT) != 0) {
+        snapshot.vertex_array = find_bound_array();
+        snapshot.array_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+        snapshot.element_array_buffer = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
+        snapshot.vertex_state = current_vertex_array_state();
+        ++g_bc->client_attrib_push_hits;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        if (client_attrib_trace_milestone(g_bc->client_attrib_push_hits)) {
+            write_log("ZOMDROID_P15_CLIENT_ATTRIB_CENSUS mask=0x%x vao=%u semantic_applied=0 hit=%llu", mask,
+                      snapshot.vertex_array, g_bc->client_attrib_push_hits);
+        }
+#endif
+    }
+    g_bc->client_attrib_stack.push_back(std::move(snapshot));
+}
+
+extern "C" GLAPI GLAPIENTRY void glPopClientAttrib(void) {
+    LOG()
+    if (g_bc->client_attrib_stack.empty()) {
+        mg_set_gl_error(GL_STACK_UNDERFLOW);
+        return;
+    }
+    client_attrib_snapshot_t snapshot = std::move(g_bc->client_attrib_stack.back());
+    g_bc->client_attrib_stack.pop_back();
+    if ((snapshot.mask & GL_CLIENT_VERTEX_ARRAY_BIT) != 0) restore_client_vertex_array(snapshot);
+}
+
+NATIVE_FUNCTION_HEAD(void, glEnableVertexAttribArray, GLuint index)
+    if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_TRUE;
+    GLES.glEnableVertexAttribArray(index);
+}
+
+NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index)
+    if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_FALSE;
+    GLES.glDisableVertexAttribArray(index);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized,
+                     GLsizei stride, const void* pointer)
+    if (index < kTrackedVertexAttribs) {
+        auto& attrib = current_vertex_array_state().attribs[index];
+        attrib.size = size;
+        attrib.type = type;
+        attrib.normalized = normalized;
+        attrib.stride = stride;
+        attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
+        attrib.buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+        attrib.binding = index;
+        attrib.relative_offset = 0;
+        attrib.integer = false;
+        attrib.configured = true;
+        attrib.uses_binding_model = false;
+    }
+    GLES.glVertexAttribPointer(index, size, type, normalized, stride, pointer);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride,
+                     const void* pointer)
+    if (index < kTrackedVertexAttribs) {
+        auto& attrib = current_vertex_array_state().attribs[index];
+        attrib.size = size;
+        attrib.type = type;
+        attrib.normalized = GL_FALSE;
+        attrib.stride = stride;
+        attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
+        attrib.buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+        attrib.binding = index;
+        attrib.relative_offset = 0;
+        attrib.integer = true;
+        attrib.configured = true;
+        attrib.uses_binding_model = false;
+    }
+    GLES.glVertexAttribIPointer(index, size, type, stride, pointer);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)
+    if (index < kTrackedVertexAttribs) {
+        auto& state = current_vertex_array_state();
+        state.attribs[index].divisor = divisor;
+        state.bindings[index].divisor = divisor;
+    }
+    GLES.glVertexAttribDivisor(index, divisor);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size, GLenum type, GLboolean normalized,
+                     GLuint relativeoffset)
+    if (attribindex < kTrackedVertexAttribs) {
+        auto& attrib = current_vertex_array_state().attribs[attribindex];
+        attrib.size = size;
+        attrib.type = type;
+        attrib.normalized = normalized;
+        attrib.relative_offset = relativeoffset;
+        attrib.integer = false;
+        attrib.configured = true;
+        attrib.uses_binding_model = true;
+    }
+    GLES.glVertexAttribFormat(attribindex, size, type, normalized, relativeoffset);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
+    if (attribindex < kTrackedVertexAttribs) {
+        auto& attrib = current_vertex_array_state().attribs[attribindex];
+        attrib.size = size;
+        attrib.type = type;
+        attrib.normalized = GL_FALSE;
+        attrib.relative_offset = relativeoffset;
+        attrib.integer = true;
+        attrib.configured = true;
+        attrib.uses_binding_model = true;
+    }
+    GLES.glVertexAttribIFormat(attribindex, size, type, relativeoffset);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bindingindex)
+    if (attribindex < kTrackedVertexAttribs && bindingindex < kTrackedVertexAttribs) {
+        auto& attrib = current_vertex_array_state().attribs[attribindex];
+        attrib.binding = bindingindex;
+        attrib.uses_binding_model = true;
+    }
+    GLES.glVertexAttribBinding(attribindex, bindingindex);
+}
+
+NATIVE_FUNCTION_HEAD(void, glVertexBindingDivisor, GLuint bindingindex, GLuint divisor)
+    if (bindingindex < kTrackedVertexAttribs) {
+        auto& binding = current_vertex_array_state().bindings[bindingindex];
+        binding.divisor = divisor;
+        binding.configured = true;
+    }
+    GLES.glVertexBindingDivisor(bindingindex, divisor);
+}
+
+GLint mg_client_attrib_stack_depth() {
+    return static_cast<GLint>(g_bc->client_attrib_stack.size());
+}
+#endif

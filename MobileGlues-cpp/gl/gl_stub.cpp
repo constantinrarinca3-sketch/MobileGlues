@@ -41,8 +41,10 @@ STUB_FUNCTION_HEAD(void, glDisableClientState, GLenum cap ) STUB_FUNCTION_END_NO
 
 STUB_FUNCTION_HEAD(void, glPushAttrib, GLbitfield mask ) STUB_FUNCTION_END_NO_RETURN(void, glPushAttrib,mask)
 STUB_FUNCTION_HEAD(void, glPopAttrib) STUB_FUNCTION_END_NO_RETURN(void, glPopAttrib)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 STUB_FUNCTION_HEAD(void, glPushClientAttrib, GLbitfield mask ) STUB_FUNCTION_END_NO_RETURN(void, glPushClientAttrib,mask)
 STUB_FUNCTION_HEAD(void, glPopClientAttrib) STUB_FUNCTION_END_NO_RETURN(void, glPopClientAttrib)
+#endif
 STUB_FUNCTION_HEAD(GLint, glRenderMode, GLenum mode) STUB_FUNCTION_END(GLint, glRenderMode,mode)
 
 /*
