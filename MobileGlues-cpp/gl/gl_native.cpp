@@ -11,6 +11,7 @@
 #include "log.h"
 #include "program.h"
 #include "shader.h"
+#include "texture.h"
 #include "../gles/loader.h"
 #include "mg.h"
 #include "glsl/shader_compat.h"
@@ -68,7 +69,9 @@ NATIVE_FUNCTION_HEAD(void, glFlush) NATIVE_FUNCTION_END_NO_RETURN(void, glFlush)
 //NATIVE_FUNCTION_HEAD(void, glFramebufferTexture2D, GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferTexture2D, target,attachment,textarget,texture,level)
 NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glFrontFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glGenBuffers, GLsizei n, GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenBuffers, n,buffers)
-NATIVE_FUNCTION_HEAD(void, glGenerateMipmap, GLenum target) NATIVE_FUNCTION_END_NO_RETURN(void, glGenerateMipmap, target)
+NATIVE_FUNCTION_HEAD(void, glGenerateMipmap, GLenum target)
+    mg_texture_note_generate_mipmap(target);
+NATIVE_FUNCTION_END_NO_RETURN(void, glGenerateMipmap, target)
 NATIVE_FUNCTION_HEAD(void, glGenFramebuffers, GLsizei n, GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenFramebuffers, n,framebuffers)
 NATIVE_FUNCTION_HEAD(void, glGenRenderbuffers, GLsizei n, GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenRenderbuffers, n,renderbuffers)
 NATIVE_FUNCTION_HEAD(void, glGenTextures, GLsizei n, GLuint *textures) NATIVE_FUNCTION_END_NO_RETURN(void, glGenTextures, n,textures)

@@ -484,6 +484,25 @@ TextureObject* mgGetTexObjectByID(unsigned texture) {
     return BufferObjectsVec[texture];
 }
 
+void mg_texture_note_generate_mipmap(GLenum target) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    TextureObject* texture = mgGetTexObjectByTarget(target);
+    if (texture && texture->texture != 0) {
+        const bool first_generation = !texture->runtime_mipmap_generated;
+        texture->runtime_mipmap_generated = true;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        if (first_generation)
+            write_log("ZOMDROID_RUNTIME_MIPMAP texture=%u target=0x%x size=%dx%d format=0x%x", texture->texture,
+                      target, texture->width, texture->height, texture->internal_format);
+#else
+        (void)first_generation;
+#endif
+    }
+#else
+    (void)target;
+#endif
+}
+
 // Inline mapping for various internal formats to format and type.
 //
 // has_data says whether this call carries bytes for `type` to describe -- the
@@ -1767,6 +1786,32 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
         LOG_D("Does not support GL_QCOM_texture_lod_bias, skipped!")
         return;
     }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // B42's FBORenderChunk path generates mipmaps for a runtime render target,
+    // then selects a mipmapped minification filter only at the wider zoom
+    // levels. On the affected GLES path the texture samples black there while
+    // the same base level renders correctly at nearer zooms. This experimental
+    // gate keeps the generated chain intact for diagnosis but samples level 0,
+    // and applies only to texture objects that actually saw glGenerateMipmap.
+    if (target == GL_TEXTURE_2D && pname == GL_TEXTURE_MIN_FILTER &&
+        (param == GL_NEAREST_MIPMAP_NEAREST || param == GL_LINEAR_MIPMAP_NEAREST ||
+         param == GL_NEAREST_MIPMAP_LINEAR || param == GL_LINEAR_MIPMAP_LINEAR)) {
+        TextureObject* texture = mgGetTexObjectByTarget(target);
+        if (texture && texture->runtime_mipmap_generated) {
+            const GLint requested = param;
+            param = (requested == GL_LINEAR_MIPMAP_NEAREST || requested == GL_LINEAR_MIPMAP_LINEAR) ? GL_LINEAR
+                                                                                                    : GL_NEAREST;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+            if (!texture->runtime_mipmap_fallback_logged) {
+                texture->runtime_mipmap_fallback_logged = true;
+                write_log("ZOMDROID_RUNTIME_MIP_FALLBACK texture=%u size=%dx%d requested=0x%x applied=0x%x",
+                          texture->texture, texture->width, texture->height, requested, param);
+            }
+#endif
+        }
+    }
+#endif
 
     GLES.glTexParameteri(target, pname, param);
     CHECK_GL_ERROR

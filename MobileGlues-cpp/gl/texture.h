@@ -105,6 +105,11 @@ public:
     GLsizei width;
     GLsizei height;
     GLsizei depth;
+    // ZomDroid experimental compatibility probe: Project Zomboid generates
+    // mipmaps for its runtime FBO chunk textures. Keep that fact with the GL
+    // object so recycled names and shared contexts cannot inherit it.
+    bool runtime_mipmap_generated = false;
+    bool runtime_mipmap_fallback_logged = false;
 };
 
 // How many texture units this layer can actually track. Anything the driver
@@ -115,6 +120,7 @@ int mg_max_texture_units(void);
 TextureObject* mgGetTexObjectByTarget(GLenum target);
 TextureObject* mgGetTexObjectByID(unsigned texture);
 void InitTextureMap(size_t expectedSize);
+void mg_texture_note_generate_mipmap(GLenum target);
 
 // The driver's own texture state, tracked as this layer issues it, so a caller
 // that only wants to save and restore a binding does not have to make the driver
