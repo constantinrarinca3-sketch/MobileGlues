@@ -1548,6 +1548,7 @@ void glBindTexture(GLenum target, GLuint texture) {
         redundant = bound != nullptr && bound->texture == texture &&
                     get_driver_texture_binding(driver_unit, driver_target) == texture;
     }
+    MG_PZ_CENSUS(mg_pz_census_bind_texture(redundant));
 
     if (!redundant) {
         if (emulated_buffer_texture) {
@@ -1627,7 +1628,9 @@ void glActiveTexture(GLenum texture) {
     // relying on that. So the shadow is only ever consulted where the driver
     // agrees with it -- as long as it describes this context at all, which for the
     // shared fallback record it does not, hence the gate.
-    if (!driver_active_unit_shadow_trustworthy() || DriverActiveTextureUnit != unit) {
+    const bool redundant = driver_active_unit_shadow_trustworthy() && DriverActiveTextureUnit == unit;
+    MG_PZ_CENSUS(mg_pz_census_active_texture(redundant));
+    if (!redundant) {
         GLES.glActiveTexture(texture);
         DriverActiveTextureUnit = unit;
     }

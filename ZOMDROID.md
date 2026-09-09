@@ -1,4 +1,4 @@
-# MobileGlues for ZomDroid — experimental ARM64 fork
+# MobileGlues for ZomDroid — ARM64 optimization branch
 
 This branch keeps upstream MobileGlues rendering behavior intact and adds an isolated Android
 ARM64 build named `libMobileGluesZomDroid.so`. It is an experimental renderer candidate for
@@ -20,3 +20,18 @@ The first APK integration should expose `MOBILEGLUES_EXPERIMENTAL` as a separate
 GLES 3.2. Test cold start, credits, menu, world load, zoom, lighting/weather, world exit and a
 five-minute driving route. Any black world, missing texture, shader failure, delayed world or crash
 rejects the renderer without changing another route.
+
+## Project Zomboid census (optimization branch)
+
+The diagnostic census is controlled only through the renderer environment:
+
+```text
+MOBILEGLUES_PZ_CENSUS=1  # enabled
+MOBILEGLUES_PZ_CENSUS=0  # disabled
+```
+
+An absent variable is also disabled. When enabled, the renderer emits one compact
+`ZOMDROID_PZ_CENSUS` line every 300 presented frames with frame-time buckets, draw workload,
+redundant state calls and buffer upload/map traffic. It does not alter rendering or identify
+zombies by itself; compare repeatable routes with low and high zombie counts. Keep it disabled
+for ordinary play because the per-call counting is diagnostic overhead.

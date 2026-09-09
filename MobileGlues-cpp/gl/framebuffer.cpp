@@ -13,6 +13,7 @@
 #include "log.h"
 #include "../config/settings.h"
 #include "FSR1/FSR1.h"
+#include "pz_census.h"
 
 #define DEBUG 0
 
@@ -186,6 +187,15 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
         draw_fb = FSR1_Context::g_renderFBO;
         FSR1_Context::g_dirty = true;
     }
+
+    bool redundant = false;
+    if (target == GL_FRAMEBUFFER)
+        redundant = current_draw_fbo == draw_fb && current_read_fbo == framebuffer;
+    else if (target == GL_DRAW_FRAMEBUFFER)
+        redundant = current_draw_fbo == draw_fb;
+    else if (target == GL_READ_FRAMEBUFFER)
+        redundant = current_read_fbo == framebuffer;
+    MG_PZ_CENSUS(mg_pz_census_bind_framebuffer(redundant));
 
     if (draw_fb != 0) {
         init_framebuffer(get_framebuffer(draw_fb));

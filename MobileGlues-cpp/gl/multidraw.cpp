@@ -10,6 +10,7 @@
 #include "buffer.h"
 #include "enable.h"
 #include "restart.h"
+#include "pz_census.h"
 #include "../egl/context.h"
 #include <algorithm>
 #include <atomic>
@@ -583,6 +584,7 @@ typedef void (*glMultiDrawElements_t)(GLenum, const GLsizei*, GLenum, const void
 
 void glMultiDrawElements(GLenum mode, const GLsizei* count, GLenum type, const void* const* indices,
                          GLsizei primcount) {
+    MG_PZ_CENSUS(mg_pz_census_multidraw(primcount));
     static glMultiDrawElements_t func_ptr = nullptr;
 
     if (func_ptr == nullptr) {
@@ -616,6 +618,7 @@ typedef void (*glMultiDrawElementsBaseVertex_t)(GLenum, GLsizei*, GLenum, const 
 
 void glMultiDrawElementsBaseVertex(GLenum mode, GLsizei* counts, GLenum type, const void* const* indices,
                                    GLsizei primcount, const GLint* basevertex) {
+    MG_PZ_CENSUS(mg_pz_census_multidraw(primcount));
     static glMultiDrawElementsBaseVertex_t func_ptr = nullptr;
 
     if (func_ptr == nullptr) {
@@ -1900,6 +1903,7 @@ void mg_glMultiDrawArrays_multiindirect(GLenum mode, const GLint* first, const G
 typedef void (*glMultiDrawArrays_t)(GLenum, const GLint*, const GLsizei*, GLsizei);
 
 void glMultiDrawArrays(GLenum mode, const GLint* first, const GLsizei* count, GLsizei drawcount) {
+    MG_PZ_CENSUS(mg_pz_census_multidraw(drawcount));
     static glMultiDrawArrays_t func_ptr = nullptr;
 
     if (func_ptr == nullptr) {
@@ -1921,6 +1925,7 @@ void glMultiDrawArrays(GLenum mode, const GLint* first, const GLsizei* count, GL
 
 void glMultiDrawArraysIndirect(GLenum mode, const void* indirect, GLsizei drawcount, GLsizei stride) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_multidraw(drawcount));
     if (drawcount <= 0) return;
     if (stride < 0) {
         MD_WARN_ONCE("glMultiDrawArraysIndirect: negative stride %d", stride);
@@ -1955,6 +1960,7 @@ void glMultiDrawArraysIndirect(GLenum mode, const void* indirect, GLsizei drawco
 void glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void* indirect, GLsizei drawcount,
                                  GLsizei stride) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_multidraw(drawcount));
     if (drawcount <= 0) return;
     if (stride < 0) {
         MD_WARN_ONCE("glMultiDrawElementsIndirect: negative stride %d", stride);
@@ -2262,12 +2268,14 @@ static bool mg_indirect_count(GLenum mode, GLenum type, bool is_elements, const 
 void glMultiDrawArraysIndirectCount(GLenum mode, const void* indirect, GLintptr drawcount, GLsizei maxdrawcount,
                                     GLsizei stride) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_multidraw(0));
     mg_indirect_count(mode, 0, false, indirect, drawcount, maxdrawcount, stride);
 }
 
 void glMultiDrawElementsIndirectCount(GLenum mode, GLenum type, const void* indirect, GLintptr drawcount,
                                       GLsizei maxdrawcount, GLsizei stride) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_multidraw(0));
     // Same as glMultiDrawElementsIndirect: indexed, so restart applies, but the
     // stream is not reachable for rewriting.
     md_restart_scope_t restart_scope(type);

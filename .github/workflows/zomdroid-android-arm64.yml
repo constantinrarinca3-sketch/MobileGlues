@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - zomdroid-experimental
+      - zomdroid-optimization
 
 permissions:
   contents: read
@@ -67,10 +68,10 @@ jobs:
             sha256sum libMobileGluesZomDroid.so > SHA256SUMS.txt)
           cp LICENSE ZOMDROID.md build/zomdroid-arm64/
 
-      - name: Upload experimental renderer
+      - name: Upload optimization renderer
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-ZomDroid-experimental-arm64
+          name: MobileGlues-ZomDroid-optimization-arm64
           path: |
             build/zomdroid-arm64/libMobileGluesZomDroid.so
             build/zomdroid-arm64/exported-symbols.txt

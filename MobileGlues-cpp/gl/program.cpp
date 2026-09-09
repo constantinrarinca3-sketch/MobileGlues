@@ -400,6 +400,7 @@ void glGetProgramiv(GLuint program, GLenum pname, GLint* params) {
 void glUseProgram(GLuint program) {
     LOG()
     LOG_D("glUseProgram(%d)", program)
+    MG_PZ_CENSUS(mg_pz_census_use_program(program == gl_state->current_program));
     if (program != gl_state->current_program) {
         gl_state->current_program = program;
         GLES.glUseProgram(program);

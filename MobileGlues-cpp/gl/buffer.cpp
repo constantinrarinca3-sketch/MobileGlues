@@ -14,6 +14,7 @@
 #include <ska/flat_hash_map.hpp>
 #include <array>
 #include "texture.h"
+#include "pz_census.h"
 
 #define DEBUG 0
 
@@ -670,6 +671,7 @@ GLboolean glIsBuffer(GLuint buffer) {
 void glBindBuffer(GLenum target, GLuint buffer) {
     LOG()
     LOG_D("glBindBuffer, target = %s, buffer = %d", glEnumToString(target), buffer)
+    MG_PZ_CENSUS(mg_pz_census_bind_buffer(find_bound_buffer_by_target(target) == buffer));
     set_bound_buffer_by_target(target, buffer);
 
     if (target == GL_PARAMETER_BUFFER) {
@@ -1185,6 +1187,7 @@ struct borrowed_target_t {
 
 void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
     LOG_D("glBufferData, target = %s, size = %d, data = 0x%x, usage = %s", glEnumToString(target), size, data,
           glEnumToString(usage))
     borrowed_target_t t(target);
@@ -1197,6 +1200,7 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
 // so that GL_PARAMETER_BUFFER reaches the driver as a target it understands.
 void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_buffer_data(size, true));
     LOG_D("glBufferSubData, target = %s, offset = %p, size = %zi", glEnumToString(target), (void*)offset, size)
     borrowed_target_t t(target);
     GLES.glBufferSubData(t.target, offset, size, data);
@@ -1222,6 +1226,7 @@ void* glMapBuffer(GLenum target, GLenum access) {
     if (!GLES.glMapBufferRange && g_gles_caps.GL_OES_mapbuffer && GLES.glMapBufferOES && GLES.glUnmapBufferOES) {
         borrowed_target_t t(target);
         void* ptr = GLES.glMapBufferOES(t.target, access);
+        if (ptr) MG_PZ_CENSUS(mg_pz_census_buffer_map(0));
         trace_zomdroid_buffer_call("MAP_OES_EXIT", target, 0, 0, access, ptr);
         return ptr;
     }
@@ -1281,6 +1286,7 @@ void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
     }
     borrowed_target_t t(target);
     void* ptr = GLES.glMapBufferRange(t.target, offset, length, access);
+    if (ptr) MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
     trace_zomdroid_buffer_call("MAP_RANGE_EXIT", target, offset, length, access, ptr);
     return ptr;
 }
@@ -1317,6 +1323,7 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
             flags |= (GL_MAP_WRITE_BIT | GL_MAP_COHERENT_BIT | GL_MAP_PERSISTENT_BIT);
         borrowed_target_t t(target);
         GLES.glBufferStorageEXT(t.target, size, data, flags);
+        MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
         // Allocates storage just as glBufferData does, so it owes the same record.
         set_buffer_data_size(find_bound_buffer_by_target(target), size);
     }
@@ -1361,6 +1368,7 @@ GLboolean glIsVertexArray(GLuint array) {
 void glBindVertexArray(GLuint array) {
     LOG()
     LOG_D("glBindVertexArray(%d)", array)
+    MG_PZ_CENSUS(mg_pz_census_bind_vao(g_bound_array == array));
     g_bound_array = array;
 
     // update bound ibo

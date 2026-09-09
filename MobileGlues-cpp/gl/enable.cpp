@@ -643,12 +643,14 @@ extern "C"
     GLAPI GLAPIENTRY void glEnable(GLenum cap) {
         LOG()
         LOG_D("glEnable, cap = 0x%04x", cap)
+        MG_PZ_CENSUS(mg_pz_census_enable(mg_enable_get(cap, 0) == GL_TRUE));
         mg_set_enabled(cap, 0, false, GL_TRUE);
     }
 
     GLAPI GLAPIENTRY void glDisable(GLenum cap) {
         LOG()
         LOG_D("glDisable, cap = 0x%04x", cap)
+        MG_PZ_CENSUS(mg_pz_census_enable(mg_enable_get(cap, 0) == GL_FALSE));
         mg_set_enabled(cap, 0, false, GL_FALSE);
     }
 
@@ -672,11 +674,13 @@ extern "C"
 
     GLAPI GLAPIENTRY void glEnablei(GLenum cap, GLuint index) {
         LOG()
+        MG_PZ_CENSUS(mg_pz_census_enable(mg_enable_get(cap, index) == GL_TRUE));
         mg_set_enabled(cap, index, true, GL_TRUE);
     }
 
     GLAPI GLAPIENTRY void glDisablei(GLenum cap, GLuint index) {
         LOG()
+        MG_PZ_CENSUS(mg_pz_census_enable(mg_enable_get(cap, index) == GL_FALSE));
         mg_set_enabled(cap, index, true, GL_FALSE);
     }
 

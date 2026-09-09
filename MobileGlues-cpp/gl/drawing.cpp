@@ -12,6 +12,7 @@
 #include "framebuffer.h"
 #include "mg.h"
 #include "program.h"
+#include "pz_census.h"
 #include "quad_indices.h"
 #include "texture.h"
 #include "../egl/context.h"
@@ -570,6 +571,7 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, 1));
     if (mode == GL_QUADS) {
         prepareForDraw();
         if (draw_arrays_as_triangles(first, count, -1)) return;
@@ -586,6 +588,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 
 void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, instancecount));
     if (mode == GL_QUADS) {
         prepareForDraw();
         if (draw_arrays_as_triangles(first, count, instancecount)) return;
@@ -600,6 +603,7 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
 
 void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void* indices, GLsizei primcount) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, primcount));
     LOG_D("glDrawElementsInstanced, mode: %d, count: %d, type: %d, indices: %p, primcount: %d", mode, count, type,
           indices, primcount)
     prepareForDraw();
@@ -614,6 +618,7 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawElements, mode: %d, count: %d, type: %d, indices: %p", mode, count, type, indices)
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
@@ -699,6 +704,7 @@ void* basevertex_staging(size_t bytes) {
 
 void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawElementsBaseVertex, mode: %d, count: %d, type: %d, indices: %p, basevertex: %d", mode, count, type,
           indices, basevertex);
     prepareForDraw();
@@ -852,6 +858,7 @@ struct restart_guard_t {
 
 void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void* indices) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawRangeElements, mode: %d, start: %u, end: %u, count: %d, type: %d", mode, start, end, count, type)
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
@@ -867,6 +874,7 @@ void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, G
 void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type,
                                    const void* indices, GLint basevertex) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawRangeElementsBaseVertex, mode: %d, count: %d, type: %d, basevertex: %d", mode, count, type, basevertex)
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, -1)) return;
@@ -885,6 +893,7 @@ void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsize
 void glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, const void* indices,
                                        GLsizei instancecount, GLint basevertex) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, instancecount));
     LOG_D("glDrawElementsInstancedBaseVertex, mode: %d, count: %d, type: %d, instancecount: %d, basevertex: %d", mode,
           count, type, instancecount, basevertex)
     prepareForDraw();
@@ -922,6 +931,7 @@ void glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, 
 void glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei instancecount,
                                        GLuint baseinstance) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, instancecount));
     LOG_D("glDrawArraysInstancedBaseInstance, mode: %d, first: %d, count: %d, instancecount: %d, baseinstance: %u",
           mode, first, count, instancecount, baseinstance)
     if (baseinstance != 0) {

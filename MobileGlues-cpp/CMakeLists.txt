@@ -100,6 +100,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gl/envvars.cpp
     gl/log.cpp
     gl/program.cpp
+    gl/pz_census.cpp
     gl/shader.cpp
     gl/framebuffer.cpp
     gl/texture.cpp

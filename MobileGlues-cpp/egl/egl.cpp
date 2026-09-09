@@ -11,6 +11,7 @@
 #include "../gl/FSR1/FSR1.h"
 #include "../gl/log.h"
 #include "../gl/mg.h"
+#include "../gl/pz_census.h"
 #include "../gles/loader.h"
 #include "../glx/lookup.h"
 #include "loader.h"
@@ -857,7 +858,9 @@ extern "C"
 
     EGL_API EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         LOG_D("eglSwapBuffers, dpy: %p, surface: %p", dpy, surface);
-        return presentSurface(dpy, surface);
+        const EGLBoolean result = presentSurface(dpy, surface);
+        MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
+        return result;
     }
 
     // Wrapped, not passed through.
@@ -870,13 +873,17 @@ extern "C"
     EGL_API EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageKHR, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageKHR");
-        return presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+        const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+        MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
+        return result;
     }
 
     EGL_API EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageEXT, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageEXT");
-        return presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+        const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
+        MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
+        return result;
     }
 
     EGL_API EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target) {

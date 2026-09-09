@@ -8,6 +8,7 @@
 #ifndef MOBILEGLUES_LOG_H
 
 #include "../includes.h"
+#include "pz_census.h"
 
 #define FORCE_SYNC_WITH_LOG_FILE 0
 
@@ -25,6 +26,8 @@ extern "C"
 #endif
 
     const char* glEnumToString(GLenum e);
+    void write_log(const char* format, ...);
+    void write_log_n(const char* format, ...);
 
 #ifdef __cplusplus
 }
@@ -73,7 +76,8 @@ int __android_log_print(int prio, const char* tag, const char* fmt, ...);
         write_log("Use function: %s\n", __FUNCTION__);                                                                 \
     }                                                                                                                  \
     log_unique_function(__FUNCTION__);                                                                                 \
-    trace_zomdroid_gl_after_unmap(__FUNCTION__);
+    trace_zomdroid_gl_after_unmap(__FUNCTION__);                                                                       \
+    MG_PZ_CENSUS(mg_pz_census_gl_call(__FUNCTION__));
 void log_unique_function(const char* func_name);
 void trace_zomdroid_gl_after_unmap(const char* func_name);
 #else
