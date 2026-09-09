@@ -58,6 +58,7 @@ void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* val
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data);
 void mg_pz_census_buffer_map(GLsizeiptr bytes);
 void mg_pz_census_present(bool succeeded);
+uint64_t mg_pz_resource_epoch(void);
 void mg_pz_set_draw_batch_flush(void (*flush)(void));
 void mg_pz_flush_draw_batch(void);
 
