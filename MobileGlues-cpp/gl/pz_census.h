@@ -16,6 +16,7 @@ extern bool mg_pz_census_active;
 // Independent optimization switch. Exactly MOBILEGLUES_PZ_VAO_FASTPATH=1
 // enables it; it remains usable with the diagnostic census disabled.
 extern bool mg_pz_vao_fastpath_active;
+extern bool mg_pz_attrib_fastpath_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,
@@ -42,7 +43,7 @@ void mg_pz_census_uniform(GLuint program, GLint location, uint32_t signature, GL
                           size_t bytes);
 void mg_pz_census_forget_program(GLuint program);
 void mg_pz_census_context_changed(unsigned long long context_id);
-void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant);
+void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped = false);
 void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* value, size_t bytes);
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data);
 void mg_pz_census_buffer_map(GLsizeiptr bytes);

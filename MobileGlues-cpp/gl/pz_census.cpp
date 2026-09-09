@@ -14,6 +14,7 @@
 
 bool mg_pz_census_active = false;
 bool mg_pz_vao_fastpath_active = false;
+bool mg_pz_attrib_fastpath_active = false;
 
 namespace {
 
@@ -53,8 +54,10 @@ struct counters_t {
     count_t vertex_attrib_calls = 0;
     count_t attrib_tracked = 0;
     count_t attrib_exact = 0;
+    count_t attrib_skipped = 0;
     std::array<count_t, 7> attrib_kind_calls{};
     std::array<count_t, 7> attrib_kind_exact{};
+    std::array<count_t, 7> attrib_kind_skipped{};
     count_t fixed_state_calls = 0;
     count_t query_calls = 0;
     count_t sync_calls = 0;
@@ -97,9 +100,11 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(vertex_attrib_calls);
     MG_ADD_FIELD(attrib_tracked);
     MG_ADD_FIELD(attrib_exact);
+    MG_ADD_FIELD(attrib_skipped);
     for (size_t i = 0; i < out.attrib_kind_calls.size(); ++i) {
         out.attrib_kind_calls[i] += in.attrib_kind_calls[i];
         out.attrib_kind_exact[i] += in.attrib_kind_exact[i];
+        out.attrib_kind_skipped[i] += in.attrib_kind_skipped[i];
     }
     MG_ADD_FIELD(fixed_state_calls);
     MG_ADD_FIELD(query_calls);
@@ -176,8 +181,8 @@ void report(const census_state_t& state) {
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
-          "uniform=%llu/%llu/%llu attrib=%llu/%llu/%llu "
-          "attrib_enable=%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
+          "uniform=%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
+          "attrib_enable=%llu/%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
           "worst_draw=%llu worst_items=%llu worst_upload=%lluB",
@@ -189,7 +194,8 @@ void report(const census_state_t& state) {
           c.bind_vao_driver_confirmed, c.bind_vao_skipped,
           c.bind_framebuffer, c.bind_framebuffer_same, c.enable_disable, c.enable_disable_redundant,
           c.uniform_calls, c.uniform_tracked, c.uniform_exact, c.vertex_attrib_calls, c.attrib_tracked, c.attrib_exact,
-          c.attrib_kind_calls[0], c.attrib_kind_exact[0], c.attrib_kind_calls[1], c.attrib_kind_exact[1],
+          c.attrib_skipped, c.attrib_kind_calls[0], c.attrib_kind_exact[0], c.attrib_kind_skipped[0],
+          c.attrib_kind_calls[1], c.attrib_kind_exact[1],
           c.attrib_kind_calls[2], c.attrib_kind_exact[2], c.attrib_kind_calls[3], c.attrib_kind_exact[3],
           c.attrib_kind_calls[4], c.attrib_kind_exact[4], c.attrib_kind_calls[5], c.attrib_kind_exact[5],
           c.attrib_kind_calls[6], c.attrib_kind_exact[6], c.fixed_state_calls, c.query_calls, c.sync_calls,
@@ -205,6 +211,8 @@ void mg_pz_census_init(void) {
     mg_pz_census_active = value != nullptr && std::strcmp(value, "1") == 0;
     const char* vao_value = std::getenv("MOBILEGLUES_PZ_VAO_FASTPATH");
     mg_pz_vao_fastpath_active = vao_value != nullptr && std::strcmp(vao_value, "1") == 0;
+    const char* attrib_value = std::getenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH");
+    mg_pz_attrib_fastpath_active = attrib_value != nullptr && std::strcmp(attrib_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -213,6 +221,7 @@ void mg_pz_census_init(void) {
         LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=2 interval_frames=%u", kReportFrames)
     }
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
+    if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
 #endif
 }
 
@@ -320,7 +329,7 @@ void mg_pz_census_context_changed(unsigned long long context_id) {
     g_attrib_values.clear();
 }
 
-void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant) {
+void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped) {
     if (!mg_pz_census_active) return;
     const size_t index = static_cast<size_t>(kind);
     if (index >= g_census.frame.attrib_kind_calls.size()) return;
@@ -330,6 +339,10 @@ void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redund
     if (exact_redundant) {
         ++g_census.frame.attrib_exact;
         ++g_census.frame.attrib_kind_exact[index];
+    }
+    if (skipped) {
+        ++g_census.frame.attrib_skipped;
+        ++g_census.frame.attrib_kind_skipped[index];
     }
 }
 

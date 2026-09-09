@@ -1449,6 +1449,14 @@ bool binding_used_by_model(const vertex_array_state_t& state, GLuint binding) {
     return false;
 }
 
+bool driver_vao_matches_frontend() {
+    if (!g_bc->driver_bound_array_known) return false;
+    if (g_bound_array == 0) return g_bc->driver_bound_array == 0;
+    if (!has_array(g_bound_array)) return false;
+    const GLuint real_array = find_real_array(g_bound_array);
+    return real_array != 0 && g_bc->driver_bound_array == real_array;
+}
+
 void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
     // Restore the frontend VAO name first.  The wrapper maps it back to the
     // driver's renamed object and also reselects the VAO-owned index binding.
@@ -1597,22 +1605,28 @@ extern "C" GLAPI GLAPIENTRY void glPopClientAttrib(void) {
 }
 
 NATIVE_FUNCTION_HEAD(void, glEnableVertexAttribArray, GLuint index)
-    if (mg_pz_census_active) {
+    bool skip = false;
+    if (mg_pz_census_active || mg_pz_attrib_fastpath_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const bool exact = tracked && current_vertex_array_state().attribs[index].enabled == GL_TRUE;
-        mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact);
+        skip = mg_pz_attrib_fastpath_active && exact && driver_vao_matches_frontend();
+        MG_PZ_CENSUS(mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact, skip));
     }
     if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_TRUE;
+    if (skip) return;
     GLES.glEnableVertexAttribArray(index);
 }
 
 NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index)
-    if (mg_pz_census_active) {
+    bool skip = false;
+    if (mg_pz_census_active || mg_pz_attrib_fastpath_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const bool exact = tracked && current_vertex_array_state().attribs[index].enabled == GL_FALSE;
-        mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact);
+        skip = mg_pz_attrib_fastpath_active && exact && driver_vao_matches_frontend();
+        MG_PZ_CENSUS(mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact, skip));
     }
     if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_FALSE;
+    if (skip) return;
     GLES.glDisableVertexAttribArray(index);
 }
 

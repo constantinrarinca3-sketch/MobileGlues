@@ -49,3 +49,13 @@ MOBILEGLUES_PZ_VAO_FASTPATH=0  # disabled (default)
 
 It skips a repeated bind only when both MobileGlues' frontend VAO and the real driver VAO are known
 to match. Internal renderer binds update the same per-context shadow. Every other case reaches GLES.
+
+The first vertex-attrib fast path is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_ATTRIB_FASTPATH=1  # enabled
+MOBILEGLUES_PZ_ATTRIB_FASTPATH=0  # disabled (default)
+```
+
+It currently removes only exact repeated `glEnableVertexAttribArray` and
+`glDisableVertexAttribArray` calls, and only while the real driver VAO is confirmed.
