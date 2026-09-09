@@ -9,6 +9,7 @@
 #include "context.h"
 #include "../config/settings.h"
 #include "../gl/FSR1/FSR1.h"
+#include "../gl/buffer.h"
 #include "../gl/log.h"
 #include "../gl/mg.h"
 #include "../gl/pz_census.h"

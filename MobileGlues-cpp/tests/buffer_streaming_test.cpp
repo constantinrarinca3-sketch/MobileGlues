@@ -11,6 +11,7 @@ bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = true;
 bool mg_pz_buffer_discard_coalesce_active = true;
+bool mg_pz_gpu_buffer_pool_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 

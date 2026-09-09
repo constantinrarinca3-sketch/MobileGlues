@@ -321,6 +321,7 @@ void setupBufferTextureUniforms(GLuint program) {
 void prepareForDraw() {
     LOG_D("prepareForDraw...")
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_gpu_buffer_pool_note_draw();
     mg_prepare_pz_alpha_test(gl_state->current_program);
 #endif
     if (hardware->emulate_texture_buffer) {
@@ -583,6 +584,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         if (draw_arrays_as_triangles(first, count, -1)) return;
 #if defined(ZOMDROID_EXPERIMENTAL)
     } else {
+        mg_pz_gpu_buffer_pool_note_draw();
         // Non-quad array draws did not previously pay the buffer-texture and
         // trace preparation cost. Only the alpha semantic applies to them.
         mg_prepare_pz_alpha_test(gl_state->current_program);
@@ -600,6 +602,7 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
         if (draw_arrays_as_triangles(first, count, instancecount)) return;
 #if defined(ZOMDROID_EXPERIMENTAL)
     } else {
+        mg_pz_gpu_buffer_pool_note_draw();
         mg_prepare_pz_alpha_test(gl_state->current_program);
 #endif
     }
