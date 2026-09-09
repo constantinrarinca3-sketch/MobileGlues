@@ -34,6 +34,119 @@ namespace {
 // which borrows the same one.
 const GLint kBufferTextureUnit = 15;
 
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+constexpr unsigned int k_texture_trace_draws_per_program = 12;
+constexpr unsigned int k_texture_trace_line_limit = 256;
+thread_local UnorderedMap<GLuint, unsigned int> g_texture_trace_program_draws;
+thread_local UnorderedMap<std::string, bool> g_texture_trace_seen;
+thread_local unsigned int g_texture_trace_lines = 0;
+
+bool sampler_binding_for_type(GLenum type, GLenum& target, GLenum& binding) {
+    switch (type) {
+    case GL_SAMPLER_2D:
+    case GL_SAMPLER_2D_SHADOW:
+    case GL_INT_SAMPLER_2D:
+    case GL_UNSIGNED_INT_SAMPLER_2D:
+        target = GL_TEXTURE_2D;
+        binding = GL_TEXTURE_BINDING_2D;
+        return true;
+    case GL_SAMPLER_3D:
+    case GL_INT_SAMPLER_3D:
+    case GL_UNSIGNED_INT_SAMPLER_3D:
+        target = GL_TEXTURE_3D;
+        binding = GL_TEXTURE_BINDING_3D;
+        return true;
+    case GL_SAMPLER_CUBE:
+    case GL_SAMPLER_CUBE_SHADOW:
+    case GL_INT_SAMPLER_CUBE:
+    case GL_UNSIGNED_INT_SAMPLER_CUBE:
+        target = GL_TEXTURE_CUBE_MAP;
+        binding = GL_TEXTURE_BINDING_CUBE_MAP;
+        return true;
+    case GL_SAMPLER_2D_ARRAY:
+    case GL_SAMPLER_2D_ARRAY_SHADOW:
+    case GL_INT_SAMPLER_2D_ARRAY:
+    case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
+        target = GL_TEXTURE_2D_ARRAY;
+        binding = GL_TEXTURE_BINDING_2D_ARRAY;
+        return true;
+    default:
+        return false;
+    }
+}
+
+void trace_texture_state_before_draw(GLuint program) {
+    if (program == 0 || g_texture_trace_lines >= k_texture_trace_line_limit) return;
+    unsigned int& sampled_draws = g_texture_trace_program_draws[program];
+    if (sampled_draws >= k_texture_trace_draws_per_program) return;
+    ++sampled_draws;
+
+    GLint active_uniforms = 0;
+    GLES.glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &active_uniforms);
+    const GLint use_texture_location = GLES.glGetUniformLocation(program, "useTexture");
+    GLint use_texture_value = -1;
+    if (use_texture_location >= 0) GLES.glGetUniformiv(program, use_texture_location, &use_texture_value);
+
+    // Query and restore the driver's real active unit. Restoring the shadow here
+    // would make a diagnostic build alter rendering precisely when that shadow is
+    // the state that has diverged and needs to be exposed.
+    GLint driver_active_texture = GL_TEXTURE0;
+    GLES.glGetIntegerv(GL_ACTIVE_TEXTURE, &driver_active_texture);
+    const int driver_active_unit = driver_active_texture - GL_TEXTURE0;
+    const int shadow_active_unit = mg_driver_active_texture_unit();
+
+    for (GLint index = 0; index < active_uniforms && g_texture_trace_lines < k_texture_trace_line_limit; ++index) {
+        GLchar name[192] = {};
+        GLsizei name_length = 0;
+        GLint array_size = 0;
+        GLenum type = 0;
+        GLES.glGetActiveUniform(program, static_cast<GLuint>(index), sizeof(name), &name_length, &array_size, &type,
+                                name);
+
+        GLenum target = 0;
+        GLenum binding = 0;
+        if (!sampler_binding_for_type(type, target, binding)) continue;
+
+        const GLint location = GLES.glGetUniformLocation(program, name);
+        GLint unit = -1;
+        if (location >= 0) GLES.glGetUniformiv(program, location, &unit);
+
+        GLuint shadow_texture = 0;
+        const bool shadow_valid = unit >= 0 && unit < mg_max_texture_units() &&
+                                  mg_driver_texture_binding_at_unit(unit, target, &shadow_texture);
+
+        GLint driver_texture = -1;
+        if (unit >= 0 && unit < mg_max_texture_units()) {
+            GLES.glActiveTexture(GL_TEXTURE0 + unit);
+            GLES.glGetIntegerv(binding, &driver_texture);
+            GLES.glActiveTexture(driver_active_texture);
+        }
+
+        const TextureObject* texture =
+            driver_texture > 0 ? mgGetTexObjectByID(static_cast<GLuint>(driver_texture)) : nullptr;
+        const bool mismatch = shadow_valid && driver_texture >= 0 && shadow_texture != static_cast<GLuint>(driver_texture);
+        const bool dimensions_missing = texture && (texture->width <= 0 || texture->height <= 0);
+        const std::string state_key = std::to_string(program) + ":" + name + ":" + std::to_string(unit) + ":" +
+                                      std::to_string(driver_texture == 0) + ":" + std::to_string(shadow_valid) + ":" +
+                                      std::to_string(mismatch) + ":" + std::to_string(dimensions_missing);
+        if (g_texture_trace_seen.find(state_key) != g_texture_trace_seen.end()) continue;
+        g_texture_trace_seen[state_key] = true;
+
+        ++g_texture_trace_lines;
+        write_log("ZOMDROID_TEXTURE_STATE seq=%u program=%u sampler=%s loc=%d unit=%d useTexture=%d "
+                  "target=0x%x app_active=%u shadow_active=%d driver_active=%d shadow_valid=%d shadow_tex=%u "
+                  "driver_tex=%d tracked=%d size=%dx%d format=0x%x",
+                  g_texture_trace_lines, program, name, location, unit, use_texture_value, target,
+                  gl_state ? gl_state->current_tex_unit : 0, shadow_active_unit, driver_active_unit,
+                  shadow_valid ? 1 : 0, shadow_texture, driver_texture, texture ? 1 : 0,
+                  texture ? texture->width : 0, texture ? texture->height : 0,
+                  texture ? texture->internal_format : 0);
+    }
+}
+#else
+void trace_texture_state_before_draw(GLuint) {}
+#endif
+
 // Everything the two program maps have to say about one program, held so the
 // sampler list is not copied out of the map on every draw.
 //
@@ -202,6 +315,7 @@ void prepareForDraw() {
     if (hardware->emulate_texture_buffer) {
         setupBufferTextureUniforms(gl_state->current_program);
     }
+    trace_texture_state_before_draw(gl_state->current_program);
 }
 
 namespace {
