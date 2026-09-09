@@ -95,6 +95,20 @@ partial maps, immutable storage and unknown buffer names keep the normal driver 
 the first map attempts emit `ZOMDROID_PZ_BUFFER_STREAMING_PATTERN` with the access flags, tracked size
 and exact fallback reason.
 
+Repeated discard-then-map cycles can additionally be coalesced:
+
+```text
+MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=1  # remove the redundant discard call
+MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=0  # submit it directly (default)
+```
+
+After a buffer has completed one qualifying CPU-staged upload, a same-size, same-usage
+`glBufferData(..., NULL, ...)` before its next staged upload stays in the frontend. The staged unmap
+replaces the store with the completed bytes, collapsing the discard and upload into one driver call.
+This applies only to mutable array and element buffers and requires
+`MOBILEGLUES_PZ_BUFFER_STREAMING=1`. Milestones are reported as
+`ZOMDROID_PZ_BUFFER_DISCARD_COALESCE`.
+
 The fixed-state shadow is independently opt-in:
 
 ```text

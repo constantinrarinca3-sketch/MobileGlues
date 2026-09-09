@@ -10,6 +10,7 @@ bool mg_pz_vao_fastpath_active = false;
 bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = true;
+bool mg_pz_buffer_discard_coalesce_active = true;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 
@@ -25,6 +26,9 @@ void mg_pz_census_buffer_map(GLsizeiptr) {}
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable);
 void* mg_test_try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled);
 void mg_test_cancel_staging_map(GLuint buffer);
+void mg_test_complete_staging_upload(GLuint buffer);
+bool mg_test_try_elide_buffer_discard(GLenum target, GLuint buffer, GLsizeiptr size, GLenum usage);
+bool mg_test_buffer_discard_is_elided(GLuint buffer);
 
 static void expect(bool condition, const char* message) {
     if (condition) return;
@@ -55,7 +59,17 @@ int main() {
     handled = false;
     pointer = mg_test_try_staging_map(buffer, 0, 4096, write_full_range, &handled);
     expect(handled && pointer != nullptr, "a full-buffer invalidated range uses CPU staging");
-    mg_test_cancel_staging_map(buffer);
+    mg_test_complete_staging_upload(buffer);
+
+    expect(mg_test_try_elide_buffer_discard(GL_ARRAY_BUFFER, buffer, 4096, GL_STREAM_DRAW),
+           "learned same-size array-buffer discard is coalesced");
+    expect(mg_test_buffer_discard_is_elided(buffer), "coalesced discard remains paired with the staged upload");
+    expect(!mg_test_try_elide_buffer_discard(GL_UNIFORM_BUFFER, buffer, 4096, GL_STREAM_DRAW),
+           "non-vertex buffer targets stay on the direct path");
+    expect(!mg_test_try_elide_buffer_discard(GL_ARRAY_BUFFER, buffer, 2048, GL_STREAM_DRAW),
+           "size changes stay on the direct path");
+    expect(!mg_test_try_elide_buffer_discard(GL_ARRAY_BUFFER, buffer, 4096, GL_DYNAMIC_DRAW),
+           "usage changes stay on the direct path");
 
     handled = true;
     pointer = mg_test_try_staging_map(buffer, 16, 4080, write_discard, &handled);

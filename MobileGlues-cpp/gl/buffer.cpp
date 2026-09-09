@@ -110,6 +110,10 @@ struct buffer_staging_map_t {
     GLsizeiptr size = 0;
     GLbitfield access = 0;
     bool mapped = false;
+    bool completed_upload = false;
+    bool discard_elided = false;
+    GLsizeiptr discard_size = 0;
+    GLenum discard_usage = GL_STATIC_DRAW;
 };
 
 struct buffer_streaming_stats_t {
@@ -120,6 +124,14 @@ struct buffer_streaming_stats_t {
     unsigned long long miss_storage = 0;
     unsigned long long miss_busy = 0;
     unsigned long long allocation_failures = 0;
+};
+
+struct buffer_discard_coalesce_stats_t {
+    unsigned long long elided = 0;
+    unsigned long long paired = 0;
+    unsigned long long fallbacks = 0;
+    unsigned long long superseded = 0;
+    unsigned long long bytes = 0;
 };
 #endif
 
@@ -167,6 +179,7 @@ struct buffer_ctx_state_t { // private to one context
     ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
     std::vector<client_attrib_snapshot_t> client_attrib_stack;
     buffer_streaming_stats_t buffer_streaming_stats;
+    buffer_discard_coalesce_stats_t buffer_discard_coalesce_stats;
     unsigned long long client_attrib_push_hits = 0;
     unsigned long long client_attrib_pop_hits = 0;
     unsigned long long client_attrib_restore_hits = 0;
@@ -563,6 +576,57 @@ static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, 
     }
 }
 
+static void trace_discard_coalesce(GLuint buffer, GLsizeiptr size, const char* result,
+                                   unsigned long long event_count) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const buffer_discard_coalesce_stats_t& stats = g_bc->buffer_discard_coalesce_stats;
+    if (event_count == 1 || event_count == 1024 || event_count == 65536) {
+        write_log("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE elided=%llu paired=%llu fallback=%llu "
+                  "superseded=%llu bytes=%llu buffer=%u size=%lld result=%s",
+                  stats.elided, stats.paired, stats.fallbacks, stats.superseded, stats.bytes, buffer,
+                  static_cast<long long>(size), result);
+    }
+#else
+    (void)buffer;
+    (void)size;
+    (void)result;
+    (void)event_count;
+#endif
+}
+
+static bool try_elide_buffer_discard(GLenum target, GLuint buffer, GLsizeiptr size, const void* data, GLenum usage) {
+    if (!mg_pz_buffer_discard_coalesce_active || !mg_pz_buffer_streaming_active || data != nullptr || size <= 0 ||
+        (target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER) || buffer == 0 || !has_buffer(buffer) ||
+        buffer >= g_buffer_datasize.size() || g_buffer_datasize[buffer] != static_cast<size_t>(size) ||
+        buffer >= g_buffer_usage.size() || g_buffer_usage[buffer] != usage || buffer >= g_buffer_storage_kind.size() ||
+        g_buffer_storage_kind[buffer] != buffer_storage_kind_t::mutable_store)
+        return false;
+
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found == g_buffer_staging_maps.end() || found->second.mapped || !found->second.completed_upload) return false;
+
+    buffer_staging_map_t& staging = found->second;
+    staging.discard_elided = true;
+    staging.discard_size = size;
+    staging.discard_usage = usage;
+    buffer_discard_coalesce_stats_t& stats = g_bc->buffer_discard_coalesce_stats;
+    ++stats.elided;
+    stats.bytes += static_cast<unsigned long long>(size);
+    trace_discard_coalesce(buffer, size, "deferred_to_staged_upload", stats.elided);
+    return true;
+}
+
+static void flush_elided_discard(GLenum target, GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found == g_buffer_staging_maps.end() || !found->second.discard_elided) return;
+    buffer_staging_map_t& staging = found->second;
+    GLES.glBufferData(target, staging.discard_size, nullptr, staging.discard_usage);
+    staging.discard_elided = false;
+    ++g_bc->buffer_discard_coalesce_stats.fallbacks;
+    trace_discard_coalesce(buffer, staging.discard_size, "fallback",
+                           g_bc->buffer_discard_coalesce_stats.fallbacks);
+}
+
 #if defined(MOBILEGLUES_TESTING)
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable) {
     record_buffer_storage(buffer, size, usage,
@@ -578,6 +642,23 @@ void mg_test_cancel_staging_map(GLuint buffer) {
     if (found == g_buffer_staging_maps.end()) return;
     found->second.mapped = false;
     found->second.pointer = nullptr;
+}
+
+void mg_test_complete_staging_upload(GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found == g_buffer_staging_maps.end()) return;
+    found->second.mapped = false;
+    found->second.pointer = nullptr;
+    found->second.completed_upload = true;
+}
+
+bool mg_test_try_elide_buffer_discard(GLenum target, GLuint buffer, GLsizeiptr size, GLenum usage) {
+    return try_elide_buffer_discard(target, buffer, size, nullptr, usage);
+}
+
+bool mg_test_buffer_discard_is_elided(GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    return found != g_buffer_staging_maps.end() && found->second.discard_elided;
 }
 #endif
 #endif
@@ -1429,6 +1510,18 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
     }
     const bool immutable_storage = frontend_buffer < g_buffer_storage_kind.size() &&
                                    g_buffer_storage_kind[frontend_buffer] == buffer_storage_kind_t::immutable_store;
+    if (!immutable_storage && try_elide_buffer_discard(target, frontend_buffer, size, data, usage)) {
+        record_buffer_storage(frontend_buffer, size, usage, buffer_storage_kind_t::mutable_store);
+        return;
+    }
+    const auto staged = g_buffer_staging_maps.find(frontend_buffer);
+    if (staged != g_buffer_staging_maps.end() && staged->second.discard_elided) {
+        // This new store supersedes the deferred undefined store completely.
+        staged->second.discard_elided = false;
+        ++g_bc->buffer_discard_coalesce_stats.superseded;
+        trace_discard_coalesce(frontend_buffer, size, "superseded",
+                               g_bc->buffer_discard_coalesce_stats.superseded);
+    }
 #endif
     borrowed_target_t t(target);
     GLES.glBufferData(t.target, size, data, usage);
@@ -1455,6 +1548,9 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void
         mg_set_gl_error(GL_INVALID_OPERATION);
         return;
     }
+    // A partial update needs the discard to exist first. This is an uncommon
+    // deviation from the learned discard/full-map sequence and keeps its old path.
+    flush_elided_discard(target, frontend_buffer);
 #endif
     borrowed_target_t t(target);
     GLES.glBufferSubData(t.target, offset, size, data);
@@ -1613,6 +1709,11 @@ void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
         mg_set_gl_error(GL_INVALID_OPERATION);
         return nullptr;
     }
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // A map that missed the CPU staging gate still needs the driver's orphaning
+    // operation before it can touch the store.
+    flush_elided_discard(target, frontend_buffer);
+#endif
     borrowed_target_t t(target);
     void* ptr = GLES.glMapBufferRange(t.target, offset, length, access);
     if (ptr) MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
@@ -1632,6 +1733,13 @@ GLboolean glUnmapBuffer(GLenum target) {
         const GLenum usage = frontend_buffer < g_buffer_usage.size() ? g_buffer_usage[frontend_buffer]
                                                                      : GL_STREAM_DRAW;
         GLES.glBufferData(t.target, staged->second.size, staged->second.pointer, usage);
+        if (staged->second.discard_elided) {
+            staged->second.discard_elided = false;
+            ++g_bc->buffer_discard_coalesce_stats.paired;
+            trace_discard_coalesce(frontend_buffer, staged->second.size, "paired_upload",
+                                   g_bc->buffer_discard_coalesce_stats.paired);
+        }
+        staged->second.completed_upload = true;
         staged->second.mapped = false;
         staged->second.pointer = nullptr;
         trace_zomdroid_buffer_call("UNMAP_STAGING_UPLOAD", target, 0, staged->second.size, staged->second.access,
@@ -1675,6 +1783,13 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
         const bool already_immutable = frontend_buffer < g_buffer_storage_kind.size() &&
                                        g_buffer_storage_kind[frontend_buffer] ==
                                            buffer_storage_kind_t::immutable_store;
+        const auto staged = g_buffer_staging_maps.find(frontend_buffer);
+        if (staged != g_buffer_staging_maps.end() && staged->second.discard_elided) {
+            staged->second.discard_elided = false;
+            ++g_bc->buffer_discard_coalesce_stats.superseded;
+            trace_discard_coalesce(frontend_buffer, size, "superseded_by_storage",
+                                   g_bc->buffer_discard_coalesce_stats.superseded);
+        }
 #endif
         borrowed_target_t t(target);
         GLES.glBufferStorageEXT(t.target, size, data, flags);
