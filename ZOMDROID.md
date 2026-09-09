@@ -108,19 +108,6 @@ replaces the store with the completed bytes, collapsing the discard and upload i
 This applies only to mutable array and element buffers and requires
 `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. Milestones are reported as
 `ZOMDROID_PZ_BUFFER_DISCARD_COALESCE`.
-The fence-backed GPU buffer pool builds on that CPU staging path and is separately opt-in:
-
-```text
-MOBILEGLUES_PZ_GPU_BUFFER_POOL=1  # three-slot fence-backed dynamic pool
-MOBILEGLUES_PZ_GPU_BUFFER_POOL=0  # keep one GLES buffer object (default)
-```
-
-Enable it together with `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. For full write-discard maps of vertex
-and index buffers, MobileGlues records which backing objects were referenced by draws. Before rewriting a backing referenced by draws, MobileGlues inserts one shared GPU fence for that draw group. A zero-timeout fence check reuses a signaled backing or rotates to another GLES buffer object without waiting. At most three objects are created for a hot logical buffer, and if all
-three remain recent the upload uses normal orphaning instead of waiting. VAO vertex and element
-bindings are repaired when a backing rotates and when a tracked VAO is rebound. Buffers used as
-uniform, storage, indirect, pixel-transfer or texture buffers and buffers shared by multiple GL
-contexts stay on the original path. If all three objects remain busy, the upload falls back to normal orphaning without waiting. Decisions and fence results are reported as `ZOMDROID_PZ_GPU_BUFFER_POOL`.
 
 The fixed-state shadow is independently opt-in:
 

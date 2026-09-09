@@ -20,7 +20,6 @@ extern bool mg_pz_attrib_fastpath_active;
 extern bool mg_pz_uniform_fastpath_active;
 extern bool mg_pz_buffer_streaming_active;
 extern bool mg_pz_buffer_discard_coalesce_active;
-extern bool mg_pz_gpu_buffer_pool_active;
 extern bool mg_pz_state_shadow_active;
 extern bool mg_pz_runtime_mipmap_skip_active;
 
