@@ -33,6 +33,120 @@ enum class ShouldGenerateFSState : int {
 
 UnorderedMap<GLuint, ShouldGenerateFSState> program_map_should_generate_fs;
 
+using uniform_default_value = mg_glsl_compat::uniform_default_value;
+using shader_uniform_defaults = UnorderedMap<GLuint, std::vector<uniform_default_value>>;
+UnorderedMap<GLuint, shader_uniform_defaults> program_map_uniform_defaults;
+
+namespace {
+
+bool has_program_uniform_entry_points() {
+    return GLES.glProgramUniform1fv && GLES.glProgramUniform2fv && GLES.glProgramUniform3fv &&
+           GLES.glProgramUniform4fv && GLES.glProgramUniform1iv && GLES.glProgramUniform2iv &&
+           GLES.glProgramUniform3iv && GLES.glProgramUniform4iv;
+}
+
+void apply_float_default(GLuint program, GLint location, const uniform_default_value& value,
+                         const GLfloat* components, bool direct) {
+    switch (value.components) {
+    case 1:
+        direct ? GLES.glProgramUniform1fv(program, location, 1, components)
+               : GLES.glUniform1fv(location, 1, components);
+        break;
+    case 2:
+        direct ? GLES.glProgramUniform2fv(program, location, 1, components)
+               : GLES.glUniform2fv(location, 1, components);
+        break;
+    case 3:
+        direct ? GLES.glProgramUniform3fv(program, location, 1, components)
+               : GLES.glUniform3fv(location, 1, components);
+        break;
+    case 4:
+        direct ? GLES.glProgramUniform4fv(program, location, 1, components)
+               : GLES.glUniform4fv(location, 1, components);
+        break;
+    }
+}
+
+void apply_integer_default(GLuint program, GLint location, const uniform_default_value& value,
+                           const GLint* components, bool direct) {
+    switch (value.components) {
+    case 1:
+        direct ? GLES.glProgramUniform1iv(program, location, 1, components)
+               : GLES.glUniform1iv(location, 1, components);
+        break;
+    case 2:
+        direct ? GLES.glProgramUniform2iv(program, location, 1, components)
+               : GLES.glUniform2iv(location, 1, components);
+        break;
+    case 3:
+        direct ? GLES.glProgramUniform3iv(program, location, 1, components)
+               : GLES.glUniform3iv(location, 1, components);
+        break;
+    case 4:
+        direct ? GLES.glProgramUniform4iv(program, location, 1, components)
+               : GLES.glUniform4iv(location, 1, components);
+        break;
+    }
+}
+
+void apply_uniform_defaults(GLuint program) {
+    const auto program_it = program_map_uniform_defaults.find(program);
+    if (program_it == program_map_uniform_defaults.end() || program_it->second.empty()) return;
+
+    GLint linked = GL_FALSE;
+    GLES.glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) return;
+
+    const bool direct = has_program_uniform_entry_points();
+    GLint previous_program = 0;
+    if (!direct) {
+        GLES.glGetIntegerv(GL_CURRENT_PROGRAM, &previous_program);
+        if (static_cast<GLuint>(previous_program) != program) GLES.glUseProgram(program);
+    }
+
+    unsigned int applied = 0;
+    for (const auto& shader_entry : program_it->second) {
+        for (const auto& value : shader_entry.second) {
+            const char* requested_name = value.name.c_str();
+            GLint location = GLES.glGetUniformLocation(program, requested_name);
+            if (location < 0) {
+                std::string remapped_name;
+                const char* driver_name =
+                    mg_glsl_compat::remap_texture_sampler_uniform_name(requested_name, remapped_name);
+                if (driver_name != requested_name) location = GLES.glGetUniformLocation(program, driver_name);
+            }
+            if (location < 0) continue;
+
+            if (value.integer) {
+                std::array<GLint, 4> components{};
+                for (unsigned int i = 0; i < value.components; ++i)
+                    components[i] = static_cast<GLint>(value.values[i]);
+                apply_integer_default(program, location, value, components.data(), direct);
+            } else {
+                std::array<GLfloat, 4> components{};
+                for (unsigned int i = 0; i < value.components; ++i)
+                    components[i] = static_cast<GLfloat>(value.values[i]);
+                apply_float_default(program, location, value, components.data(), direct);
+            }
+            ++applied;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+            if (value.name == "useTexture") {
+                write_log("ZOMDROID_UNIFORM_DEFAULT program=%u name=useTexture value=%d location=%d", program,
+                          static_cast<int>(value.values[0]), location);
+            }
+#endif
+        }
+    }
+
+    if (!direct && static_cast<GLuint>(previous_program) != program)
+        GLES.glUseProgram(static_cast<GLuint>(previous_program));
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (applied != 0) write_log("ZOMDROID_UNIFORM_DEFAULTS program=%u applied=%u", program, applied);
+#endif
+}
+
+} // namespace
+
 std::string updateLayoutLocation(const std::string& esslSource, GLuint color, const char* name) {
     const std::string& shaderCode = esslSource;
 
@@ -154,6 +268,7 @@ void glLinkProgram(GLuint program) {
     }
 
     GLES.glLinkProgram(program);
+    apply_uniform_defaults(program);
 
     CHECK_GL_ERROR
 }
@@ -196,6 +311,13 @@ void glAttachShader(GLuint program, GLuint shader) {
     if (hardware->emulate_texture_buffer && shader_map_is_sampler_buffer_emulated[shader])
         program_map_is_sampler_buffer_emulated[program] = true;
 
+    auto& defaults_by_shader = program_map_uniform_defaults[program];
+    const auto* defaults = mg_shader_uniform_defaults(shader);
+    if (defaults && !defaults->empty())
+        defaults_by_shader[shader] = *defaults;
+    else
+        defaults_by_shader.erase(shader);
+
     GLint type = 0;
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &type);
     auto& should_gen_fs_map = program_map_should_generate_fs;
@@ -218,12 +340,25 @@ void glAttachShader(GLuint program, GLuint shader) {
     CHECK_GL_ERROR
 }
 
+void mg_shader_detached(GLuint program, GLuint shader) {
+    const auto program_it = program_map_uniform_defaults.find(program);
+    if (program_it != program_map_uniform_defaults.end()) program_it->second.erase(shader);
+}
+
 extern UnorderedMap<GLuint, SamplerInfo> g_samplerCacheForSamplerBuffer;
+
+void mg_program_deleted(GLuint program) {
+    program_map_uniform_defaults.erase(program);
+    program_map_is_sampler_buffer_emulated.erase(program);
+    program_map_should_generate_fs.erase(program);
+    g_samplerCacheForSamplerBuffer.erase(program);
+}
 
 GLuint glCreateProgram() {
     LOG()
     LOG_D("glCreateProgram")
     GLuint program = GLES.glCreateProgram();
+    program_map_uniform_defaults.erase(program);
     if (hardware->emulate_texture_buffer) {
         program_map_is_sampler_buffer_emulated[program] = false;
         if (g_samplerCacheForSamplerBuffer.find(program) != g_samplerCacheForSamplerBuffer.end()) {

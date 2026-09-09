@@ -25,9 +25,29 @@
 struct shader_t shaderInfo;
 
 UnorderedMap<GLuint, bool> shader_map_is_sampler_buffer_emulated;
+UnorderedMap<GLuint, std::vector<mg_glsl_compat::uniform_default_value>> shader_map_uniform_defaults;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 UnorderedMap<GLuint, bool> zomdroid_tile_depth_shader;
 #endif
+
+const std::vector<mg_glsl_compat::uniform_default_value>* mg_shader_uniform_defaults(GLuint shader) {
+    const auto it = shader_map_uniform_defaults.find(shader);
+    return it == shader_map_uniform_defaults.end() ? nullptr : &it->second;
+}
+
+void mg_shader_deleted(GLuint shader) {
+    shader_map_uniform_defaults.erase(shader);
+    shader_map_is_sampler_buffer_emulated.erase(shader);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    zomdroid_tile_depth_shader.erase(shader);
+#endif
+    if (shaderInfo.id == shader) {
+        shaderInfo.id = 0;
+        shaderInfo.converted.clear();
+        shaderInfo.frag_data_changed_converted.clear();
+        shaderInfo.frag_data_changed = 0;
+    }
+}
 
 namespace {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
@@ -202,12 +222,14 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     int conversion_result = 0;
     const char* shader_route = "direct";
 
-    if (is_direct_shader(glsl_src.c_str())) {
+    const bool direct_shader = is_direct_shader(glsl_src.c_str());
+    if (direct_shader) {
         LOG_D("[INFO] [Shader] Direct shader source: ")
         LOG_D("%s", glsl_src.c_str())
         essl_src = glsl_src;
     } else {
         shader_route = "converted";
+        shader_map_uniform_defaults[shader] = mg_glsl_compat::collect_uniform_defaults(glsl_src);
         int glsl_version = getGLSLVersion(glsl_src.c_str());
         LOG_D("[INFO] [Shader] Shader source: ")
         LOG_D("%s", glsl_src.c_str())
@@ -223,6 +245,7 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         if (conversion_result < 0) shader_route = "fallback-original";
         LOG_D("\n[INFO] [Shader] Converted Shader source: \n%s", essl_src.c_str())
     }
+    if (direct_shader) shader_map_uniform_defaults.erase(shader);
     if (!essl_src.empty()) {
         const bool version_normalized = normalize_essl_version_directive(essl_src);
         trace_zomdroid_shader_source(shader, shader_type, count, l, shader_route, conversion_result,

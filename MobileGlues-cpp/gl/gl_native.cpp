@@ -9,6 +9,8 @@
 #include <GL/gl.h>
 #include "glcorearb.h"
 #include "log.h"
+#include "program.h"
+#include "shader.h"
 #include "../gles/loader.h"
 #include "mg.h"
 #include "glsl/shader_compat.h"
@@ -46,14 +48,14 @@ NATIVE_FUNCTION_HEAD(void, glCompressedTexSubImage2D, GLenum target, GLint level
 NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glDeleteBuffers, GLsizei n, const GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteBuffers, n,buffers)
 // NATIVE_FUNCTION_HEAD(void, glDeleteFramebuffers, GLsizei n, const GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteFramebuffers, n,framebuffers)   // implemented in gl/framebuffer.cpp
-NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
+NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program) mg_program_deleted(program); NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 NATIVE_FUNCTION_HEAD(void, glDeleteRenderbuffers, GLsizei n, const GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteRenderbuffers, n,renderbuffers)
-NATIVE_FUNCTION_HEAD(void, glDeleteShader, GLuint shader) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteShader, shader)
+NATIVE_FUNCTION_HEAD(void, glDeleteShader, GLuint shader) mg_shader_deleted(shader); NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteShader, shader)
 //NATIVE_FUNCTION_HEAD(void, glDeleteTextures, GLsizei n, const GLuint *textures) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteTextures, n,textures)
 NATIVE_FUNCTION_HEAD(void, glDepthFunc, GLenum func) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthFunc, func)
 NATIVE_FUNCTION_HEAD(void, glDepthMask, GLboolean flag) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthMask, flag)
 NATIVE_FUNCTION_HEAD(void, glDepthRangef, GLfloat n, GLfloat f) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthRangef, n,f)
-NATIVE_FUNCTION_HEAD(void, glDetachShader, GLuint program, GLuint shader) NATIVE_FUNCTION_END_NO_RETURN(void, glDetachShader, program,shader)
+NATIVE_FUNCTION_HEAD(void, glDetachShader, GLuint program, GLuint shader) mg_shader_detached(program, shader); NATIVE_FUNCTION_END_NO_RETURN(void, glDetachShader, program,shader)
 // NATIVE_FUNCTION_HEAD(void, glDisable, GLenum cap) NATIVE_FUNCTION_END_NO_RETURN(void, glDisable, cap)   // moved to gl/enable.cpp (virtual enable state table)
 NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index) NATIVE_FUNCTION_END_NO_RETURN(void, glDisableVertexAttribArray, index)
 // NATIVE_FUNCTION_HEAD(void, glDrawArrays, GLenum mode, GLint first, GLsizei count) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawArrays, mode,first,count)   // moved to gl/drawing.cpp: converts desktop GL_QUADS to GLES triangles

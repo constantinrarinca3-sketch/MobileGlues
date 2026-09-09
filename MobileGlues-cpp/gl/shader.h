@@ -9,6 +9,8 @@
 
 #include <GL/gl.h>
 #include <string>
+#include <vector>
+#include "glsl/shader_compat.h"
 
 struct shader_t {
     GLuint id;
@@ -22,6 +24,9 @@ struct shader_t {
 };
 
 extern struct shader_t shaderInfo;
+
+const std::vector<mg_glsl_compat::uniform_default_value>* mg_shader_uniform_defaults(GLuint shader);
+void mg_shader_deleted(GLuint shader);
 
 #ifdef __cplusplus
 extern "C"
