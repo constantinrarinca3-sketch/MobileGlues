@@ -90,4 +90,18 @@ MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping (default)
 It intercepts only complete write-only invalidating maps of mutable, tracked buffers. The application
 writes into aligned CPU staging memory; unmap replaces the driver's store and uploads the completed
 buffer in one call, avoiding a direct map/unmap synchronization with an in-flight GPU buffer. Reads,
-partial maps, immutable storage and unknown buffer names keep the normal driver path.
+partial maps, immutable storage and unknown buffer names keep the normal driver path. While enabled,
+the first map attempts emit `ZOMDROID_PZ_BUFFER_STREAMING_PATTERN` with the access flags, tracked size
+and exact fallback reason.
+
+The fixed-state shadow is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_STATE_SHADOW=1  # redundant fixed-state calls skipped
+MOBILEGLUES_PZ_STATE_SHADOW=0  # direct driver calls (default)
+```
+
+It tracks blend equations/functions, blend color, color mask, cull/front face, depth function/mask
+and front/back stencil state per current context. Only exact repeats are skipped. Combined and
+separate blend/stencil entry points update the same semantic state. Skip milestones are logged as
+`ZOMDROID_PZ_STATE_SHADOW_SKIP`.

@@ -16,11 +16,238 @@
 #include "../gles/loader.h"
 #include "mg.h"
 #include "glsl/shader_compat.h"
+#include "../egl/context.h"
 #include <GLES3/gl32.h>
 
 #define DEBUG 0
 
 namespace {
+#if defined(ZOMDROID_EXPERIMENTAL)
+struct stencil_face_shadow_t {
+    bool func_known = false;
+    GLenum func = 0;
+    GLint reference = 0;
+    GLuint value_mask = 0;
+    bool write_mask_known = false;
+    GLuint write_mask = 0;
+    bool op_known = false;
+    GLenum stencil_fail = 0;
+    GLenum depth_fail = 0;
+    GLenum depth_pass = 0;
+};
+
+struct fixed_state_shadow_t {
+    unsigned long long context_id = 0;
+    unsigned long long calls = 0;
+    unsigned long long skipped = 0;
+
+    bool blend_color_known = false;
+    GLfloat blend_color[4] = {};
+    bool blend_equation_known = false;
+    GLenum blend_equation_rgb = 0;
+    GLenum blend_equation_alpha = 0;
+    bool blend_func_known = false;
+    GLenum blend_src_rgb = 0;
+    GLenum blend_dst_rgb = 0;
+    GLenum blend_src_alpha = 0;
+    GLenum blend_dst_alpha = 0;
+    bool color_mask_known = false;
+    GLboolean color_mask[4] = {};
+    bool cull_face_known = false;
+    GLenum cull_face = 0;
+    bool depth_func_known = false;
+    GLenum depth_func = 0;
+    bool depth_mask_known = false;
+    GLboolean depth_mask = GL_FALSE;
+    bool front_face_known = false;
+    GLenum front_face = 0;
+    stencil_face_shadow_t stencil_front;
+    stencil_face_shadow_t stencil_back;
+};
+
+thread_local fixed_state_shadow_t g_fixed_state_shadow;
+
+fixed_state_shadow_t* fixed_state_shadow() {
+    if (!mg_pz_state_shadow_active || !g_current_ctx) return nullptr;
+    if (g_fixed_state_shadow.context_id != g_current_ctx->id) {
+        g_fixed_state_shadow = {};
+        g_fixed_state_shadow.context_id = g_current_ctx->id;
+    }
+    return &g_fixed_state_shadow;
+}
+
+bool fixed_state_result(fixed_state_shadow_t& state, bool exact, const char* function) {
+    ++state.calls;
+    if (!exact) return false;
+    ++state.skipped;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (state.skipped == 1 || state.skipped == 1024 || state.skipped == 65536) {
+        write_log("ZOMDROID_PZ_STATE_SHADOW_SKIP function=%s skipped=%llu calls=%llu", function, state.skipped,
+                  state.calls);
+    }
+#endif
+    return true;
+}
+
+bool fixed_blend_color(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->blend_color_known && state->blend_color[0] == red && state->blend_color[1] == green &&
+                       state->blend_color[2] == blue && state->blend_color[3] == alpha;
+    state->blend_color_known = true;
+    state->blend_color[0] = red;
+    state->blend_color[1] = green;
+    state->blend_color[2] = blue;
+    state->blend_color[3] = alpha;
+    return fixed_state_result(*state, exact, "glBlendColor");
+}
+
+bool fixed_blend_equation(GLenum rgb, GLenum alpha, const char* function) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->blend_equation_known && state->blend_equation_rgb == rgb &&
+                       state->blend_equation_alpha == alpha;
+    state->blend_equation_known = true;
+    state->blend_equation_rgb = rgb;
+    state->blend_equation_alpha = alpha;
+    return fixed_state_result(*state, exact, function);
+}
+
+bool fixed_blend_func(GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum dst_alpha, const char* function) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->blend_func_known && state->blend_src_rgb == src_rgb && state->blend_dst_rgb == dst_rgb &&
+                       state->blend_src_alpha == src_alpha && state->blend_dst_alpha == dst_alpha;
+    state->blend_func_known = true;
+    state->blend_src_rgb = src_rgb;
+    state->blend_dst_rgb = dst_rgb;
+    state->blend_src_alpha = src_alpha;
+    state->blend_dst_alpha = dst_alpha;
+    return fixed_state_result(*state, exact, function);
+}
+
+bool fixed_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->color_mask_known && state->color_mask[0] == red && state->color_mask[1] == green &&
+                       state->color_mask[2] == blue && state->color_mask[3] == alpha;
+    state->color_mask_known = true;
+    state->color_mask[0] = red;
+    state->color_mask[1] = green;
+    state->color_mask[2] = blue;
+    state->color_mask[3] = alpha;
+    return fixed_state_result(*state, exact, "glColorMask");
+}
+
+bool fixed_cull_face(GLenum value) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->cull_face_known && state->cull_face == value;
+    state->cull_face_known = true;
+    state->cull_face = value;
+    return fixed_state_result(*state, exact, "glCullFace");
+}
+
+bool fixed_depth_func(GLenum value) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->depth_func_known && state->depth_func == value;
+    state->depth_func_known = true;
+    state->depth_func = value;
+    return fixed_state_result(*state, exact, "glDepthFunc");
+}
+
+bool fixed_front_face(GLenum value) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->front_face_known && state->front_face == value;
+    state->front_face_known = true;
+    state->front_face = value;
+    return fixed_state_result(*state, exact, "glFrontFace");
+}
+
+bool fixed_depth_mask(GLboolean value) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool exact = state->depth_mask_known && state->depth_mask == value;
+    state->depth_mask_known = true;
+    state->depth_mask = value;
+    return fixed_state_result(*state, exact, "glDepthMask");
+}
+
+bool stencil_face_selected(GLenum face, GLenum selected) {
+    return face == selected || face == GL_FRONT_AND_BACK;
+}
+
+bool fixed_stencil_func(GLenum face, GLenum func, GLint reference, GLuint mask, const char* function) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool front_selected = stencil_face_selected(face, GL_FRONT);
+    const bool back_selected = stencil_face_selected(face, GL_BACK);
+    if (!front_selected && !back_selected) return fixed_state_result(*state, false, function);
+    auto exact_for = [func, reference, mask](const stencil_face_shadow_t& side) {
+        return side.func_known && side.func == func && side.reference == reference && side.value_mask == mask;
+    };
+    bool exact = true;
+    if (front_selected) exact = exact && exact_for(state->stencil_front);
+    if (back_selected) exact = exact && exact_for(state->stencil_back);
+    auto update = [func, reference, mask](stencil_face_shadow_t& side) {
+        side.func_known = true;
+        side.func = func;
+        side.reference = reference;
+        side.value_mask = mask;
+    };
+    if (front_selected) update(state->stencil_front);
+    if (back_selected) update(state->stencil_back);
+    return fixed_state_result(*state, exact, function);
+}
+
+bool fixed_stencil_mask(GLenum face, GLuint mask, const char* function) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool front_selected = stencil_face_selected(face, GL_FRONT);
+    const bool back_selected = stencil_face_selected(face, GL_BACK);
+    if (!front_selected && !back_selected) return fixed_state_result(*state, false, function);
+    bool exact = true;
+    if (front_selected)
+        exact = exact && state->stencil_front.write_mask_known && state->stencil_front.write_mask == mask;
+    if (back_selected) exact = exact && state->stencil_back.write_mask_known && state->stencil_back.write_mask == mask;
+    if (front_selected) {
+        state->stencil_front.write_mask_known = true;
+        state->stencil_front.write_mask = mask;
+    }
+    if (back_selected) {
+        state->stencil_back.write_mask_known = true;
+        state->stencil_back.write_mask = mask;
+    }
+    return fixed_state_result(*state, exact, function);
+}
+
+bool fixed_stencil_op(GLenum face, GLenum stencil_fail, GLenum depth_fail, GLenum depth_pass, const char* function) {
+    fixed_state_shadow_t* state = fixed_state_shadow();
+    if (!state) return false;
+    const bool front_selected = stencil_face_selected(face, GL_FRONT);
+    const bool back_selected = stencil_face_selected(face, GL_BACK);
+    if (!front_selected && !back_selected) return fixed_state_result(*state, false, function);
+    auto exact_for = [stencil_fail, depth_fail, depth_pass](const stencil_face_shadow_t& side) {
+        return side.op_known && side.stencil_fail == stencil_fail && side.depth_fail == depth_fail &&
+               side.depth_pass == depth_pass;
+    };
+    bool exact = true;
+    if (front_selected) exact = exact && exact_for(state->stencil_front);
+    if (back_selected) exact = exact && exact_for(state->stencil_back);
+    auto update = [stencil_fail, depth_fail, depth_pass](stencil_face_shadow_t& side) {
+        side.op_known = true;
+        side.stencil_fail = stencil_fail;
+        side.depth_fail = depth_fail;
+        side.depth_pass = depth_pass;
+    };
+    if (front_selected) update(state->stencil_front);
+    if (back_selected) update(state->stencil_back);
+    return fixed_state_result(*state, exact, function);
+}
+#endif
+
 template <typename T, typename... Rest>
 bool uniform_scalars_should_skip(GLuint program, GLint location, uint32_t signature, T first, Rest... rest) {
     const T values[] = {first, static_cast<T>(rest)...};
@@ -33,6 +260,17 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
     mg_pz_census_attrib_value(index, signature, values, sizeof(values));
 }
 } // namespace
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define MG_STATE_RETURN_IF_REDUNDANT(call)                                                                             \
+    do {                                                                                                               \
+        if (call) return;                                                                                              \
+    } while (0)
+#else
+#define MG_STATE_RETURN_IF_REDUNDANT(call)                                                                             \
+    do {                                                                                                               \
+    } while (0)
+#endif
 
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_UNIFORM_RETURN_IF_REDUNDANT(call)                                                                           \
@@ -134,11 +372,22 @@ NATIVE_FUNCTION_HEAD(void, glBindAttribLocation, GLuint program, GLuint index, c
 //NATIVE_FUNCTION_HEAD(void, glBindFramebuffer, GLenum target, GLuint framebuffer) NATIVE_FUNCTION_END_NO_RETURN(void, glBindFramebuffer, target,framebuffer)
 NATIVE_FUNCTION_HEAD(void, glBindRenderbuffer, GLenum target, GLuint renderbuffer) NATIVE_FUNCTION_END_NO_RETURN(void, glBindRenderbuffer, target,renderbuffer)
 //NATIVE_FUNCTION_HEAD(void, glBindTexture, GLenum target, GLuint texture) NATIVE_FUNCTION_END_NO_RETURN(void, glBindTexture, target,texture)
-NATIVE_FUNCTION_HEAD(void, glBlendColor, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendColor, red,green,blue,alpha)
-NATIVE_FUNCTION_HEAD(void, glBlendEquation, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquation, mode)
-NATIVE_FUNCTION_HEAD(void, glBlendEquationSeparate, GLenum modeRGB, GLenum modeAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquationSeparate, modeRGB,modeAlpha)
-NATIVE_FUNCTION_HEAD(void, glBlendFunc, GLenum sfactor, GLenum dfactor) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFunc, sfactor,dfactor)
-NATIVE_FUNCTION_HEAD(void, glBlendFuncSeparate, GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFuncSeparate, sfactorRGB,dfactorRGB,sfactorAlpha,dfactorAlpha)
+NATIVE_FUNCTION_HEAD(void, glBlendColor, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_blend_color(red, green, blue, alpha));
+NATIVE_FUNCTION_END_NO_RETURN(void, glBlendColor, red,green,blue,alpha)
+NATIVE_FUNCTION_HEAD(void, glBlendEquation, GLenum mode)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_blend_equation(mode, mode, "glBlendEquation"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquation, mode)
+NATIVE_FUNCTION_HEAD(void, glBlendEquationSeparate, GLenum modeRGB, GLenum modeAlpha)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_blend_equation(modeRGB, modeAlpha, "glBlendEquationSeparate"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glBlendEquationSeparate, modeRGB,modeAlpha)
+NATIVE_FUNCTION_HEAD(void, glBlendFunc, GLenum sfactor, GLenum dfactor)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_blend_func(sfactor, dfactor, sfactor, dfactor, "glBlendFunc"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFunc, sfactor,dfactor)
+NATIVE_FUNCTION_HEAD(void, glBlendFuncSeparate, GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha)
+    MG_STATE_RETURN_IF_REDUNDANT(
+        fixed_blend_func(sfactorRGB, dfactorRGB, sfactorAlpha, dfactorAlpha, "glBlendFuncSeparate"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glBlendFuncSeparate, sfactorRGB,dfactorRGB,sfactorAlpha,dfactorAlpha)
 //NATIVE_FUNCTION_HEAD(void, glBufferData, GLenum target, GLsizeiptr size, const void *data, GLenum usage) NATIVE_FUNCTION_END_NO_RETURN(void, glBufferData, target,size,data,usage)
 // NATIVE_FUNCTION_HEAD(void, glBufferSubData, GLenum target, GLintptr offset, GLsizeiptr size, const void *data) NATIVE_FUNCTION_END_NO_RETURN(void, glBufferSubData, target,offset,size,data)   // moved to gl/buffer.cpp so GL_PARAMETER_BUFFER reaches a target GLES understands
 //NATIVE_FUNCTION_HEAD(GLenum, glCheckFramebufferStatus, GLenum target) NATIVE_FUNCTION_END(GLenum, glCheckFramebufferStatus, target)
@@ -146,7 +395,9 @@ NATIVE_FUNCTION_HEAD(void, glBlendFuncSeparate, GLenum sfactorRGB, GLenum dfacto
 NATIVE_FUNCTION_HEAD(void, glClearColor, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) NATIVE_FUNCTION_END_NO_RETURN(void, glClearColor, red,green,blue,alpha)
 NATIVE_FUNCTION_HEAD(void, glClearDepthf, GLfloat d) NATIVE_FUNCTION_END_NO_RETURN(void, glClearDepthf, d)
 NATIVE_FUNCTION_HEAD(void, glClearStencil, GLint s) NATIVE_FUNCTION_END_NO_RETURN(void, glClearStencil, s)
-NATIVE_FUNCTION_HEAD(void, glColorMask, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) NATIVE_FUNCTION_END_NO_RETURN(void, glColorMask, red,green,blue,alpha)
+NATIVE_FUNCTION_HEAD(void, glColorMask, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_color_mask(red, green, blue, alpha));
+NATIVE_FUNCTION_END_NO_RETURN(void, glColorMask, red,green,blue,alpha)
 NATIVE_FUNCTION_HEAD(void, glCompileShader, GLuint shader) NATIVE_FUNCTION_END_NO_RETURN(void, glCompileShader, shader)
 NATIVE_FUNCTION_HEAD(void, glCompressedTexImage2D, GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) NATIVE_FUNCTION_END_NO_RETURN(void, glCompressedTexImage2D, target,level,internalformat,width,height,border,imageSize,data)
 NATIVE_FUNCTION_HEAD(void, glCompressedTexSubImage2D, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data) NATIVE_FUNCTION_END_NO_RETURN(void, glCompressedTexSubImage2D, target,level,xoffset,yoffset,width,height,format,imageSize,data)
@@ -154,7 +405,9 @@ NATIVE_FUNCTION_HEAD(void, glCompressedTexSubImage2D, GLenum target, GLint level
 //NATIVE_FUNCTION_HEAD(void, glCopyTexSubImage2D, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height) NATIVE_FUNCTION_END_NO_RETURN(void, glCopyTexSubImage2D, target,level,xoffset,yoffset,x,y,width,height)
 //NATIVE_FUNCTION_HEAD(GLuint, glCreateProgram) NATIVE_FUNCTION_END(GLuint, glCreateProgram)
 //NATIVE_FUNCTION_HEAD(GLuint, glCreateShader, GLenum type) NATIVE_FUNCTION_END(GLuint, glCreateShader, type)
-NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
+NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_cull_face(mode));
+NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glDeleteBuffers, GLsizei n, const GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteBuffers, n,buffers)
 // NATIVE_FUNCTION_HEAD(void, glDeleteFramebuffers, GLsizei n, const GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteFramebuffers, n,framebuffers)   // implemented in gl/framebuffer.cpp
 NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program)
@@ -164,8 +417,12 @@ NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 NATIVE_FUNCTION_HEAD(void, glDeleteRenderbuffers, GLsizei n, const GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteRenderbuffers, n,renderbuffers)
 NATIVE_FUNCTION_HEAD(void, glDeleteShader, GLuint shader) mg_shader_deleted(shader); NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteShader, shader)
 //NATIVE_FUNCTION_HEAD(void, glDeleteTextures, GLsizei n, const GLuint *textures) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteTextures, n,textures)
-NATIVE_FUNCTION_HEAD(void, glDepthFunc, GLenum func) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthFunc, func)
-NATIVE_FUNCTION_HEAD(void, glDepthMask, GLboolean flag) NATIVE_FUNCTION_END_NO_RETURN(void, glDepthMask, flag)
+NATIVE_FUNCTION_HEAD(void, glDepthFunc, GLenum func)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_depth_func(func));
+NATIVE_FUNCTION_END_NO_RETURN(void, glDepthFunc, func)
+NATIVE_FUNCTION_HEAD(void, glDepthMask, GLboolean flag)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_depth_mask(flag));
+NATIVE_FUNCTION_END_NO_RETURN(void, glDepthMask, flag)
 NATIVE_FUNCTION_HEAD(void, glDepthRangef, GLfloat n, GLfloat f)
     mg_server_attrib_note_depth_range(n, f);
 NATIVE_FUNCTION_END_NO_RETURN(void, glDepthRangef, n,f)
@@ -184,7 +441,9 @@ NATIVE_FUNCTION_HEAD(void, glFinish) NATIVE_FUNCTION_END_NO_RETURN(void, glFinis
 NATIVE_FUNCTION_HEAD(void, glFlush) NATIVE_FUNCTION_END_NO_RETURN(void, glFlush)
 // NATIVE_FUNCTION_HEAD(void, glFramebufferRenderbuffer, GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferRenderbuffer, target,attachment,renderbuffertarget,renderbuffer)   // implemented in gl/framebuffer.cpp
 //NATIVE_FUNCTION_HEAD(void, glFramebufferTexture2D, GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferTexture2D, target,attachment,textarget,texture,level)
-NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glFrontFace, mode)
+NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_front_face(mode));
+NATIVE_FUNCTION_END_NO_RETURN(void, glFrontFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glGenBuffers, GLsizei n, GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenBuffers, n,buffers)
 NATIVE_FUNCTION_HEAD(void, glGenerateMipmap, GLenum target)
     mg_texture_note_generate_mipmap(target);
@@ -259,12 +518,24 @@ NATIVE_FUNCTION_HEAD(void, glScissor, GLint x, GLint y, GLsizei width, GLsizei h
 NATIVE_FUNCTION_END_NO_RETURN(void, glScissor, x,y,width,height)
 NATIVE_FUNCTION_HEAD(void, glShaderBinary, GLsizei count, const GLuint *shaders, GLenum binaryformat, const void *binary, GLsizei length) NATIVE_FUNCTION_END_NO_RETURN(void, glShaderBinary, count,shaders,binaryformat,binary,length)
 //NATIVE_FUNCTION_HEAD(void, glShaderSource, GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length) NATIVE_FUNCTION_END_NO_RETURN(void, glShaderSource, shader,count,string,length)
-NATIVE_FUNCTION_HEAD(void, glStencilFunc, GLenum func, GLint ref, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFunc, func,ref,mask)
-NATIVE_FUNCTION_HEAD(void, glStencilFuncSeparate, GLenum face, GLenum func, GLint ref, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFuncSeparate, face,func,ref,mask)
-NATIVE_FUNCTION_HEAD(void, glStencilMask, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilMask, mask)
-NATIVE_FUNCTION_HEAD(void, glStencilMaskSeparate, GLenum face, GLuint mask) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilMaskSeparate, face,mask)
-NATIVE_FUNCTION_HEAD(void, glStencilOp, GLenum fail, GLenum zfail, GLenum zpass) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilOp, fail,zfail,zpass)
-NATIVE_FUNCTION_HEAD(void, glStencilOpSeparate, GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass) NATIVE_FUNCTION_END_NO_RETURN(void, glStencilOpSeparate, face,sfail,dpfail,dppass)
+NATIVE_FUNCTION_HEAD(void, glStencilFunc, GLenum func, GLint ref, GLuint mask)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_func(GL_FRONT_AND_BACK, func, ref, mask, "glStencilFunc"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFunc, func,ref,mask)
+NATIVE_FUNCTION_HEAD(void, glStencilFuncSeparate, GLenum face, GLenum func, GLint ref, GLuint mask)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_func(face, func, ref, mask, "glStencilFuncSeparate"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilFuncSeparate, face,func,ref,mask)
+NATIVE_FUNCTION_HEAD(void, glStencilMask, GLuint mask)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_mask(GL_FRONT_AND_BACK, mask, "glStencilMask"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilMask, mask)
+NATIVE_FUNCTION_HEAD(void, glStencilMaskSeparate, GLenum face, GLuint mask)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_mask(face, mask, "glStencilMaskSeparate"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilMaskSeparate, face,mask)
+NATIVE_FUNCTION_HEAD(void, glStencilOp, GLenum fail, GLenum zfail, GLenum zpass)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_op(GL_FRONT_AND_BACK, fail, zfail, zpass, "glStencilOp"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilOp, fail,zfail,zpass)
+NATIVE_FUNCTION_HEAD(void, glStencilOpSeparate, GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
+    MG_STATE_RETURN_IF_REDUNDANT(fixed_stencil_op(face, sfail, dpfail, dppass, "glStencilOpSeparate"));
+NATIVE_FUNCTION_END_NO_RETURN(void, glStencilOpSeparate, face,sfail,dpfail,dppass)
 //NATIVE_FUNCTION_HEAD(void, glTexImage2D, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels) NATIVE_FUNCTION_END_NO_RETURN(void, glTexImage2D, target,level,internalformat,width,height,border,format,type,pixels)
 //NATIVE_FUNCTION_HEAD(void, glTexParameterf, GLenum target, GLenum pname, GLfloat param) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameterf, target,pname,param)
 NATIVE_FUNCTION_HEAD(void, glTexParameterfv, GLenum target, GLenum pname, const GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameterfv, target,pname,params)

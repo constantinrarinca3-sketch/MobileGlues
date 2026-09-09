@@ -10,6 +10,7 @@ bool mg_pz_vao_fastpath_active = false;
 bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = true;
+bool mg_pz_state_shadow_active = false;
 
 static GLenum last_error = GL_NO_ERROR;
 static int failures = 0;

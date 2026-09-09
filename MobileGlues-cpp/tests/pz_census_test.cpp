@@ -36,6 +36,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "0", 1);
+    setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active, "0 must disable the census");
@@ -43,6 +44,7 @@ int main() {
     expect(!mg_pz_attrib_fastpath_active, "0 must disable the attribute fast path");
     expect(!mg_pz_uniform_fastpath_active, "0 must disable the uniform fast path");
     expect(!mg_pz_buffer_streaming_active, "0 must disable buffer streaming");
+    expect(!mg_pz_state_shadow_active, "0 must disable the fixed-state shadow");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
     mg_pz_census_init();
@@ -52,16 +54,19 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "true", 1);
+    setenv("MOBILEGLUES_PZ_STATE_SHADOW", "true", 1);
     mg_pz_census_init();
     expect(!mg_pz_vao_fastpath_active, "only the exact value 1 may enable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "only the exact value 1 may enable the attribute fast path");
     expect(!mg_pz_uniform_fastpath_active, "only the exact value 1 may enable the uniform fast path");
     expect(!mg_pz_buffer_streaming_active, "only the exact value 1 may enable buffer streaming");
+    expect(!mg_pz_state_shadow_active, "only the exact value 1 may enable the fixed-state shadow");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "1", 1);
+    setenv("MOBILEGLUES_PZ_STATE_SHADOW", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
     mg_pz_census_init();
     expect(mg_pz_census_active, "1 must enable the census");
@@ -69,6 +74,7 @@ int main() {
     expect(mg_pz_attrib_fastpath_active, "1 must enable the attribute fast path");
     expect(mg_pz_uniform_fastpath_active, "1 must enable the uniform fast path");
     expect(mg_pz_buffer_streaming_active, "1 must enable buffer streaming");
+    expect(mg_pz_state_shadow_active, "1 must enable the fixed-state shadow");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
 
@@ -111,9 +117,10 @@ int main() {
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_BUFFER_STREAMING", "0", 1);
+    setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active &&
-               !mg_pz_uniform_fastpath_active && !mg_pz_buffer_streaming_active,
+               !mg_pz_uniform_fastpath_active && !mg_pz_buffer_streaming_active && !mg_pz_state_shadow_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);

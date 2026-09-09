@@ -111,6 +111,16 @@ struct buffer_staging_map_t {
     GLbitfield access = 0;
     bool mapped = false;
 };
+
+struct buffer_streaming_stats_t {
+    unsigned long long attempts = 0;
+    unsigned long long hits = 0;
+    unsigned long long miss_access = 0;
+    unsigned long long miss_size = 0;
+    unsigned long long miss_storage = 0;
+    unsigned long long miss_busy = 0;
+    unsigned long long allocation_failures = 0;
+};
 #endif
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
@@ -156,6 +166,7 @@ struct buffer_ctx_state_t { // private to one context
 #if defined(ZOMDROID_EXPERIMENTAL)
     ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
     std::vector<client_attrib_snapshot_t> client_attrib_stack;
+    buffer_streaming_stats_t buffer_streaming_stats;
     unsigned long long client_attrib_push_hits = 0;
     unsigned long long client_attrib_pop_hits = 0;
     unsigned long long client_attrib_restore_hits = 0;
@@ -449,23 +460,70 @@ static bool staging_map_active(GLuint buffer) {
     return found != g_buffer_staging_maps.end() && found->second.mapped;
 }
 
+static void trace_buffer_streaming_pattern(const buffer_streaming_stats_t& stats, GLuint buffer, GLintptr offset,
+                                           GLsizeiptr length, GLsizeiptr tracked_size, GLbitfield access,
+                                           const char* result) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
+        write_log("ZOMDROID_PZ_BUFFER_STREAMING_PATTERN attempt=%llu hits=%llu miss_access=%llu miss_size=%llu "
+                  "miss_storage=%llu miss_busy=%llu alloc_fail=%llu buffer=%u offset=%lld length=%lld tracked=%lld "
+                  "access=0x%x result=%s",
+                  stats.attempts, stats.hits, stats.miss_access, stats.miss_size, stats.miss_storage, stats.miss_busy,
+                  stats.allocation_failures, buffer, static_cast<long long>(offset), static_cast<long long>(length),
+                  static_cast<long long>(tracked_size), access, result);
+    }
+#else
+    (void)stats;
+    (void)buffer;
+    (void)offset;
+    (void)length;
+    (void)tracked_size;
+    (void)access;
+    (void)result;
+#endif
+}
+
 static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled) {
     *handled = false;
-    if (!mg_pz_buffer_streaming_active || offset != 0 || length <= 0 || (access & GL_MAP_WRITE_BIT) == 0 ||
-        (access & GL_MAP_READ_BIT) != 0 || (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0 ||
+    if (!mg_pz_buffer_streaming_active) return nullptr;
+
+    buffer_streaming_stats_t& stats = g_bc->buffer_streaming_stats;
+    ++stats.attempts;
+    GLsizeiptr tracked_size = 0;
+    const bool size_known = get_known_buffer_data_size(buffer, &tracked_size);
+
+    if (offset != 0 || length <= 0 || (access & GL_MAP_WRITE_BIT) == 0 || (access & GL_MAP_READ_BIT) != 0 ||
+        (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0 ||
         (access & (GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)) != 0) {
+        ++stats.miss_access;
+        const char* reason = offset != 0                                      ? "offset"
+                             : length <= 0                                    ? "length"
+                             : (access & GL_MAP_WRITE_BIT) == 0                ? "not_write"
+                             : (access & GL_MAP_READ_BIT) != 0                 ? "read"
+                             : (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0    ? "no_invalidate_buffer"
+                                                                              : "persistent_or_coherent";
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, reason);
         return nullptr;
     }
 
-    GLsizeiptr tracked_size = 0;
-    if (!get_known_buffer_data_size(buffer, &tracked_size) || tracked_size != length ||
-        buffer >= g_buffer_storage_kind.size() ||
+    if (!size_known || tracked_size != length) {
+        ++stats.miss_size;
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access,
+                                       size_known ? "partial_size" : "unknown_size");
+        return nullptr;
+    }
+
+    if (buffer >= g_buffer_storage_kind.size() ||
         g_buffer_storage_kind[buffer] != buffer_storage_kind_t::mutable_store) {
+        ++stats.miss_storage;
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "not_mutable");
         return nullptr;
     }
 
     auto existing = g_buffer_staging_maps.find(buffer);
     if (existing != g_buffer_staging_maps.end() && existing->second.mapped) {
+        ++stats.miss_busy;
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "already_mapped");
         mg_set_gl_error(GL_INVALID_OPERATION);
         *handled = true;
         return nullptr;
@@ -485,6 +543,8 @@ static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, 
         staging.access = access;
         staging.mapped = true;
         *handled = true;
+        ++stats.hits;
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "hit");
         MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
 #if defined(ZOMDROID_GL_BREADCRUMBS)
         ++g_bc->buffer_streaming_map_hits;
@@ -497,6 +557,8 @@ static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, 
         return staging.pointer;
     } catch (const std::bad_alloc&) {
         // Allocation pressure must retain the normal driver mapping path.
+        ++stats.allocation_failures;
+        trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "allocation_failure");
         return nullptr;
     }
 }

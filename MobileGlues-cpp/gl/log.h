@@ -14,7 +14,10 @@
 
 #define GLOBAL_DEBUG 0
 
-#if defined(ZOMDROID_GL_BREADCRUMBS)
+// The generic call trace takes a mutex and builds a std::string for every GL
+// entry point. Keep it available for dedicated crash-trace builds, but do not
+// attach it to ordinary ZomDroid breadcrumbs or optimization builds.
+#if defined(ZOMDROID_GL_BREADCRUMBS) && defined(ZOMDROID_GL_CALL_TRACE)
 #define LOG_CALLED_FUNCS 1
 #else
 #define LOG_CALLED_FUNCS 0
@@ -86,7 +89,8 @@ void trace_zomdroid_gl_after_unmap(const char* func_name);
         __android_log_print(ANDROID_LOG_DEBUG, RENDERERNAME, "\nUse function: %s", __FUNCTION__);                      \
         printf("\nUse function: %s\n", __FUNCTION__);                                                                  \
         write_log("\nUse function: %s\n", __FUNCTION__);                                                               \
-    }
+    }                                                                                                                  \
+    MG_PZ_CENSUS(mg_pz_census_gl_call(__FUNCTION__));
 #endif
 
 #define LOG_D(...)                                                                                                     \
