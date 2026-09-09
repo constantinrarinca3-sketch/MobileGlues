@@ -446,7 +446,7 @@ NATIVE_FUNCTION_HEAD(void, glFrontFace, GLenum mode)
 NATIVE_FUNCTION_END_NO_RETURN(void, glFrontFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glGenBuffers, GLsizei n, GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenBuffers, n,buffers)
 NATIVE_FUNCTION_HEAD(void, glGenerateMipmap, GLenum target)
-    mg_texture_note_generate_mipmap(target);
+    if (!mg_texture_prepare_generate_mipmap(target)) return;
 NATIVE_FUNCTION_END_NO_RETURN(void, glGenerateMipmap, target)
 NATIVE_FUNCTION_HEAD(void, glGenFramebuffers, GLsizei n, GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenFramebuffers, n,framebuffers)
 NATIVE_FUNCTION_HEAD(void, glGenRenderbuffers, GLsizei n, GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glGenRenderbuffers, n,renderbuffers)

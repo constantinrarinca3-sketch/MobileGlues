@@ -22,6 +22,8 @@ $CXX -DZOMDROID_EXPERIMENTAL=1 -DZOMDROID_GL_BREADCRUMBS=1 \
     -o /tmp/mg_pz_census_test tests/pz_census_test.cpp gl/pz_census.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_fixed_state_shadow_test tests/fixed_state_shadow_test.cpp gl/gl_native.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o /tmp/mg_runtime_mipmap_skip_test tests/runtime_mipmap_skip_test.cpp gl/texture.cpp
 /tmp/mg_pixel_test
 echo
 /tmp/mg_fb_test
@@ -39,3 +41,5 @@ echo
 /tmp/mg_pz_census_test
 echo
 /tmp/mg_fixed_state_shadow_test
+echo
+/tmp/mg_runtime_mipmap_skip_test

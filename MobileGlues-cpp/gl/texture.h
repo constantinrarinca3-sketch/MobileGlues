@@ -110,6 +110,7 @@ public:
     // object so recycled names and shared contexts cannot inherit it.
     bool runtime_mipmap_generated = false;
     bool runtime_mipmap_fallback_logged = false;
+    bool runtime_mipmap_base_only = false;
 };
 
 // How many texture units this layer can actually track. Anything the driver
@@ -120,7 +121,9 @@ int mg_max_texture_units(void);
 TextureObject* mgGetTexObjectByTarget(GLenum target);
 TextureObject* mgGetTexObjectByID(unsigned texture);
 void InitTextureMap(size_t expectedSize);
-void mg_texture_note_generate_mipmap(GLenum target);
+// Records the generation request and returns false only when the opt-in PZ path
+// has already proved that this texture is sampled from level 0.
+bool mg_texture_prepare_generate_mipmap(GLenum target);
 
 // The driver's own texture state, tracked as this layer issues it, so a caller
 // that only wants to save and restore a binding does not have to make the driver

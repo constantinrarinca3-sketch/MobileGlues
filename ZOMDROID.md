@@ -106,3 +106,16 @@ It tracks blend equations/functions, blend color, color mask, cull/front face, d
 and front/back stencil state per current context. Only exact repeats are skipped. Combined and
 separate blend/stencil entry points update the same semantic state. Skip milestones are logged as
 `ZOMDROID_PZ_STATE_SHADOW_SKIP`.
+
+Runtime mipmap generation for Project Zomboid's chunk render targets can be reduced independently:
+
+```text
+MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP=1  # skip learned level-0-only regeneration
+MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP=0  # submit every generation (default)
+```
+
+The first generation for each texture always reaches GLES. Once a measured 1024x1024 chunk texture
+requests a mipmapped minification filter and MobileGlues applies its existing level-0 compatibility
+fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling remains on level 0.
+Other sizes, texture targets and textures that have not taken the fallback remain on the normal
+driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.

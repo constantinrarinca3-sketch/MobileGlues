@@ -13,6 +13,7 @@
 #include <ska/flat_hash_map.hpp>
 #include "GLES3/gl32.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -484,24 +485,86 @@ TextureObject* mgGetTexObjectByID(unsigned texture) {
     return BufferObjectsVec[texture];
 }
 
-void mg_texture_note_generate_mipmap(GLenum target) {
 #if defined(ZOMDROID_EXPERIMENTAL)
-    TextureObject* texture = mgGetTexObjectByTarget(target);
-    if (texture && texture->texture != 0) {
-        const bool first_generation = !texture->runtime_mipmap_generated;
-        texture->runtime_mipmap_generated = true;
+namespace {
+
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        if (first_generation)
-            write_log("ZOMDROID_RUNTIME_MIPMAP texture=%u target=0x%x size=%dx%d format=0x%x", texture->texture,
-                      target, texture->width, texture->height, texture->internal_format);
-#else
-        (void)first_generation;
+std::atomic<unsigned long long> g_runtime_mipmap_skips{0};
 #endif
+
+bool runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
+    if (!texture || texture->texture == 0 || target != GL_TEXTURE_2D) return true;
+
+    // The device trace identified one exact PZ resource family: every runtime
+    // mipmap/fallback pair was a 1024x1024 GL_TEXTURE_2D chunk target. Keep the
+    // optimization on that measured signature so an unrelated texture that
+    // happens to take the compatibility fallback retains normal generation.
+    const bool measured_chunk_target = texture->width == 1024 && texture->height == 1024;
+    const bool submit = !mg_pz_runtime_mipmap_skip_active || !texture->runtime_mipmap_base_only ||
+                        !measured_chunk_target;
+    const bool first_generation = !texture->runtime_mipmap_generated;
+    texture->runtime_mipmap_generated = true;
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (first_generation)
+        write_log("ZOMDROID_RUNTIME_MIPMAP texture=%u target=0x%x size=%dx%d format=0x%x", texture->texture,
+                  target, texture->width, texture->height, texture->internal_format);
+    if (!submit) {
+        const unsigned long long skipped = g_runtime_mipmap_skips.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (skipped == 1 || skipped == 1024 || skipped == 65536)
+            write_log("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP texture=%u size=%dx%d skipped=%llu", texture->texture,
+                      texture->width, texture->height, skipped);
     }
 #else
+    (void)first_generation;
+#endif
+    return submit;
+}
+
+GLint runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param) {
+    if (target != GL_TEXTURE_2D || pname != GL_TEXTURE_MIN_FILTER || !texture ||
+        !texture->runtime_mipmap_generated)
+        return param;
+
+    if (param != GL_NEAREST_MIPMAP_NEAREST && param != GL_LINEAR_MIPMAP_NEAREST &&
+        param != GL_NEAREST_MIPMAP_LINEAR && param != GL_LINEAR_MIPMAP_LINEAR)
+        return param;
+
+    texture->runtime_mipmap_base_only = true;
+    const GLint applied =
+        (param == GL_LINEAR_MIPMAP_NEAREST || param == GL_LINEAR_MIPMAP_LINEAR) ? GL_LINEAR : GL_NEAREST;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!texture->runtime_mipmap_fallback_logged) {
+        texture->runtime_mipmap_fallback_logged = true;
+        write_log("ZOMDROID_RUNTIME_MIP_FALLBACK texture=%u size=%dx%d requested=0x%x applied=0x%x",
+                  texture->texture, texture->width, texture->height, param, applied);
+    }
+#endif
+    return applied;
+}
+
+} // namespace
+#endif
+
+bool mg_texture_prepare_generate_mipmap(GLenum target) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (ConvertGLEnumToTextureTarget(target) == TextureTarget::UNKNWON) return true;
+    return runtime_mipmap_prepare(mgGetTexObjectByTarget(target), target);
+#else
     (void)target;
+    return true;
 #endif
 }
+
+#if defined(MOBILEGLUES_TESTING) && defined(ZOMDROID_EXPERIMENTAL)
+bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
+    return runtime_mipmap_prepare(texture, target);
+}
+
+GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param) {
+    return runtime_mipmap_min_filter(texture, target, pname, param);
+}
+#endif
 
 // Inline mapping for various internal formats to format and type.
 //
@@ -1801,18 +1864,7 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
         (param == GL_NEAREST_MIPMAP_NEAREST || param == GL_LINEAR_MIPMAP_NEAREST ||
          param == GL_NEAREST_MIPMAP_LINEAR || param == GL_LINEAR_MIPMAP_LINEAR)) {
         TextureObject* texture = mgGetTexObjectByTarget(target);
-        if (texture && texture->runtime_mipmap_generated) {
-            const GLint requested = param;
-            param = (requested == GL_LINEAR_MIPMAP_NEAREST || requested == GL_LINEAR_MIPMAP_LINEAR) ? GL_LINEAR
-                                                                                                    : GL_NEAREST;
-#if defined(ZOMDROID_GL_BREADCRUMBS)
-            if (!texture->runtime_mipmap_fallback_logged) {
-                texture->runtime_mipmap_fallback_logged = true;
-                write_log("ZOMDROID_RUNTIME_MIP_FALLBACK texture=%u size=%dx%d requested=0x%x applied=0x%x",
-                          texture->texture, texture->width, texture->height, requested, param);
-            }
-#endif
-        }
+        param = runtime_mipmap_min_filter(texture, target, pname, param);
     }
 #endif
 
