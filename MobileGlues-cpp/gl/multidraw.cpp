@@ -432,10 +432,12 @@ static bool mg_multidraw_enter(const GLsizei* counts, GLenum type, GLsizei primc
 
 namespace {
 struct md_restart_scope_t {
-    bool restore;
-    explicit md_restart_scope_t(GLenum type) : restore(mg_restart_prepare_driver_fixed(type, false)) {}
+    bool forced;
+    explicit md_restart_scope_t(GLenum type) : forced(mg_restart_needs_driver_fixed(type)) {
+        if (forced) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    }
     ~md_restart_scope_t() {
-        mg_restart_finish_driver_fixed(restore);
+        if (forced) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     }
     md_restart_scope_t(const md_restart_scope_t&) = delete;
     md_restart_scope_t& operator=(const md_restart_scope_t&) = delete;
@@ -776,7 +778,8 @@ void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, GLsizei* counts,
     // drawn as GL_UNSIGNED_INT, so the driver's fixed-index restart has to be on
     // for these draws. Without it 0xFFFFFFFF is fetched as vertex 4294967295 and
     // every enabled attribute array is read out of bounds.
-    const bool restore_restart = mg_restart_prepare_driver_fixed(type, restart_enabled);
+    const bool force_fixed = restart_enabled && mg_enable_get(GL_PRIMITIVE_RESTART_FIXED_INDEX, 0) != GL_TRUE;
+    if (force_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
 
     // Tracked rather than queried, and read before the loop below starts swapping
     // the scratch buffer in: mg_driver_bound_buffer answers with the driver-side
@@ -857,7 +860,7 @@ void mg_glMultiDrawElementsBaseVertex_drawelements(GLenum mode, GLsizei* counts,
         GLES.glDrawElements(mode, count, GL_UNSIGNED_INT, nullptr);
     }
 
-    mg_restart_finish_driver_fixed(restore_restart);
+    if (force_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, prevElementBuffer);
 
     CHECK_GL_ERROR

@@ -52,12 +52,6 @@ extern "C"
     // enum. The caller brackets its ordinary draw with this.
     bool mg_restart_needs_driver_fixed(GLenum type);
 
-    // Reconcile the hidden GLES fixed-index state before an indexed draw.
-    // The return value is passed to mg_restart_finish_driver_fixed; it is true
-    // only for the legacy per-draw path that must restore the driver state.
-    bool mg_restart_prepare_driver_fixed(GLenum type, bool force);
-    void mg_restart_finish_driver_fixed(bool restore_after_draw);
-
     // Draw one indexed primitive batch with the restart emulation applied.
     // Returns false when the batch could not be rewritten, in which case the
     // caller should issue its normal draw. instancecount < 0 means a

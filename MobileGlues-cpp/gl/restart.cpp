@@ -12,7 +12,6 @@
 #include "../gles/loader.h"
 #include "log.h"
 #include "mg.h"
-#include "pz_census.h"
 #include <vector>
 
 #define DEBUG 0
@@ -33,48 +32,6 @@ namespace {
 // their own name instead of trading one back and forth.
 thread_local GLuint g_restart_ibo = 0;
 thread_local unsigned long long g_restart_owner_ctx_id = 0;
-
-struct sticky_restart_state_t {
-    unsigned long long context_id = 0;
-    bool known = false;
-    bool enabled = false;
-    unsigned long long draws = 0;
-    unsigned long long wrapped = 0;
-    unsigned long long old_driver_calls = 0;
-    unsigned long long new_driver_calls = 0;
-};
-
-thread_local sticky_restart_state_t g_sticky_restart;
-
-// -1 disables, 0 keeps the current state, +1 enables. Kept separate so the
-// state machine can be exercised on the host without a GLES driver.
-int sticky_restart_transition(unsigned long long context_id, bool desired) {
-    if (g_sticky_restart.context_id != context_id) {
-        g_sticky_restart.context_id = context_id;
-        g_sticky_restart.known = false;
-    }
-    if (g_sticky_restart.known && g_sticky_restart.enabled == desired) return 0;
-    g_sticky_restart.known = true;
-    g_sticky_restart.enabled = desired;
-    return desired ? 1 : -1;
-}
-
-void trace_sticky_restart(GLenum type) {
-#if defined(ZOMDROID_GL_BREADCRUMBS)
-    const auto& s = g_sticky_restart;
-    if (s.wrapped == 1 || s.wrapped == 1024 || s.wrapped == 65536) {
-        const unsigned long long saved = s.old_driver_calls > s.new_driver_calls
-                                             ? s.old_driver_calls - s.new_driver_calls
-                                             : 0;
-        write_log("ZOMDROID_PZ_STICKY_RESTART draws=%llu wrapped=%llu driver_calls=%llu old_calls=%llu "
-                  "saved=%llu type=0x%x enabled=%d",
-                  s.draws, s.wrapped, s.new_driver_calls, s.old_driver_calls, saved, type,
-                  s.enabled ? 1 : 0);
-    }
-#else
-    (void)type;
-#endif
-}
 
 // Drop the cached name when the current context is not the one that created it.
 //
@@ -151,7 +108,6 @@ void rewrite(GLuint* dst, const void* src, GLsizei count, GLenum type, GLint bas
 
 void mg_restart_invalidate(void) {
     g_restart_ibo = 0;
-    g_sticky_restart.known = false;
 }
 
 bool mg_restart_needs_rewrite(GLenum type) {
@@ -173,44 +129,6 @@ bool mg_restart_needs_driver_fixed(GLenum type) {
     if (st->scalar[MGC_PRIMITIVE_RESTART_FIXED_INDEX]) return false; // the driver is already doing it
     return st->primitive_restart_index == fixed_sentinel(type);
 }
-
-bool mg_restart_prepare_driver_fixed(GLenum type, bool force) {
-    const bool implicit_fixed = mg_restart_needs_driver_fixed(type);
-    const bool explicit_fixed = mg_enable_get(GL_PRIMITIVE_RESTART_FIXED_INDEX, 0) == GL_TRUE;
-    const bool desired = force || implicit_fixed || explicit_fixed;
-
-    if (!mg_pz_sticky_restart_active) {
-        const bool temporary = desired && !explicit_fixed;
-        if (temporary) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
-        return temporary;
-    }
-
-    const unsigned long long context_id = g_current_ctx ? g_current_ctx->id : 0;
-    const int transition = sticky_restart_transition(context_id, desired);
-    if (transition > 0)
-        GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
-    else if (transition < 0)
-        GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
-
-    ++g_sticky_restart.draws;
-    if (implicit_fixed || (force && !explicit_fixed)) {
-        ++g_sticky_restart.wrapped;
-        g_sticky_restart.old_driver_calls += 2;
-    }
-    if (transition != 0) ++g_sticky_restart.new_driver_calls;
-    trace_sticky_restart(type);
-    return false;
-}
-
-void mg_restart_finish_driver_fixed(bool restore_after_draw) {
-    if (restore_after_draw) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
-}
-
-#if defined(MOBILEGLUES_TESTING)
-int mg_test_sticky_restart_transition(unsigned long long context_id, bool desired) {
-    return sticky_restart_transition(context_id, desired);
-}
-#endif
 
 bool mg_draw_elements_restart(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex,
                               GLsizei instancecount) {
@@ -264,7 +182,8 @@ bool mg_draw_elements_restart(GLenum mode, GLsizei count, GLenum type, const voi
     // restart has to be on for this draw. It is switched directly rather than
     // through glEnable so the virtual table keeps reporting what the application
     // set, which is GL_PRIMITIVE_RESTART and not this.
-    const bool restore_restart = mg_restart_prepare_driver_fixed(type, true);
+    const bool had_fixed = mg_enable_get(GL_PRIMITIVE_RESTART_FIXED_INDEX, 0) == GL_TRUE;
+    if (!had_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
 
     if (instancecount >= 0) {
         GLES.glDrawElementsInstanced(mode, count, GL_UNSIGNED_INT, nullptr, instancecount);
@@ -272,7 +191,7 @@ bool mg_draw_elements_restart(GLenum mode, GLsizei count, GLenum type, const voi
         GLES.glDrawElements(mode, count, GL_UNSIGNED_INT, nullptr);
     }
 
-    mg_restart_finish_driver_fixed(restore_restart);
+    if (!had_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, prev_ibo);
     return true;
 }

@@ -10,7 +10,6 @@ bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = false;
 bool mg_pz_buffer_discard_coalesce_active = false;
-bool mg_pz_sticky_restart_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = true;
 

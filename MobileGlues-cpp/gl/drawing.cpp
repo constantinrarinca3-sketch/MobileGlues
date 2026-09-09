@@ -615,9 +615,10 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, primcount)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, primcount)) return;
-    const bool restore_restart = mg_restart_prepare_driver_fixed(type, false);
+    const bool restart_fixed = mg_restart_needs_driver_fixed(type);
+    if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     GLES.glDrawElementsInstanced(mode, count, type, indices, primcount);
-    mg_restart_finish_driver_fixed(restore_restart);
+    if (restart_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     CHECK_GL_ERROR
 }
 
@@ -630,11 +631,12 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
-    const bool restore_restart = mg_restart_prepare_driver_fixed(type, false);
+    const bool restart_fixed = mg_restart_needs_driver_fixed(type);
+    if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     MG_PZ_CENSUS(mg_pz_census_batch_draw(gl_state->current_program, mode, type, count,
                                          mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER)));
     GLES.glDrawElements(mode, count, type, indices);
-    mg_restart_finish_driver_fixed(restore_restart);
+    if (restart_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     CHECK_GL_ERROR
 }
 
@@ -725,13 +727,14 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
     // The rewrite applies the base vertex itself, so it covers both the emulated
     // and the driver-supported branch below.
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, basevertex, -1)) return;
-    const bool restore_restart = mg_restart_prepare_driver_fixed(type, false);
+    const bool restart_fixed = mg_restart_needs_driver_fixed(type);
+    if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     struct RestartGuard {
-        bool restore;
+        bool on;
         ~RestartGuard() {
-            mg_restart_finish_driver_fixed(restore);
+            if (on) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
         }
-    } restart_guard{restore_restart};
+    } restart_guard{restart_fixed};
     if (hardware->es_version < 320 && !g_gles_caps.GL_EXT_draw_elements_base_vertex &&
         !g_gles_caps.GL_OES_draw_elements_base_vertex) {
         // TODO: use indirect drawing for GLES 3.1
@@ -856,10 +859,12 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
 // cannot leave it enabled behind the application's back.
 namespace {
 struct restart_guard_t {
-    bool restore;
-    explicit restart_guard_t(GLenum type) : restore(mg_restart_prepare_driver_fixed(type, false)) {}
+    bool on;
+    explicit restart_guard_t(GLenum type) : on(mg_restart_needs_driver_fixed(type)) {
+        if (on) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    }
     ~restart_guard_t() {
-        mg_restart_finish_driver_fixed(restore);
+        if (on) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     }
     restart_guard_t(const restart_guard_t&) = delete;
     restart_guard_t& operator=(const restart_guard_t&) = delete;
