@@ -650,8 +650,17 @@ static bool normalize_desktop_core_tokens(std::string& glsl, GLenum shader_type)
         }
         if (std::regex_search(glsl, frag_color_token)) {
             glsl = std::regex_replace(glsl, frag_color_token, "zomdroid_FragColor");
+            // Explicit fragment-output locations are valid only from desktop
+            // GLSL 3.30.  Build 42's fog shader is GLSL 1.40, where inserting
+            // `layout(location = 0)` made glslang reject the shader and sent
+            // the unconverted desktop source to the GLES driver.  glslang has
+            // auto-location mapping enabled below, so a plain `out` remains
+            // location zero on 1.30--1.50 while 3.30+ keeps it explicit.
+            const bool supports_explicit_output_location = getGLSLVersion(glsl.c_str()) >= 330;
             glsl.insert(find_insertion_point(glsl),
-                        "layout(location = 0) out vec4 zomdroid_FragColor;\n");
+                        supports_explicit_output_location
+                            ? "layout(location = 0) out vec4 zomdroid_FragColor;\n"
+                            : "out vec4 zomdroid_FragColor;\n");
             changed = true;
         }
     }
