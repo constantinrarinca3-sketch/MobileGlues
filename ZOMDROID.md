@@ -119,3 +119,18 @@ requests a mipmapped minification filter and MobileGlues applies its existing le
 fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling remains on level 0.
 Other sizes, texture targets and textures that have not taken the fallback remain on the normal
 driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.
+
+The base-vertex attribute normalization path is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_BASEVERTEX_FASTPATH=1  # normalize coherent pointer offsets
+MOBILEGLUES_PZ_BASEVERTEX_FASTPATH=0  # submit pointer changes directly (default)
+```
+
+For indexed triangle draws on GLES 3.2, compatible vertex-pointer changes are kept in MobileGlues and
+represented by one common `baseVertex` at draw time. Every enabled per-vertex attribute must use the
+same integral vertex shift, buffer and layout. Programs using `gl_VertexID`/`gl_BaseVertex`, VAO 0,
+client-memory attributes, instanced pointer changes and the separate attribute-binding model remain on
+the direct path. Queries and other draw families flush deferred pointers first. Runtime decisions are
+reported as `ZOMDROID_PZ_BASEVERTEX_PATTERN`, with skipped pointer milestones in
+`ZOMDROID_PZ_BASEVERTEX_POINTER`.

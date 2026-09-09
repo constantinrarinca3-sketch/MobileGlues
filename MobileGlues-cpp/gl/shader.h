@@ -29,6 +29,7 @@ const std::vector<mg_glsl_compat::uniform_default_value>* mg_shader_uniform_defa
 void mg_shader_deleted(GLuint shader);
 #if defined(ZOMDROID_EXPERIMENTAL)
 mg_glsl_compat::pz_alpha_shader_kind mg_shader_pz_alpha_kind(GLuint shader);
+bool mg_shader_uses_vertex_id(GLuint shader);
 #endif
 
 #ifdef __cplusplus

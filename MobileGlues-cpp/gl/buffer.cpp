@@ -65,6 +65,7 @@ struct vertex_attrib_state_t {
     GLsizei stride = 0;
     uintptr_t pointer = 0;
     GLuint buffer = 0; // MobileGlues/frontend name
+    uint64_t buffer_lifetime = 0;
     GLuint divisor = 0;
     GLuint binding = 0;
     GLuint relative_offset = 0;
@@ -76,6 +77,11 @@ struct vertex_attrib_state_t {
 struct vertex_array_state_t {
     std::array<vertex_attrib_state_t, kTrackedVertexAttribs> attribs{};
     std::array<vertex_binding_state_t, kTrackedVertexAttribs> bindings{};
+    // Frontend pointer calls may be represented by baseVertex instead of being
+    // replayed into the driver VAO. Keep the driver's anchor separate from the
+    // application-visible state so later draws can calculate that offset.
+    std::array<vertex_attrib_state_t, kTrackedVertexAttribs> driver_attribs{};
+    bool basevertex_eligible = true;
 };
 
 struct client_attrib_snapshot_t {
@@ -120,6 +126,18 @@ struct buffer_streaming_stats_t {
     unsigned long long miss_storage = 0;
     unsigned long long miss_busy = 0;
     unsigned long long allocation_failures = 0;
+};
+
+struct basevertex_stats_t {
+    unsigned long long pointer_calls = 0;
+    unsigned long long pointer_deferred = 0;
+    unsigned long long draw_attempts = 0;
+    unsigned long long draw_hits = 0;
+    unsigned long long zero_base = 0;
+    unsigned long long miss_vao = 0;
+    unsigned long long miss_program = 0;
+    unsigned long long miss_layout = 0;
+    unsigned long long flushes = 0;
 };
 #endif
 
@@ -167,6 +185,7 @@ struct buffer_ctx_state_t { // private to one context
     ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
     std::vector<client_attrib_snapshot_t> client_attrib_stack;
     buffer_streaming_stats_t buffer_streaming_stats;
+    basevertex_stats_t basevertex_stats;
     unsigned long long client_attrib_push_hits = 0;
     unsigned long long client_attrib_pop_hits = 0;
     unsigned long long client_attrib_restore_hits = 0;
@@ -276,8 +295,9 @@ static bool same_vertex_binding(const vertex_binding_state_t& a, const vertex_bi
 static bool same_vertex_attrib(const vertex_attrib_state_t& a, const vertex_attrib_state_t& b) {
     return a.enabled == b.enabled && a.size == b.size && a.type == b.type && a.normalized == b.normalized &&
            a.stride == b.stride && a.pointer == b.pointer && a.buffer == b.buffer && a.divisor == b.divisor &&
-           a.binding == b.binding && a.relative_offset == b.relative_offset && a.integer == b.integer &&
-           a.configured == b.configured && a.uses_binding_model == b.uses_binding_model;
+           a.buffer_lifetime == b.buffer_lifetime && a.binding == b.binding &&
+           a.relative_offset == b.relative_offset && a.integer == b.integer && a.configured == b.configured &&
+           a.uses_binding_model == b.uses_binding_model;
 }
 
 static GLuint driver_buffer_name(GLuint frontend_name) {
@@ -290,6 +310,274 @@ static GLuint driver_buffer_name(GLuint frontend_name) {
 static bool client_attrib_trace_milestone(unsigned long long hits) {
     return hits == 1 || hits == 1024 || hits == 65536;
 }
+
+static bool driver_vao_matches_frontend() {
+    if (!g_bc->driver_bound_array_known) return false;
+    if (g_bound_array == 0) return g_bc->driver_bound_array == 0;
+    if (!has_array(g_bound_array)) return false;
+    const GLuint real_array = find_real_array(g_bound_array);
+    return real_array != 0 && g_bc->driver_bound_array == real_array;
+}
+
+static bool basevertex_backend_available() {
+    return GLES.glDrawElementsBaseVertex != nullptr && hardware != nullptr &&
+           (hardware->es_version >= 320 || g_gles_caps.GL_EXT_draw_elements_base_vertex ||
+            g_gles_caps.GL_OES_draw_elements_base_vertex);
+}
+
+static bool same_pointer_layout(const vertex_attrib_state_t& frontend, const vertex_attrib_state_t& driver) {
+    return frontend.configured && driver.configured && !frontend.uses_binding_model && !driver.uses_binding_model &&
+           frontend.size == driver.size && frontend.type == driver.type &&
+           frontend.normalized == driver.normalized && frontend.stride == driver.stride &&
+           frontend.buffer == driver.buffer && frontend.buffer_lifetime == driver.buffer_lifetime &&
+           frontend.divisor == driver.divisor && frontend.integer == driver.integer;
+}
+
+static bool same_driver_pointer(const vertex_attrib_state_t& frontend, const vertex_attrib_state_t& driver) {
+    return same_pointer_layout(frontend, driver) && frontend.pointer == driver.pointer;
+}
+
+static GLsizei tightly_packed_vertex_stride(const vertex_attrib_state_t& attrib) {
+    GLsizei component = 0;
+    switch (attrib.type) {
+    case GL_BYTE:
+    case GL_UNSIGNED_BYTE:
+        component = 1;
+        break;
+    case GL_SHORT:
+    case GL_UNSIGNED_SHORT:
+    case GL_HALF_FLOAT:
+        component = 2;
+        break;
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+    case GL_FLOAT:
+    case GL_FIXED:
+        component = 4;
+        break;
+    case GL_DOUBLE:
+        component = 8;
+        break;
+    case GL_INT_2_10_10_10_REV:
+    case GL_UNSIGNED_INT_2_10_10_10_REV:
+    case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        return 4;
+    default:
+        return 0;
+    }
+    if (attrib.size <= 0 || attrib.size > 4) return 0;
+    return component * attrib.size;
+}
+
+static bool pointer_delta_as_basevertex(uintptr_t frontend, uintptr_t driver, GLsizei stride, GLint* out) {
+    if (!out || stride <= 0) return false;
+    const uint64_t step = static_cast<uint64_t>(stride);
+    if (frontend >= driver) {
+        const uint64_t delta = static_cast<uint64_t>(frontend - driver);
+        if (delta % step != 0 || delta / step > static_cast<uint64_t>(std::numeric_limits<GLint>::max()))
+            return false;
+        *out = static_cast<GLint>(delta / step);
+        return true;
+    }
+
+    const uint64_t delta = static_cast<uint64_t>(driver - frontend);
+    const uint64_t negative_limit = static_cast<uint64_t>(std::numeric_limits<GLint>::max()) + 1;
+    if (delta % step != 0 || delta / step > negative_limit) return false;
+    const uint64_t magnitude = delta / step;
+    *out = magnitude == negative_limit ? std::numeric_limits<GLint>::min() : -static_cast<GLint>(magnitude);
+    return true;
+}
+
+enum class basevertex_match_t : uint8_t {
+    hit,
+    zero,
+    incompatible,
+};
+
+static basevertex_match_t find_common_basevertex(const vertex_array_state_t& state, GLint* out) {
+    if (!out || !state.basevertex_eligible) return basevertex_match_t::incompatible;
+
+    bool found = false;
+    GLint common = 0;
+    for (size_t i = 0; i < kTrackedVertexAttribs; ++i) {
+        const vertex_attrib_state_t& frontend = state.attribs[i];
+        if (frontend.enabled != GL_TRUE) continue;
+        const vertex_attrib_state_t& driver = state.driver_attribs[i];
+        if (!same_pointer_layout(frontend, driver)) return basevertex_match_t::incompatible;
+
+        // baseVertex affects only per-vertex fetch. Instanced attributes must
+        // already point at the exact frontend address.
+        if (frontend.divisor != 0) {
+            if (frontend.pointer != driver.pointer) return basevertex_match_t::incompatible;
+            continue;
+        }
+        if (frontend.buffer == 0) return basevertex_match_t::incompatible;
+
+        const GLsizei stride = frontend.stride != 0 ? frontend.stride : tightly_packed_vertex_stride(frontend);
+        GLint candidate = 0;
+        if (!pointer_delta_as_basevertex(frontend.pointer, driver.pointer, stride, &candidate))
+            return basevertex_match_t::incompatible;
+        if (!found) {
+            common = candidate;
+            found = true;
+        } else if (candidate != common) {
+            return basevertex_match_t::incompatible;
+        }
+    }
+
+    *out = found ? common : 0;
+    return found && common != 0 ? basevertex_match_t::hit : basevertex_match_t::zero;
+}
+
+static void trace_basevertex_draw(const char* result, GLint basevertex) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const basevertex_stats_t& stats = g_bc->basevertex_stats;
+    if (stats.draw_attempts <= 8 || stats.draw_attempts == 1024 || stats.draw_attempts == 65536) {
+        write_log("ZOMDROID_PZ_BASEVERTEX_PATTERN attempt=%llu hits=%llu zero=%llu miss_vao=%llu "
+                  "miss_program=%llu miss_layout=%llu flushes=%llu pointer=%llu/%llu result=%s base=%d",
+                  stats.draw_attempts, stats.draw_hits, stats.zero_base, stats.miss_vao, stats.miss_program,
+                  stats.miss_layout, stats.flushes, stats.pointer_deferred, stats.pointer_calls, result, basevertex);
+    }
+#else
+    (void)result;
+    (void)basevertex;
+#endif
+}
+
+static bool defer_vertex_attrib_pointer(GLuint index) {
+    if (!mg_pz_basevertex_fastpath_active || !basevertex_backend_available()) return false;
+    basevertex_stats_t& stats = g_bc->basevertex_stats;
+    ++stats.pointer_calls;
+    if (index >= kTrackedVertexAttribs || g_bound_array == 0 || !driver_vao_matches_frontend()) return false;
+
+    vertex_array_state_t& state = current_vertex_array_state();
+    const vertex_attrib_state_t& frontend = state.attribs[index];
+    const vertex_attrib_state_t& driver = state.driver_attribs[index];
+    if (!state.basevertex_eligible || frontend.buffer == 0 || !same_pointer_layout(frontend, driver)) return false;
+
+    ++stats.pointer_deferred;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (client_attrib_trace_milestone(stats.pointer_deferred)) {
+        write_log("ZOMDROID_PZ_BASEVERTEX_POINTER skipped=%llu calls=%llu vao=%u attrib=%u",
+                  stats.pointer_deferred, stats.pointer_calls, g_bound_array, index);
+    }
+#endif
+    return true;
+}
+
+static void note_driver_attrib_pointer(GLuint index) {
+    if (mg_pz_basevertex_fastpath_active && index < kTrackedVertexAttribs && driver_vao_matches_frontend()) {
+        vertex_array_state_t& state = current_vertex_array_state();
+        state.driver_attribs[index] = state.attribs[index];
+    }
+}
+#endif
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+void mg_pz_flush_deferred_vertex_attribs() {
+    if (!mg_pz_basevertex_fastpath_active || !basevertex_backend_available()) return;
+    if (!driver_vao_matches_frontend()) return;
+    vertex_array_state_t& state = current_vertex_array_state();
+    const GLuint previous_buffer = mg_driver_bound_buffer(GL_ARRAY_BUFFER);
+    GLuint driver_buffer = previous_buffer;
+    bool changed = false;
+
+    for (GLuint i = 0; i < kTrackedVertexAttribs; ++i) {
+        const vertex_attrib_state_t& frontend = state.attribs[i];
+        vertex_attrib_state_t& driver = state.driver_attribs[i];
+        if (!frontend.configured || frontend.uses_binding_model || same_driver_pointer(frontend, driver)) continue;
+
+        const GLuint wanted_buffer = driver_buffer_name(frontend.buffer);
+        if (driver_buffer != wanted_buffer) {
+            GLES.glBindBuffer(GL_ARRAY_BUFFER, wanted_buffer);
+            driver_buffer = wanted_buffer;
+        }
+        const void* pointer = reinterpret_cast<const void*>(frontend.pointer);
+        if (frontend.integer)
+            GLES.glVertexAttribIPointer(i, frontend.size, frontend.type, frontend.stride, pointer);
+        else
+            GLES.glVertexAttribPointer(i, frontend.size, frontend.type, frontend.normalized, frontend.stride, pointer);
+        driver = frontend;
+        changed = true;
+    }
+
+    if (driver_buffer != previous_buffer) GLES.glBindBuffer(GL_ARRAY_BUFFER, previous_buffer);
+    if (changed) ++g_bc->basevertex_stats.flushes;
+}
+
+bool mg_pz_prepare_basevertex_draw(bool program_uses_vertex_id, GLint* basevertex) {
+    if (!basevertex) return false;
+    *basevertex = 0;
+    if (!mg_pz_basevertex_fastpath_active || !basevertex_backend_available()) {
+        mg_pz_flush_deferred_vertex_attribs();
+        return false;
+    }
+
+    basevertex_stats_t& stats = g_bc->basevertex_stats;
+    ++stats.draw_attempts;
+    if (program_uses_vertex_id) {
+        ++stats.miss_program;
+        mg_pz_flush_deferred_vertex_attribs();
+        trace_basevertex_draw("program_vertex_id", 0);
+        return false;
+    }
+    if (g_bound_array == 0 || !driver_vao_matches_frontend()) {
+        ++stats.miss_vao;
+        trace_basevertex_draw("vao", 0);
+        return false;
+    }
+
+    const basevertex_match_t match = find_common_basevertex(current_vertex_array_state(), basevertex);
+    if (match == basevertex_match_t::incompatible) {
+        ++stats.miss_layout;
+        mg_pz_flush_deferred_vertex_attribs();
+        trace_basevertex_draw("layout", 0);
+        *basevertex = 0;
+        return false;
+    }
+    if (match == basevertex_match_t::zero) {
+        ++stats.zero_base;
+        trace_basevertex_draw("zero", 0);
+        return false;
+    }
+
+    ++stats.draw_hits;
+    trace_basevertex_draw("hit", *basevertex);
+    return true;
+}
+
+#if defined(MOBILEGLUES_TESTING)
+void mg_test_basevertex_reset() {
+    current_vertex_array_state() = {};
+}
+
+void mg_test_basevertex_attrib(GLuint index, GLboolean enabled, uintptr_t frontend_pointer,
+                               uintptr_t driver_pointer, GLsizei stride, GLuint divisor, bool binding_model) {
+    if (index >= kTrackedVertexAttribs) return;
+    vertex_array_state_t& state = current_vertex_array_state();
+    vertex_attrib_state_t attrib;
+    attrib.enabled = enabled;
+    attrib.size = 4;
+    attrib.type = GL_FLOAT;
+    attrib.normalized = GL_FALSE;
+    attrib.stride = stride;
+    attrib.pointer = frontend_pointer;
+    attrib.buffer = 1;
+    attrib.buffer_lifetime = 1;
+    attrib.divisor = divisor;
+    attrib.binding = index;
+    attrib.integer = false;
+    attrib.configured = true;
+    attrib.uses_binding_model = binding_model;
+    state.attribs[index] = attrib;
+    attrib.pointer = driver_pointer;
+    state.driver_attribs[index] = attrib;
+}
+
+int mg_test_find_common_basevertex(GLint* basevertex) {
+    return static_cast<int>(find_common_basevertex(current_vertex_array_state(), basevertex));
+}
+#endif
 #endif
 
 static inline int ensure_buffer_capacity(GLuint id) {
@@ -868,6 +1156,17 @@ void glDeleteBuffers(GLsizei n, const GLuint* buffers) {
     LOG()
     LOG_D("glDeleteBuffers(%i, %p)", n, buffers)
     for (int i = 0; i < n; ++i) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+        // Frontend names are recycled. A driver anchor that still names the old
+        // lifetime must never compare equal to the replacement object.
+        if (mg_pz_basevertex_fastpath_active) {
+            for (auto& vao : g_bc->vertex_array_states) {
+                for (auto& attrib : vao.second.driver_attribs) {
+                    if (attrib.configured && attrib.buffer == buffers[i]) attrib.configured = false;
+                }
+            }
+        }
+#endif
         // GL resets a binding to 0 when the bound buffer is deleted. The
         // parameter buffer slot is the only source of truth gl/multidraw.cpp has
         // for where the draw count lives -- there is no driver-side binding to
@@ -984,6 +1283,10 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
     LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
           stride)
 #if defined(ZOMDROID_EXPERIMENTAL)
+    if (mg_pz_basevertex_fastpath_active) {
+        mg_pz_flush_deferred_vertex_attribs();
+        current_vertex_array_state().basevertex_eligible = false;
+    }
     if (mg_pz_census_active) {
         const bool tracked = bindingindex < kTrackedVertexAttribs;
         const bool exact = tracked && current_vertex_array_state().bindings[bindingindex].configured &&
@@ -1793,14 +2096,6 @@ bool binding_used_by_model(const vertex_array_state_t& state, GLuint binding) {
     return false;
 }
 
-bool driver_vao_matches_frontend() {
-    if (!g_bc->driver_bound_array_known) return false;
-    if (g_bound_array == 0) return g_bc->driver_bound_array == 0;
-    if (!has_array(g_bound_array)) return false;
-    const GLuint real_array = find_real_array(g_bound_array);
-    return real_array != 0 && g_bc->driver_bound_array == real_array;
-}
-
 void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
     // Restore the frontend VAO name first.  The wrapper maps it back to the
     // driver's renamed object and also reselects the VAO-owned index binding.
@@ -1831,7 +2126,8 @@ void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
             const bool pointer_changed = !old.configured || old.uses_binding_model || old.size != saved.size ||
                                          old.type != saved.type || old.normalized != saved.normalized ||
                                          old.stride != saved.stride || old.pointer != saved.pointer ||
-                                         old.buffer != saved.buffer || old.integer != saved.integer;
+                                         old.buffer != saved.buffer || old.buffer_lifetime != saved.buffer_lifetime ||
+                                         old.integer != saved.integer;
             if (pointer_changed) {
                 GLES.glBindBuffer(GL_ARRAY_BUFFER, driver_buffer_name(saved.buffer));
                 const void* pointer = reinterpret_cast<const void*>(saved.pointer);
@@ -1922,6 +2218,7 @@ extern "C" GLAPI GLAPIENTRY void glPushClientAttrib(GLbitfield mask) {
     client_attrib_snapshot_t snapshot;
     snapshot.mask = mask;
     if ((mask & GL_CLIENT_VERTEX_ARRAY_BIT) != 0) {
+        mg_pz_flush_deferred_vertex_attribs();
         snapshot.vertex_array = find_bound_array();
         snapshot.array_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
         snapshot.element_array_buffer = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
@@ -1977,13 +2274,15 @@ NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized,
                      GLsizei stride, const void* pointer)
     const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    const uint64_t frontend_lifetime =
+        frontend_buffer < g_buffer_lifetimes.size() ? g_buffer_lifetimes[frontend_buffer] : 0;
     if (mg_pz_census_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
         const bool exact = previous && previous->configured && !previous->uses_binding_model && !previous->integer &&
                            previous->size == size && previous->type == type && previous->normalized == normalized &&
                            previous->stride == stride && previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
-                           previous->buffer == frontend_buffer;
+                           previous->buffer == frontend_buffer && previous->buffer_lifetime == frontend_lifetime;
         mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
     }
     if (index < kTrackedVertexAttribs) {
@@ -1994,25 +2293,30 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLen
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
         attrib.buffer = frontend_buffer;
+        attrib.buffer_lifetime = frontend_lifetime;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = false;
         attrib.configured = true;
         attrib.uses_binding_model = false;
     }
+    if (defer_vertex_attrib_pointer(index)) return;
     GLES.glVertexAttribPointer(index, size, type, normalized, stride, pointer);
+    note_driver_attrib_pointer(index);
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride,
                      const void* pointer)
     const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    const uint64_t frontend_lifetime =
+        frontend_buffer < g_buffer_lifetimes.size() ? g_buffer_lifetimes[frontend_buffer] : 0;
     if (mg_pz_census_active) {
         const bool tracked = index < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
         const bool exact = previous && previous->configured && !previous->uses_binding_model && previous->integer &&
                            previous->size == size && previous->type == type && previous->stride == stride &&
                            previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
-                           previous->buffer == frontend_buffer;
+                           previous->buffer == frontend_buffer && previous->buffer_lifetime == frontend_lifetime;
         mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
     }
     if (index < kTrackedVertexAttribs) {
@@ -2023,13 +2327,16 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
         attrib.buffer = frontend_buffer;
+        attrib.buffer_lifetime = frontend_lifetime;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = true;
         attrib.configured = true;
         attrib.uses_binding_model = false;
     }
+    if (defer_vertex_attrib_pointer(index)) return;
     GLES.glVertexAttribIPointer(index, size, type, stride, pointer);
+    note_driver_attrib_pointer(index);
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)
@@ -2044,10 +2351,16 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)
         state.bindings[index].divisor = divisor;
     }
     GLES.glVertexAttribDivisor(index, divisor);
+    if (mg_pz_basevertex_fastpath_active && index < kTrackedVertexAttribs && driver_vao_matches_frontend())
+        current_vertex_array_state().driver_attribs[index].divisor = divisor;
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size, GLenum type, GLboolean normalized,
                      GLuint relativeoffset)
+    if (mg_pz_basevertex_fastpath_active) {
+        mg_pz_flush_deferred_vertex_attribs();
+        current_vertex_array_state().basevertex_eligible = false;
+    }
     if (mg_pz_census_active) {
         const bool tracked = attribindex < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
@@ -2070,6 +2383,10 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size,
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
+    if (mg_pz_basevertex_fastpath_active) {
+        mg_pz_flush_deferred_vertex_attribs();
+        current_vertex_array_state().basevertex_eligible = false;
+    }
     if (mg_pz_census_active) {
         const bool tracked = attribindex < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
@@ -2092,6 +2409,10 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bindingindex)
+    if (mg_pz_basevertex_fastpath_active) {
+        mg_pz_flush_deferred_vertex_attribs();
+        current_vertex_array_state().basevertex_eligible = false;
+    }
     if (mg_pz_census_active) {
         const bool tracked = attribindex < kTrackedVertexAttribs && bindingindex < kTrackedVertexAttribs;
         const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
@@ -2108,6 +2429,10 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bin
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexBindingDivisor, GLuint bindingindex, GLuint divisor)
+    if (mg_pz_basevertex_fastpath_active) {
+        mg_pz_flush_deferred_vertex_attribs();
+        current_vertex_array_state().basevertex_eligible = false;
+    }
     if (mg_pz_census_active) {
         const bool tracked = bindingindex < kTrackedVertexAttribs;
         const bool exact = tracked && current_vertex_array_state().bindings[bindingindex].configured &&

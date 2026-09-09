@@ -318,15 +318,22 @@ void setupBufferTextureUniforms(GLuint program) {
         mg_pz_uniform_driver_write(program, info.locHeight, 0x101U, 1, &texObject->height, sizeof(texObject->height)));
 }
 
-void prepareForDraw() {
+static void prepareForDrawImpl(bool preserve_deferred_attribs) {
     LOG_D("prepareForDraw...")
 #if defined(ZOMDROID_EXPERIMENTAL)
+    if (!preserve_deferred_attribs) mg_pz_flush_deferred_vertex_attribs();
     mg_prepare_pz_alpha_test(gl_state->current_program);
+#else
+    (void)preserve_deferred_attribs;
 #endif
     if (hardware->emulate_texture_buffer) {
         setupBufferTextureUniforms(gl_state->current_program);
     }
     trace_texture_state_before_draw(gl_state->current_program);
+}
+
+void prepareForDraw() {
+    prepareForDrawImpl(false);
 }
 
 namespace {
@@ -577,6 +584,9 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     LOG()
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_flush_deferred_vertex_attribs();
+#endif
     MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, 1));
     if (mode == GL_QUADS) {
         prepareForDraw();
@@ -594,6 +604,9 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 
 void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {
     LOG()
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_flush_deferred_vertex_attribs();
+#endif
     MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, instancecount));
     if (mode == GL_QUADS) {
         prepareForDraw();
@@ -628,14 +641,32 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices
                                    mode == GL_TRIANGLES && !mg_restart_needs_rewrite(type) &&
                                        !mg_restart_needs_driver_fixed(type)));
     LOG_D("glDrawElements, mode: %d, count: %d, type: %d, indices: %p", mode, count, type, indices)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const bool basevertex_candidate =
+        mg_pz_basevertex_fastpath_active && mode == GL_TRIANGLES && count > 0 &&
+        (type == GL_UNSIGNED_BYTE || type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) &&
+        !mg_restart_needs_rewrite(type) && !mg_restart_needs_driver_fixed(type);
+    const bool program_uses_vertex_id =
+        basevertex_candidate ? mg_program_uses_vertex_id(gl_state->current_program) : true;
+    prepareForDrawImpl(basevertex_candidate);
+#else
     prepareForDraw();
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     MG_PZ_CENSUS(mg_pz_census_batch_draw(gl_state->current_program, mode, type, count,
                                          mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER)));
+#if defined(ZOMDROID_EXPERIMENTAL)
+    GLint pz_basevertex = 0;
+    if (basevertex_candidate && mg_pz_prepare_basevertex_draw(program_uses_vertex_id, &pz_basevertex))
+        GLES.glDrawElementsBaseVertex(mode, count, type, indices, pz_basevertex);
+    else
+        GLES.glDrawElements(mode, count, type, indices);
+#else
     GLES.glDrawElements(mode, count, type, indices);
+#endif
     if (restart_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     CHECK_GL_ERROR
 }

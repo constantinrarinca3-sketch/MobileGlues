@@ -21,6 +21,7 @@ extern bool mg_pz_uniform_fastpath_active;
 extern bool mg_pz_buffer_streaming_active;
 extern bool mg_pz_state_shadow_active;
 extern bool mg_pz_runtime_mipmap_skip_active;
+extern bool mg_pz_basevertex_fastpath_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,
