@@ -176,6 +176,11 @@ struct census_state_t {
     uint32_t over_33_ms = 0;
     uint32_t over_50_ms = 0;
     uint32_t over_100_ms = 0;
+    uint32_t texture_frames = 0;
+    uint32_t texture_over_20_ms = 0;
+    uint32_t texture_over_33_ms = 0;
+    uint32_t texture_over_50_ms = 0;
+    uint32_t texture_over_100_ms = 0;
     uint32_t failed_swaps = 0;
 };
 
@@ -267,6 +272,11 @@ void reset_window(census_state_t& state) {
     state.over_33_ms = 0;
     state.over_50_ms = 0;
     state.over_100_ms = 0;
+    state.texture_frames = 0;
+    state.texture_over_20_ms = 0;
+    state.texture_over_33_ms = 0;
+    state.texture_over_50_ms = 0;
+    state.texture_over_100_ms = 0;
     state.failed_swaps = 0;
 }
 
@@ -277,7 +287,7 @@ void report(const census_state_t& state) {
     const double worst_ms = static_cast<double>(state.worst_ns) / 1000000.0;
     const counters_t& c = state.window;
     const counters_t& w = state.worst_frame;
-    LOG_I("ZOMDROID_PZ_CENSUS schema=4 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
+    LOG_I("ZOMDROID_PZ_CENSUS schema=5 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
@@ -286,7 +296,7 @@ void report(const census_state_t& state) {
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
           "tex_upload=%llu+%llu/%llu/%lluB/%lluB tex_src=%llu/%llu/%llu "
-          "tex_convert=%llu/%lluB tex_pbo=%llu tex_drop=%llu "
+          "tex_convert=%llu/%lluB tex_pbo=%llu tex_drop=%llu tex_frames=%u/%u/%u/%u/%u "
           "batch_e=%llu/%llu/%llu/%llu batch_break=%llu/%llu/%llu/%llu/%llu/%llu "
           "worst_draw=%llu worst_items=%llu worst_upload=%lluB worst_tex=%llu/%lluB/%lluB",
           state.frames, average_ms, worst_ms, state.over_20_ms, state.over_33_ms, state.over_50_ms,
@@ -307,7 +317,9 @@ void report(const census_state_t& state) {
           c.buffer_map_bytes, c.texture_image_calls, c.texture_sub_image_calls, c.texture_data_calls,
           c.texture_upload_bytes, c.texture_max_upload_bytes, c.texture_rgba_calls, c.texture_bgra_calls,
           c.texture_other_calls, c.texture_conversion_calls, c.texture_conversion_bytes, c.texture_pbo_calls,
-          c.texture_dropped_calls, c.batch_elements_candidates, c.batch_elements_adjacent, c.batch_elements_runs,
+          c.texture_dropped_calls, state.texture_frames, state.texture_over_20_ms, state.texture_over_33_ms,
+          state.texture_over_50_ms, state.texture_over_100_ms, c.batch_elements_candidates,
+          c.batch_elements_adjacent, c.batch_elements_runs,
           c.batch_elements_max_run, c.batch_breaks[0], c.batch_breaks[1], c.batch_breaks[2], c.batch_breaks[3],
           c.batch_breaks[4], c.batch_breaks[5], w.draw_commands, w.draw_items, w.buffer_upload_bytes,
           w.texture_data_calls, w.texture_upload_bytes, w.texture_conversion_bytes)
@@ -341,7 +353,7 @@ void mg_pz_census_init(void) {
     g_uniform_context = 0;
     g_batch = {};
     if (mg_pz_census_active) {
-        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=4 interval_frames=%u", kReportFrames)
+        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=5 interval_frames=%u", kReportFrames)
     }
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
@@ -636,14 +648,28 @@ void mg_pz_census_present(bool succeeded) {
     census_state_t& state = g_census;
     const uint64_t now = monotonic_now_ns();
     uint64_t delta = 0;
+    const bool texture_frame = state.frame.texture_data_calls != 0;
+    if (texture_frame) ++state.texture_frames;
     if (now != 0 && state.previous_present_ns != 0 && now >= state.previous_present_ns) {
         delta = now - state.previous_present_ns;
         state.elapsed_ns += delta;
         ++state.timed_frames;
-        if (delta > 20000000ULL) ++state.over_20_ms;
-        if (delta > 33333333ULL) ++state.over_33_ms;
-        if (delta > 50000000ULL) ++state.over_50_ms;
-        if (delta > 100000000ULL) ++state.over_100_ms;
+        if (delta > 20000000ULL) {
+            ++state.over_20_ms;
+            if (texture_frame) ++state.texture_over_20_ms;
+        }
+        if (delta > 33333333ULL) {
+            ++state.over_33_ms;
+            if (texture_frame) ++state.texture_over_33_ms;
+        }
+        if (delta > 50000000ULL) {
+            ++state.over_50_ms;
+            if (texture_frame) ++state.texture_over_50_ms;
+        }
+        if (delta > 100000000ULL) {
+            ++state.over_100_ms;
+            if (texture_frame) ++state.texture_over_100_ms;
+        }
         if (delta > state.worst_ns) {
             state.worst_ns = delta;
             state.worst_frame = state.frame;

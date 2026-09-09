@@ -114,7 +114,7 @@ int main() {
     expect(last_file_log.find("draw_a=300") != std::string::npos, "array draws must be aggregated");
     expect(last_file_log.find("items=1800") != std::string::npos, "draw item count must be aggregated");
     expect(last_file_log.find("program=300/100") != std::string::npos, "redundant program calls must be split");
-    expect(last_file_log.find("schema=4") != std::string::npos, "schema 4 must be reported");
+    expect(last_file_log.find("schema=5") != std::string::npos, "schema 5 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
     expect(last_file_log.find("uniform=300/300/299/299") != std::string::npos,
@@ -128,6 +128,8 @@ int main() {
            "RGBA and BGRA sources must be split");
     expect(last_file_log.find("tex_convert=300/153600B tex_pbo=300 tex_drop=0") != std::string::npos,
            "CPU conversions and unpack-PBO uploads must be reported");
+    expect(last_file_log.find("tex_frames=300/0/0/0/0") != std::string::npos,
+           "texture frames must be correlated with frame-time buckets");
     expect(last_file_log.find("batch_e=900/300/600/2") != std::string::npos,
            "exact adjacent element-draw runs must be reported");
     expect(last_file_log.find("batch_break=300/0/0/0/0/0") != std::string::npos,
