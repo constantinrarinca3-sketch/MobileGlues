@@ -178,6 +178,13 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         // that describe it, so glGetIntegerv can never disagree with glIsEnabled.
         GLboolean enabled = GL_FALSE;
         GLint ival = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        GLfloat alpha = 0.0f;
+        if (mg_alpha_test_query(pname, &alpha)) {
+            (*params) = static_cast<GLint>(alpha);
+            break;
+        }
+#endif
         if (mg_enable_query(pname, &enabled)) {
             (*params) = enabled ? 1 : 0;
             break;

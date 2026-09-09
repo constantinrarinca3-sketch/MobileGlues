@@ -26,6 +26,9 @@ struct shader_t shaderInfo;
 
 UnorderedMap<GLuint, bool> shader_map_is_sampler_buffer_emulated;
 UnorderedMap<GLuint, std::vector<mg_glsl_compat::uniform_default_value>> shader_map_uniform_defaults;
+#if defined(ZOMDROID_EXPERIMENTAL)
+UnorderedMap<GLuint, mg_glsl_compat::pz_alpha_shader_kind> shader_map_pz_alpha_kind;
+#endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 UnorderedMap<GLuint, bool> zomdroid_tile_depth_shader;
 #endif
@@ -35,9 +38,19 @@ const std::vector<mg_glsl_compat::uniform_default_value>* mg_shader_uniform_defa
     return it == shader_map_uniform_defaults.end() ? nullptr : &it->second;
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+mg_glsl_compat::pz_alpha_shader_kind mg_shader_pz_alpha_kind(GLuint shader) {
+    const auto it = shader_map_pz_alpha_kind.find(shader);
+    return it == shader_map_pz_alpha_kind.end() ? mg_glsl_compat::pz_alpha_shader_kind::none : it->second;
+}
+#endif
+
 void mg_shader_deleted(GLuint shader) {
     shader_map_uniform_defaults.erase(shader);
     shader_map_is_sampler_buffer_emulated.erase(shader);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    shader_map_pz_alpha_kind.erase(shader);
+#endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     zomdroid_tile_depth_shader.erase(shader);
 #endif
@@ -53,6 +66,7 @@ namespace {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 std::atomic<unsigned int> g_zomdroid_shader_source_seq{0};
 std::atomic<unsigned int> g_zomdroid_shader_status_seq{0};
+std::atomic<unsigned int> g_zomdroid_alpha_nearmiss_seq{0};
 constexpr unsigned int k_zomdroid_shader_trace_limit = 16;
 
 std::string shader_preview(const std::string& source) {
@@ -219,6 +233,28 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     bool is_sampler_buffer_emulated = hardware->emulate_texture_buffer && check_if_sampler_buffer_used(glsl_src);
     GLint shader_type = 0;
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &shader_type);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    shader_map_pz_alpha_kind.erase(shader);
+    mg_glsl_compat::pz_alpha_rewrite_result alpha_rewrite;
+    if (shader_type == GL_FRAGMENT_SHADER) {
+        alpha_rewrite = mg_glsl_compat::rewrite_pz_alpha_test_family(glsl_src);
+        if (alpha_rewrite.rewritten) {
+            shader_map_pz_alpha_kind[shader] = alpha_rewrite.kind;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+            write_log("ZOMDROID_ALPHA_SHADER_REWRITE shader=%u family=%s semantic_applied=1", shader,
+                      mg_glsl_compat::pz_alpha_shader_kind_name(alpha_rewrite.kind));
+#endif
+        } else if (alpha_rewrite.candidate) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+            const unsigned int hit = g_zomdroid_alpha_nearmiss_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (hit <= 12) {
+                write_log("ZOMDROID_ALPHA_SHADER_NEARMISS shader=%u contract_matched=%d semantic_applied=0 hit=%u",
+                          shader, alpha_rewrite.contract_matched ? 1 : 0, hit);
+            }
+#endif
+        }
+    }
+#endif
     int conversion_result = 0;
     const char* shader_route = "direct";
 

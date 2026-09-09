@@ -23,6 +23,37 @@ struct texture_call_rewrite_result {
     bool sampler_identifier_renamed = false;
 };
 
+enum class pz_alpha_shader_kind {
+    none,
+    chunk_composite,
+    tile_with_depth,
+    opaque_with_depth,
+    seam_fix_2,
+};
+
+struct pz_alpha_rewrite_result {
+    bool candidate = false;
+    bool contract_matched = false;
+    bool rewritten = false;
+    pz_alpha_shader_kind kind = pz_alpha_shader_kind::none;
+};
+
+inline const char* pz_alpha_shader_kind_name(pz_alpha_shader_kind kind) {
+    switch (kind) {
+    case pz_alpha_shader_kind::chunk_composite:
+        return "chunk_composite";
+    case pz_alpha_shader_kind::tile_with_depth:
+        return "tile_with_depth";
+    case pz_alpha_shader_kind::opaque_with_depth:
+        return "opaque_with_depth";
+    case pz_alpha_shader_kind::seam_fix_2:
+        return "seam_fix_2";
+    case pz_alpha_shader_kind::none:
+        return "none";
+    }
+    return "none";
+}
+
 constexpr const char* k_texture_sampler_alias = "zomdroid_texture_sampler";
 
 struct uniform_default_value {
@@ -150,6 +181,143 @@ inline std::string strip_glsl_comments(const std::string& glsl) {
         }
     }
     return clean;
+}
+
+struct unique_regex_match {
+    bool found = false;
+    size_t position = 0;
+    size_t length = 0;
+};
+
+inline unique_regex_match find_unique_regex(const std::string& source, const std::regex& pattern) {
+    unique_regex_match result;
+    size_t count = 0;
+    for (std::sregex_iterator it(source.begin(), source.end(), pattern), end; it != end; ++it) {
+        ++count;
+        if (count > 1) return {};
+        result.found = true;
+        result.position = static_cast<size_t>(it->position());
+        result.length = static_cast<size_t>(it->length());
+    }
+    return result;
+}
+
+inline bool regex_present(const std::string& source, const std::regex& pattern) {
+    return std::regex_search(source, pattern);
+}
+
+// Restore the one piece of legacy fixed-function state the four PZ chunk
+// shaders bypass. The matcher intentionally describes complete shader
+// contracts, not filenames (GL never receives those) and not a global alpha
+// heuristic. A changed game shader therefore stays untouched instead of being
+// approximately rewritten.
+inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
+    pz_alpha_rewrite_result result;
+    const std::string clean = strip_glsl_comments(glsl); // length-preserving; offsets remain valid
+
+    static const std::regex diffuse_decl(R"(\buniform\s+sampler2D\s+DIFFUSE\s*;)");
+    static const std::regex depth_decl(R"(\buniform\s+sampler2D\s+DEPTH\s*;)");
+    static const std::regex frag_color(R"(\bgl_FragColor\b)");
+    if (!regex_present(clean, diffuse_decl) || !regex_present(clean, depth_decl) ||
+        !find_unique_regex(clean, frag_color).found)
+        return result;
+    result.candidate = true;
+
+    static const std::regex injected(R"(\bzomdroidAlpha(?:Enabled|Func|Ref|Pass|FinalColor)\b)");
+    static const std::regex main_decl(R"(\bvoid\s+main\s*\(\s*\)\s*\{)");
+    const unique_regex_match main = find_unique_regex(clean, main_decl);
+    if (regex_present(clean, injected) || !main.found) return result;
+
+    static const std::regex chunk_depth(
+        R"(\bgl_FragDepth\s*=\s*chunkDepth\s*\+\s*depthTexel\s*;)");
+    static const std::regex chunk_color(R"(\bgl_FragColor\s*=\s*c\s*\*\s*col\s*;)");
+    static const std::regex chunk_depth_uniform(R"(\buniform\s+float\s+chunkDepth(?:\s*=\s*[^;]+)?\s*;)");
+    static const std::regex use_texture_uniform(R"(\buniform\s+int\s+useTexture(?:\s*=\s*[^;]+)?\s*;)");
+    static const std::regex depth_texel(R"(\bfloat\s+depthTexel\s*=)");
+
+    const unique_regex_match chunk_depth_write = find_unique_regex(clean, chunk_depth);
+    const unique_regex_match chunk_color_write = find_unique_regex(clean, chunk_color);
+    unique_regex_match replace;
+    bool replace_final_color = false;
+    if (chunk_depth_write.found && chunk_color_write.found && regex_present(clean, chunk_depth_uniform) &&
+        regex_present(clean, use_texture_uniform) && regex_present(clean, depth_texel)) {
+        result.kind = pz_alpha_shader_kind::chunk_composite;
+        replace = chunk_color_write;
+        replace_final_color = true;
+    } else {
+        static const std::regex producer_color(R"(\bgl_FragColor\s*=\s*c\s*;)");
+        static const std::regex producer_depth(R"(\bgl_FragDepth\s*=\s*calcDepthZ\s*;)");
+        static const std::regex depth_z_uniform(R"(\buniform\s+float\s+zDepthBlendZ(?:\s*=\s*[^;]+)?\s*;)");
+        static const std::regex depth_to_z_uniform(
+            R"(\buniform\s+float\s+zDepthBlendToZ(?:\s*=\s*[^;]+)?\s*;)");
+        static const std::regex multiply_color_a(R"(\bc\s*\.\s*rgb\s*\*=\s*col\s*\.\s*a\s*;)");
+        static const std::regex multiply_color(R"(\bc\s*\*=\s*col\s*;)");
+        static const std::regex multiply_opaque(R"(\bvec4\s+c\s*=\s*c0\s*\*\s*col\s*;)");
+
+        const unique_regex_match producer_color_write = find_unique_regex(clean, producer_color);
+        const unique_regex_match producer_depth_write = find_unique_regex(clean, producer_depth);
+        const bool common = producer_color_write.found && producer_depth_write.found &&
+                            regex_present(clean, depth_z_uniform) && regex_present(clean, depth_to_z_uniform) &&
+                            regex_present(clean, multiply_color_a) &&
+                            (regex_present(clean, multiply_color) || regex_present(clean, multiply_opaque));
+        if (common) {
+            static const std::regex mask_decl(R"(\buniform\s+sampler2D\s+MASK\s*;)");
+            static const std::regex mask_sample(R"(\bvec4\s+m\s*=\s*texture2D\s*\(\s*MASK\b)");
+            static const std::regex seam_condition(R"(\bif\s*\(\s*d\s*\*\s*m\s*\.\s*a\s*>\s*0(?:\.0+)?\s*\))");
+            static const std::regex opaque_sample(R"(\bvec4\s+c0\s*=\s*texture2D\s*\(\s*DIFFUSE\b)");
+            static const std::regex opaque_condition(
+                R"(\bif\s*\(\s*c0\s*\.\s*a\s*>\s*0\.8\s*&&\s*d\s*>\s*0\.0\s*\))");
+            static const std::regex tile_sample(R"(\bvec4\s+c\s*=\s*texture2D\s*\(\s*DIFFUSE\b)");
+            static const std::regex tile_condition(R"(\bif\s*\(\s*d\s*>\s*0(?:\.0+)?\s*\))");
+            static const std::regex c0_token(R"(\bc0\b)");
+
+            const bool seam = regex_present(clean, mask_decl) && regex_present(clean, mask_sample) &&
+                              regex_present(clean, seam_condition);
+            const bool opaque = !regex_present(clean, mask_decl) && regex_present(clean, opaque_sample) &&
+                                regex_present(clean, multiply_opaque) && regex_present(clean, opaque_condition);
+            const bool tile = !regex_present(clean, mask_decl) && !regex_present(clean, c0_token) &&
+                              regex_present(clean, tile_sample) && regex_present(clean, multiply_color) &&
+                              regex_present(clean, tile_condition);
+            const unsigned matches = static_cast<unsigned>(seam) + static_cast<unsigned>(opaque) +
+                                     static_cast<unsigned>(tile);
+            if (matches == 1) {
+                result.kind = seam       ? pz_alpha_shader_kind::seam_fix_2
+                              : opaque   ? pz_alpha_shader_kind::opaque_with_depth
+                                         : pz_alpha_shader_kind::tile_with_depth;
+                replace = producer_depth_write;
+            }
+        }
+    }
+
+    result.contract_matched = result.kind != pz_alpha_shader_kind::none && replace.found;
+    if (!result.contract_matched) return result;
+
+    const std::string replacement =
+        replace_final_color
+            ? "vec4 zomdroidAlphaFinalColor = c * col;\n"
+              "    if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(zomdroidAlphaFinalColor.a)) discard;\n"
+              "    gl_FragColor = zomdroidAlphaFinalColor;"
+            : "if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(c.a)) discard;\n"
+              "        gl_FragDepth = calcDepthZ;";
+    glsl.replace(replace.position, replace.length, replacement);
+
+    static constexpr const char* declarations =
+        "uniform int zomdroidAlphaEnabled;\n"
+        "uniform int zomdroidAlphaFunc;\n"
+        "uniform float zomdroidAlphaRef;\n"
+        "bool zomdroidAlphaPass(float value) {\n"
+        "    if (zomdroidAlphaFunc == 512) return false;\n"
+        "    if (zomdroidAlphaFunc == 513) return value < zomdroidAlphaRef;\n"
+        "    if (zomdroidAlphaFunc == 514) return value == zomdroidAlphaRef;\n"
+        "    if (zomdroidAlphaFunc == 515) return value <= zomdroidAlphaRef;\n"
+        "    if (zomdroidAlphaFunc == 516) return value > zomdroidAlphaRef;\n"
+        "    if (zomdroidAlphaFunc == 517) return value != zomdroidAlphaRef;\n"
+        "    if (zomdroidAlphaFunc == 518) return value >= zomdroidAlphaRef;\n"
+        "    return true;\n"
+        "}\n\n";
+    glsl.insert(main.position, declarations);
+    result.rewritten = true;
+    return result;
 }
 
 inline std::vector<uniform_default_value> collect_uniform_defaults(const std::string& glsl) {

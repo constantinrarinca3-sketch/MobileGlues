@@ -22,7 +22,9 @@ extern "C" {
 */
 STUB_FUNCTION_HEAD(void, glClearIndex, GLfloat c ) STUB_FUNCTION_END_NO_RETURN(void, glClearIndex,c)
 STUB_FUNCTION_HEAD(void, glIndexMask, GLuint mask ) STUB_FUNCTION_END_NO_RETURN(void, glIndexMask,mask)
+#if !defined(ZOMDROID_EXPERIMENTAL)
 STUB_FUNCTION_HEAD(void, glAlphaFunc, GLenum func, GLclampf ref ) STUB_FUNCTION_END_NO_RETURN(void, glAlphaFunc,func,ref)
+#endif
 STUB_FUNCTION_HEAD(void, glLogicOp, GLenum opcode ) STUB_FUNCTION_END_NO_RETURN(void, glLogicOp,opcode)
 STUB_FUNCTION_HEAD(void, glPointSize, GLfloat size ) STUB_FUNCTION_END_NO_RETURN(void, glPointSize,size)
 STUB_FUNCTION_HEAD(void, glLineStipple, GLint factor, GLushort pattern ) STUB_FUNCTION_END_NO_RETURN(void, glLineStipple,factor,pattern)

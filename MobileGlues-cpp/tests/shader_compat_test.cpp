@@ -2,9 +2,54 @@
 
 #include "../gl/glsl/shader_compat.h"
 
+#include <array>
 #include <cassert>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
+
+namespace {
+
+using mg_glsl_compat::pz_alpha_shader_kind;
+
+std::string read_file(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    assert(input && "optional PZ shader fixture could not be opened");
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return contents.str();
+}
+
+void expect_alpha_rewrite(std::string source, pz_alpha_shader_kind expected_kind, bool producer) {
+    const auto result = mg_glsl_compat::rewrite_pz_alpha_test_family(source);
+    assert(result.candidate);
+    assert(result.contract_matched);
+    assert(result.rewritten);
+    assert(result.kind == expected_kind);
+    assert(source.find("uniform int zomdroidAlphaEnabled;") != std::string::npos);
+    assert(source.find("uniform int zomdroidAlphaFunc;") != std::string::npos);
+    assert(source.find("uniform float zomdroidAlphaRef;") != std::string::npos);
+
+    const size_t discard = source.find("!zomdroidAlphaPass(");
+    assert(discard != std::string::npos);
+    if (producer) {
+        const size_t depth = source.find("gl_FragDepth = calcDepthZ;", discard);
+        assert(depth != std::string::npos);
+        assert(discard < depth);
+    } else {
+        assert(source.find("zomdroidAlphaFinalColor = c * col") != std::string::npos);
+    }
+
+    const std::string once = source;
+    const auto second = mg_glsl_compat::rewrite_pz_alpha_test_family(source);
+    assert(second.candidate);
+    assert(!second.rewritten);
+    assert(source == once);
+}
+
+} // namespace
 
 int main() {
     {
@@ -79,6 +124,70 @@ int main() {
                defaults[2].values[0] == 1.0 / 64.0);
         assert(defaults[3].name == "AmbientColor" && defaults[3].components == 3 &&
                defaults[3].values[0] == 0.4 && defaults[3].values[2] == 0.4);
+    }
+
+    // Structurally faithful, reduced forms of the four B42.20.x fragment
+    // shaders that bypass desktop GL_ALPHA_TEST. These fixtures test the
+    // contract without copying the game's complete shader sources here.
+    expect_alpha_rewrite(
+        "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH;\n"
+        "uniform int useTexture = 1; uniform float chunkDepth = 0.0; varying vec4 col;\n"
+        "void main() { vec4 c = vec4(1); float depthTexel = texture2D(DEPTH, vec2(0)).r;\n"
+        "gl_FragDepth = chunkDepth + depthTexel; gl_FragColor = c * col; }\n",
+        pz_alpha_shader_kind::chunk_composite, false);
+
+    expect_alpha_rewrite(
+        "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
+        "c *= col; c.rgb *= col.a; if (d > 0) { float calcDepthZ = zDepthBlendZ + d * zDepthBlendToZ;\n"
+        "gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
+        pz_alpha_shader_kind::tile_with_depth, true);
+
+    expect_alpha_rewrite(
+        "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "void main() { vec4 c0 = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
+        "vec4 c = c0 * col; c.rgb *= col.a; if (c0.a > 0.8 && d > 0.0) {\n"
+        "float calcDepthZ = zDepthBlendZ; gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
+        pz_alpha_shader_kind::opaque_with_depth, true);
+
+    expect_alpha_rewrite(
+        "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; uniform sampler2D MASK; varying vec4 col;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
+        "vec4 m = texture2D(MASK, vec2(0)); c *= col; c.rgb *= col.a; if (d * m.a > 0) {\n"
+        "float calcDepthZ = zDepthBlendZ; gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
+        pz_alpha_shader_kind::seam_fix_2, true);
+
+    {
+        std::string near_miss =
+            "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
+            "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+            "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
+            "c *= col; c.rgb *= col.a; if (d >= 0) { float calcDepthZ = zDepthBlendZ;\n"
+            "gl_FragDepth = calcDepthZ; gl_FragColor = c; } }\n";
+        const std::string original = near_miss;
+        const auto result = mg_glsl_compat::rewrite_pz_alpha_test_family(near_miss);
+        assert(result.candidate);
+        assert(!result.contract_matched);
+        assert(!result.rewritten);
+        assert(near_miss == original);
+    }
+
+    // Local validation can point at the legally installed game shaders. CI
+    // intentionally has no such dependency and skips this block.
+    if (const char* shader_dir = std::getenv("PZ_SHADER_DIR")) {
+        const std::array<std::pair<const char*, pz_alpha_shader_kind>, 4> shaders{{
+            {"chunkShader.frag", pz_alpha_shader_kind::chunk_composite},
+            {"tileWithDepth.frag", pz_alpha_shader_kind::tile_with_depth},
+            {"opaqueWithDepth.frag", pz_alpha_shader_kind::opaque_with_depth},
+            {"seamFix2.frag", pz_alpha_shader_kind::seam_fix_2},
+        }};
+        for (const auto& shader : shaders) {
+            expect_alpha_rewrite(read_file(std::string(shader_dir) + "/" + shader.first), shader.second,
+                                 shader.second != pz_alpha_shader_kind::chunk_composite);
+        }
     }
 
     std::cout << "shader compatibility tests passed\n";

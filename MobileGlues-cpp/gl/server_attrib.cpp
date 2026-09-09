@@ -105,7 +105,8 @@ extern "C" GLAPI GLAPIENTRY void glPushAttrib(GLbitfield mask) {
         seed_scissor(state);
         std::memcpy(snapshot.scissor, state.scissor, sizeof(snapshot.scissor));
     }
-    if ((mask & (GL_ENABLE_BIT | GL_SCISSOR_BIT)) != 0) snapshot.enable = *mg_enable_state();
+    if ((mask & (GL_ENABLE_BIT | GL_SCISSOR_BIT | GL_COLOR_BUFFER_BIT)) != 0)
+        snapshot.enable = *mg_enable_state();
 
     ++state.push_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
@@ -162,6 +163,11 @@ extern "C" GLAPI GLAPIENTRY void glPopAttrib(void) {
             ? mg_enable_restore(&snapshot.enable, restore_all_enables, restore_scissor_enable)
             : 0;
     if (enable_changes != 0) changed |= restore_all_enables ? GL_ENABLE_BIT : GL_SCISSOR_BIT;
+
+    if ((snapshot.mask & GL_COLOR_BUFFER_BIT) != 0) {
+        const unsigned alpha_changes = mg_alpha_test_restore(&snapshot.enable);
+        if (alpha_changes != 0) changed |= GL_COLOR_BUFFER_BIT;
+    }
 
     ++state.pop_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)

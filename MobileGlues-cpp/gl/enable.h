@@ -63,6 +63,9 @@ extern "C"
         MGC_SCISSOR_TEST,
         MGC_STENCIL_TEST,
         MGC_TEXTURE_CUBE_MAP_SEAMLESS,
+#if defined(ZOMDROID_EXPERIMENTAL)
+        MGC_ALPHA_TEST,
+#endif
         MGC_COUNT
     };
 
@@ -77,6 +80,10 @@ extern "C"
         GLboolean scissor_indexed[MG_MAX_VIEWPORTS];    // GL_SCISSOR_TEST per viewport
         GLuint clip_distance_mask;                    // GL_CLIP_DISTANCE0..7
         GLuint primitive_restart_index;               // glPrimitiveRestartIndex
+#if defined(ZOMDROID_EXPERIMENTAL)
+        GLenum alpha_func;                            // legacy GL_ALPHA_TEST state
+        GLfloat alpha_ref;
+#endif
         bool initialised;
         bool driver_synced;  // mg_enable_sync_driver() has run for this context
     };
@@ -121,6 +128,12 @@ extern "C"
     // Restore the parts of an enable snapshot owned by glPushAttrib. Returns
     // how many virtual values changed; only changed native values reach GLES.
     unsigned mg_enable_restore(const struct mg_enable_state_t* saved, bool restore_all, bool restore_scissor);
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    void mg_alpha_test_get(GLboolean* enabled, GLenum* function, GLfloat* reference);
+    bool mg_alpha_test_query(GLenum pname, GLfloat* out);
+    unsigned mg_alpha_test_restore(const struct mg_enable_state_t* saved);
+#endif
 
 #ifdef __cplusplus
 }

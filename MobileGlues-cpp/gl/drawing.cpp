@@ -11,6 +11,7 @@
 #include "enable.h"
 #include "framebuffer.h"
 #include "mg.h"
+#include "program.h"
 #include "quad_indices.h"
 #include "texture.h"
 #include "../egl/context.h"
@@ -312,6 +313,9 @@ void setupBufferTextureUniforms(GLuint program) {
 
 void prepareForDraw() {
     LOG_D("prepareForDraw...")
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_prepare_pz_alpha_test(gl_state->current_program);
+#endif
     if (hardware->emulate_texture_buffer) {
         setupBufferTextureUniforms(gl_state->current_program);
     }
@@ -569,6 +573,12 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (mode == GL_QUADS) {
         prepareForDraw();
         if (draw_arrays_as_triangles(first, count, -1)) return;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    } else {
+        // Non-quad array draws did not previously pay the buffer-texture and
+        // trace preparation cost. Only the alpha semantic applies to them.
+        mg_prepare_pz_alpha_test(gl_state->current_program);
+#endif
     }
     GLES.glDrawArrays(mode, first, count);
     CHECK_GL_ERROR
@@ -579,6 +589,10 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     if (mode == GL_QUADS) {
         prepareForDraw();
         if (draw_arrays_as_triangles(first, count, instancecount)) return;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    } else {
+        mg_prepare_pz_alpha_test(gl_state->current_program);
+#endif
     }
     GLES.glDrawArraysInstanced(mode, first, count, instancecount);
     CHECK_GL_ERROR

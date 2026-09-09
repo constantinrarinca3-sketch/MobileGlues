@@ -27,6 +27,9 @@ extern struct shader_t shaderInfo;
 
 const std::vector<mg_glsl_compat::uniform_default_value>* mg_shader_uniform_defaults(GLuint shader);
 void mg_shader_deleted(GLuint shader);
+#if defined(ZOMDROID_EXPERIMENTAL)
+mg_glsl_compat::pz_alpha_shader_kind mg_shader_pz_alpha_kind(GLuint shader);
+#endif
 
 #ifdef __cplusplus
 extern "C"

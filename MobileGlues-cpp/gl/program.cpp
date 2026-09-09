@@ -11,11 +11,14 @@
 #include "log.h"
 #include "shader.h"
 #include "program.h"
+#include "enable.h"
 #include <regex>
+#include <atomic>
 #include <cstring>
 #include <iostream>
 #include "../config/settings.h"
 #include "drawing.h"
+#include "../egl/context.h"
 
 #define DEBUG 0
 
@@ -36,6 +39,24 @@ UnorderedMap<GLuint, ShouldGenerateFSState> program_map_should_generate_fs;
 using uniform_default_value = mg_glsl_compat::uniform_default_value;
 using shader_uniform_defaults = UnorderedMap<GLuint, std::vector<uniform_default_value>>;
 UnorderedMap<GLuint, shader_uniform_defaults> program_map_uniform_defaults;
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+using pz_alpha_shader_bindings = UnorderedMap<GLuint, mg_glsl_compat::pz_alpha_shader_kind>;
+UnorderedMap<GLuint, pz_alpha_shader_bindings> program_map_pz_alpha_shaders;
+
+struct pz_alpha_program_state {
+    mg_glsl_compat::pz_alpha_shader_kind kind = mg_glsl_compat::pz_alpha_shader_kind::none;
+    GLint enabled_location = -1;
+    GLint function_location = -1;
+    GLint reference_location = -1;
+    unsigned long long last_context = 0;
+    GLboolean last_enabled = GL_FALSE;
+    GLenum last_function = GL_ALWAYS;
+    GLfloat last_reference = 0.0f;
+    bool last_values_valid = false;
+};
+UnorderedMap<GLuint, pz_alpha_program_state> program_map_pz_alpha_state;
+#endif
 
 namespace {
 
@@ -145,7 +166,85 @@ void apply_uniform_defaults(GLuint program) {
 #endif
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+void configure_pz_alpha_program(GLuint program) {
+    program_map_pz_alpha_state.erase(program);
+    const auto attached = program_map_pz_alpha_shaders.find(program);
+    if (attached == program_map_pz_alpha_shaders.end()) return;
+
+    mg_glsl_compat::pz_alpha_shader_kind kind = mg_glsl_compat::pz_alpha_shader_kind::none;
+    unsigned target_count = 0;
+    for (const auto& shader : attached->second) {
+        if (shader.second == mg_glsl_compat::pz_alpha_shader_kind::none) continue;
+        kind = shader.second;
+        ++target_count;
+    }
+    if (target_count != 1) return; // ambiguous/malformed programs fail closed
+
+    GLint linked = GL_FALSE;
+    GLES.glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) return;
+
+    pz_alpha_program_state state;
+    state.kind = kind;
+    state.enabled_location = GLES.glGetUniformLocation(program, "zomdroidAlphaEnabled");
+    state.function_location = GLES.glGetUniformLocation(program, "zomdroidAlphaFunc");
+    state.reference_location = GLES.glGetUniformLocation(program, "zomdroidAlphaRef");
+    if (state.enabled_location < 0 || state.function_location < 0 || state.reference_location < 0) return;
+    program_map_pz_alpha_state[program] = state;
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    static std::atomic<unsigned int> links{0};
+    const unsigned int hit = links.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (hit <= 8) {
+        write_log("ZOMDROID_ALPHA_PROGRAM program=%u family=%s locations=%d,%d,%d semantic_ready=1 hit=%u",
+                  program, mg_glsl_compat::pz_alpha_shader_kind_name(kind), state.enabled_location,
+                  state.function_location, state.reference_location, hit);
+    }
+#endif
+}
+#endif
+
 } // namespace
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+void mg_prepare_pz_alpha_test(GLuint program) {
+    const auto it = program_map_pz_alpha_state.find(program);
+    if (it == program_map_pz_alpha_state.end()) return;
+    pz_alpha_program_state& target = it->second;
+
+    GLboolean enabled = GL_FALSE;
+    GLenum function = GL_ALWAYS;
+    GLfloat reference = 0.0f;
+    mg_alpha_test_get(&enabled, &function, &reference);
+    const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
+    const bool upload = !target.last_values_valid || target.last_context != context ||
+                        target.last_enabled != enabled || target.last_function != function ||
+                        target.last_reference != reference;
+    if (upload) {
+        GLES.glUniform1i(target.enabled_location, enabled ? 1 : 0);
+        GLES.glUniform1i(target.function_location, static_cast<GLint>(function));
+        GLES.glUniform1f(target.reference_location, reference);
+        target.last_context = context;
+        target.last_enabled = enabled;
+        target.last_function = function;
+        target.last_reference = reference;
+        target.last_values_valid = true;
+    }
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    static std::atomic<unsigned long long> family_hits[5]{};
+    const size_t family = static_cast<size_t>(target.kind);
+    const unsigned long long hit = family_hits[family].fetch_add(1, std::memory_order_relaxed) + 1;
+    if (hit == 1 || hit == 1024 || hit == 65536) {
+        write_log("ZOMDROID_ALPHA_DRAW program=%u family=%s enabled=%d func=0x%x ref=%.9g uniforms_uploaded=%d "
+                  "semantic_applied=1 hit=%llu",
+                  program, mg_glsl_compat::pz_alpha_shader_kind_name(target.kind), enabled ? 1 : 0, function,
+                  static_cast<double>(reference), upload ? 1 : 0, hit);
+    }
+#endif
+}
+#endif
 
 std::string updateLayoutLocation(const std::string& esslSource, GLuint color, const char* name) {
     const std::string& shaderCode = esslSource;
@@ -269,6 +368,9 @@ void glLinkProgram(GLuint program) {
 
     GLES.glLinkProgram(program);
     apply_uniform_defaults(program);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    configure_pz_alpha_program(program);
+#endif
 
     CHECK_GL_ERROR
 }
@@ -318,6 +420,16 @@ void glAttachShader(GLuint program, GLuint shader) {
     else
         defaults_by_shader.erase(shader);
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const mg_glsl_compat::pz_alpha_shader_kind alpha_kind = mg_shader_pz_alpha_kind(shader);
+    auto& alpha_shaders = program_map_pz_alpha_shaders[program];
+    if (alpha_kind == mg_glsl_compat::pz_alpha_shader_kind::none)
+        alpha_shaders.erase(shader);
+    else
+        alpha_shaders[shader] = alpha_kind;
+    program_map_pz_alpha_state.erase(program);
+#endif
+
     GLint type = 0;
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &type);
     auto& should_gen_fs_map = program_map_should_generate_fs;
@@ -343,6 +455,14 @@ void glAttachShader(GLuint program, GLuint shader) {
 void mg_shader_detached(GLuint program, GLuint shader) {
     const auto program_it = program_map_uniform_defaults.find(program);
     if (program_it != program_map_uniform_defaults.end()) program_it->second.erase(shader);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const auto alpha_it = program_map_pz_alpha_shaders.find(program);
+    if (alpha_it != program_map_pz_alpha_shaders.end()) {
+        alpha_it->second.erase(shader);
+        if (alpha_it->second.empty()) program_map_pz_alpha_shaders.erase(alpha_it);
+    }
+    program_map_pz_alpha_state.erase(program);
+#endif
 }
 
 extern UnorderedMap<GLuint, SamplerInfo> g_samplerCacheForSamplerBuffer;
@@ -352,6 +472,10 @@ void mg_program_deleted(GLuint program) {
     program_map_is_sampler_buffer_emulated.erase(program);
     program_map_should_generate_fs.erase(program);
     g_samplerCacheForSamplerBuffer.erase(program);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    program_map_pz_alpha_shaders.erase(program);
+    program_map_pz_alpha_state.erase(program);
+#endif
 }
 
 GLuint glCreateProgram() {
@@ -359,6 +483,10 @@ GLuint glCreateProgram() {
     LOG_D("glCreateProgram")
     GLuint program = GLES.glCreateProgram();
     program_map_uniform_defaults.erase(program);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    program_map_pz_alpha_shaders.erase(program);
+    program_map_pz_alpha_state.erase(program);
+#endif
     if (hardware->emulate_texture_buffer) {
         program_map_is_sampler_buffer_emulated[program] = false;
         if (g_samplerCacheForSamplerBuffer.find(program) != g_samplerCacheForSamplerBuffer.end()) {

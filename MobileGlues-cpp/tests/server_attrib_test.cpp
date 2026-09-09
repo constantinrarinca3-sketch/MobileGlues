@@ -119,6 +119,47 @@ int main() {
     glPopAttrib();
     expect(same4(driver_viewport, original_viewport), "outer pop restores the original viewport");
 
+    // GL_ALPHA_TEST is virtual on GLES, but its complete desktop state must
+    // still obey the separate GL_ENABLE_BIT and GL_COLOR_BUFFER_BIT scopes.
+    GLboolean alpha_enabled = GL_TRUE;
+    GLenum alpha_function = 0;
+    GLfloat alpha_reference = -1.0f;
+    mg_alpha_test_get(&alpha_enabled, &alpha_function, &alpha_reference);
+    expect(alpha_enabled == GL_FALSE, "alpha test starts disabled");
+    expect(alpha_function == GL_ALWAYS && alpha_reference == 0.0f, "alpha defaults follow desktop GL");
+
+    glAlphaFunc(GL_GREATER, 1.25f);
+    glEnable(GL_ALPHA_TEST);
+    mg_alpha_test_get(&alpha_enabled, &alpha_function, &alpha_reference);
+    expect(alpha_enabled == GL_TRUE && alpha_function == GL_GREATER && alpha_reference == 1.0f,
+           "alpha state records enable, function and clamped reference");
+
+    glPushAttrib(GL_ENABLE_BIT);
+    glDisable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_LESS, 0.25f);
+    glPopAttrib();
+    mg_alpha_test_get(&alpha_enabled, &alpha_function, &alpha_reference);
+    expect(alpha_enabled == GL_TRUE, "enable bit restores alpha enable");
+    expect(alpha_function == GL_LESS && alpha_reference == 0.25f,
+           "enable bit does not restore alpha function state");
+
+    glPushAttrib(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GEQUAL, 0.75f);
+    glPopAttrib();
+    mg_alpha_test_get(&alpha_enabled, &alpha_function, &alpha_reference);
+    expect(alpha_enabled == GL_FALSE, "color-buffer bit does not restore alpha enable");
+    expect(alpha_function == GL_LESS && alpha_reference == 0.25f,
+           "color-buffer bit restores alpha function state");
+
+    frontend_error = GL_NO_ERROR;
+    glAlphaFunc(GL_BLEND, 0.5f);
+    expect(frontend_error == GL_INVALID_ENUM, "invalid alpha function raises invalid enum");
+    mg_alpha_test_get(nullptr, &alpha_function, &alpha_reference);
+    expect(alpha_function == GL_LESS && alpha_reference == 0.25f,
+           "invalid alpha function leaves state unchanged");
+    frontend_error = GL_NO_ERROR;
+
     // GL_SCISSOR_BIT restores its enable independently of GL_ENABLE_BIT.
     glPushAttrib(GL_SCISSOR_BIT);
     glEnable(GL_SCISSOR_TEST);

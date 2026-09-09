@@ -11,6 +11,7 @@
 #include "log.h"
 #include "mg.h"
 #include "../egl/context.h"
+#include <algorithm>
 #include <cstring>
 
 #define DEBUG 0
@@ -87,6 +88,11 @@ constexpr cap_desc_t k_caps[] = {
     {GL_STENCIL_TEST, MGC_STENCIL_TEST, BK_NATIVE, GL_FALSE, "GL_STENCIL_TEST"},
     {GL_TEXTURE_CUBE_MAP_SEAMLESS, MGC_TEXTURE_CUBE_MAP_SEAMLESS, BK_VIRTUAL, GL_FALSE,
      "GL_TEXTURE_CUBE_MAP_SEAMLESS"},
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Removed from GLES, but still live state in the desktop compatibility
+    // contract. Target PZ shaders consume it through injected uniforms.
+    {GL_ALPHA_TEST, MGC_ALPHA_TEST, BK_VIRTUAL, GL_FALSE, "GL_ALPHA_TEST"},
+#endif
 };
 
 constexpr int k_cap_count = static_cast<int>(sizeof(k_caps) / sizeof(k_caps[0]));
@@ -169,6 +175,10 @@ constexpr const cap_desc_t* find_cap(GLenum cap) {
         return &k_caps[MGC_STENCIL_TEST];
     case GL_TEXTURE_CUBE_MAP_SEAMLESS:
         return &k_caps[MGC_TEXTURE_CUBE_MAP_SEAMLESS];
+#if defined(ZOMDROID_EXPERIMENTAL)
+    case GL_ALPHA_TEST:
+        return &k_caps[MGC_ALPHA_TEST];
+#endif
     default:
         return nullptr;
     }
@@ -283,6 +293,10 @@ void mg_enable_reset(mg_enable_state_t* state) {
     for (int i = 0; i < MG_MAX_VIEWPORTS; ++i) state->scissor_indexed[i] = GL_FALSE;
 
     state->primitive_restart_index = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    state->alpha_func = GL_ALWAYS;
+    state->alpha_ref = 0.0f;
+#endif
     state->initialised = true;
     state->driver_synced = false;
 }
@@ -585,6 +599,44 @@ unsigned mg_enable_restore(const mg_enable_state_t* saved, bool restore_all, boo
     return changed;
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+void mg_alpha_test_get(GLboolean* enabled, GLenum* function, GLfloat* reference) {
+    const mg_enable_state_t* state = mg_enable_state();
+    if (enabled) *enabled = state->scalar[MGC_ALPHA_TEST];
+    if (function) *function = state->alpha_func;
+    if (reference) *reference = state->alpha_ref;
+}
+
+bool mg_alpha_test_query(GLenum pname, GLfloat* out) {
+    if (out == nullptr) return false;
+    const mg_enable_state_t* state = mg_enable_state();
+    if (pname == GL_ALPHA_TEST_FUNC) {
+        *out = static_cast<GLfloat>(state->alpha_func);
+        return true;
+    }
+    if (pname == GL_ALPHA_TEST_REF) {
+        *out = state->alpha_ref;
+        return true;
+    }
+    return false;
+}
+
+unsigned mg_alpha_test_restore(const mg_enable_state_t* saved) {
+    if (saved == nullptr) return 0;
+    mg_enable_state_t* current = mg_enable_state();
+    unsigned changed = 0;
+    if (current->alpha_func != saved->alpha_func) {
+        current->alpha_func = saved->alpha_func;
+        ++changed;
+    }
+    if (current->alpha_ref != saved->alpha_ref) {
+        current->alpha_ref = saved->alpha_ref;
+        ++changed;
+    }
+    return changed;
+}
+#endif
+
 extern "C"
 {
 
@@ -599,6 +651,19 @@ extern "C"
         LOG_D("glDisable, cap = 0x%04x", cap)
         mg_set_enabled(cap, 0, false, GL_FALSE);
     }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    GLAPI GLAPIENTRY void glAlphaFunc(GLenum function, GLclampf reference) {
+        LOG()
+        if (function < GL_NEVER || function > GL_ALWAYS) {
+            mg_set_gl_error(GL_INVALID_ENUM);
+            return;
+        }
+        mg_enable_state_t* state = mg_enable_state();
+        state->alpha_func = function;
+        state->alpha_ref = std::clamp(reference, 0.0f, 1.0f);
+    }
+#endif
 
     GLAPI GLAPIENTRY GLboolean glIsEnabled(GLenum cap) {
         LOG()
@@ -629,6 +694,13 @@ extern "C"
         LOG()
         GLboolean enabled = GL_FALSE;
         GLint ival = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        GLfloat alpha = 0.0f;
+        if (mg_alpha_test_query(pname, &alpha)) {
+            *data = alpha != 0.0f ? GL_TRUE : GL_FALSE;
+            return;
+        }
+#endif
         if (mg_enable_query(pname, &enabled)) {
             *data = enabled;
             return;
@@ -648,6 +720,9 @@ extern "C"
         LOG()
         GLboolean enabled = GL_FALSE;
         GLint ival = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_alpha_test_query(pname, data)) return;
+#endif
         if (mg_enable_query(pname, &enabled)) {
             *data = enabled ? 1.0f : 0.0f;
             return;
@@ -667,6 +742,13 @@ extern "C"
         LOG()
         GLboolean enabled = GL_FALSE;
         GLint ival = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        GLfloat alpha = 0.0f;
+        if (mg_alpha_test_query(pname, &alpha)) {
+            *data = static_cast<GLint64>(alpha);
+            return;
+        }
+#endif
         if (mg_enable_query(pname, &enabled)) {
             *data = enabled ? 1 : 0;
             return;
@@ -709,6 +791,13 @@ extern "C"
         LOG()
         GLboolean enabled = GL_FALSE;
         GLint ival = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        GLfloat alpha = 0.0f;
+        if (mg_alpha_test_query(pname, &alpha)) {
+            *data = static_cast<GLdouble>(alpha);
+            return;
+        }
+#endif
         if (mg_enable_query(pname, &enabled)) {
             *data = enabled ? 1.0 : 0.0;
             return;
