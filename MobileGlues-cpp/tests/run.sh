@@ -24,8 +24,6 @@ $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sect
     -o /tmp/mg_fixed_state_shadow_test tests/fixed_state_shadow_test.cpp gl/gl_native.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_runtime_mipmap_skip_test tests/runtime_mipmap_skip_test.cpp gl/texture.cpp
-$CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
-    -o /tmp/mg_gpu_buffer_ring_test tests/gpu_buffer_ring_test.cpp gl/buffer.cpp
 /tmp/mg_pixel_test
 echo
 /tmp/mg_fb_test
@@ -45,5 +43,3 @@ echo
 /tmp/mg_fixed_state_shadow_test
 echo
 /tmp/mg_runtime_mipmap_skip_test
-echo
-/tmp/mg_gpu_buffer_ring_test

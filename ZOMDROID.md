@@ -95,22 +95,6 @@ partial maps, immutable storage and unknown buffer names keep the normal driver 
 the first map attempts emit `ZOMDROID_PZ_BUFFER_STREAMING_PATTERN` with the access flags, tracked size
 and exact fallback reason.
 
-The GPU backing ring builds on that CPU staging path and is separately opt-in:
-
-```text
-MOBILEGLUES_PZ_GPU_BUFFER_RING=1  # three-slot dynamic backing rotation
-MOBILEGLUES_PZ_GPU_BUFFER_RING=0  # keep one GLES buffer object (default)
-```
-
-Enable it together with `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. For full write-discard maps of vertex
-and index buffers, MobileGlues records which backing objects were referenced by draws. Rewriting a
-backing used within the last three presented frames rotates to another GLES buffer object; an aged
-backing is reused directly. At most three objects are created for a hot logical buffer, and if all
-three remain recent the upload uses normal orphaning instead of waiting. VAO vertex and element
-bindings are repaired when a backing rotates and when a tracked VAO is rebound. Buffers used as
-uniform, storage, indirect, pixel-transfer or texture buffers and buffers shared by multiple GL
-contexts stay on the original path. Decisions are reported as `ZOMDROID_PZ_GPU_BUFFER_RING`.
-
 The fixed-state shadow is independently opt-in:
 
 ```text
