@@ -111,6 +111,7 @@ struct buffer_staging_map_t {
     GLbitfield access = 0;
     bool mapped = false;
     bool completed_upload = false;
+    uint64_t completed_epoch = 0;
     bool discard_elided = false;
     GLsizeiptr discard_size = 0;
     GLenum discard_usage = GL_STATIC_DRAW;
@@ -471,6 +472,22 @@ static void record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, 
 static bool staging_map_active(GLuint buffer) {
     const auto found = g_buffer_staging_maps.find(buffer);
     return found != g_buffer_staging_maps.end() && found->second.mapped;
+}
+
+bool mg_pz_buffer_staging_snapshot(GLuint buffer, const unsigned char** data, size_t* bytes) {
+    if (!mg_pz_draw_batch_active || data == nullptr || bytes == nullptr) return false;
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found == g_buffer_staging_maps.end()) return false;
+    const buffer_staging_map_t& staging = found->second;
+    if (staging.mapped || !staging.completed_upload || staging.completed_epoch != mg_pz_resource_epoch() ||
+        staging.size <= 0 || staging.storage.empty())
+        return false;
+    constexpr uintptr_t kMapAlignment = 64;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(staging.storage.data());
+    const uintptr_t aligned = (base + kMapAlignment - 1) & ~(kMapAlignment - 1);
+    *data = reinterpret_cast<const unsigned char*>(aligned);
+    *bytes = static_cast<size_t>(staging.size);
+    return true;
 }
 
 static void trace_buffer_streaming_pattern(const buffer_streaming_stats_t& stats, GLuint buffer, GLintptr offset,
@@ -1740,6 +1757,7 @@ GLboolean glUnmapBuffer(GLenum target) {
                                    g_bc->buffer_discard_coalesce_stats.paired);
         }
         staged->second.completed_upload = true;
+        staged->second.completed_epoch = mg_pz_resource_epoch();
         staged->second.mapped = false;
         staged->second.pointer = nullptr;
         trace_zomdroid_buffer_call("UNMAP_STAGING_UPLOAD", target, 0, staged->second.size, staged->second.access,

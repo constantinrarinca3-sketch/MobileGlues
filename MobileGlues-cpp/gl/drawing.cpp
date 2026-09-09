@@ -18,6 +18,7 @@
 #include "../egl/context.h"
 
 #include <limits>
+#include <new>
 
 #define DEBUG 0
 
@@ -573,6 +574,179 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     return true;
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+struct pz_draw_batch_entry_t {
+    GLsizei count = 0;
+    const void* indices = nullptr;
+    GLint basevertex = 0;
+};
+
+struct pz_draw_batch_state_t {
+    std::vector<pz_draw_batch_entry_t> entries;
+    std::vector<GLuint> fused_indices;
+    GLenum mode = 0;
+    GLenum type = 0;
+    GLuint program = 0;
+    GLuint frontend_ibo = 0;
+    GLuint driver_ibo = 0;
+    GLuint scratch_ibo = 0;
+    unsigned long long owner_context = 0;
+    unsigned long long candidates = 0;
+    unsigned long long fused_batches = 0;
+    unsigned long long driver_draws = 0;
+    unsigned long long saved_draws = 0;
+    unsigned long long fused_index_count = 0;
+    unsigned long long fallbacks = 0;
+    unsigned long long snapshot_misses = 0;
+    unsigned long long next_trace = 1;
+};
+
+thread_local pz_draw_batch_state_t g_pz_draw_batch;
+constexpr size_t k_pz_draw_batch_limit = 64;
+
+void pz_draw_batch_trace() {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    pz_draw_batch_state_t& b = g_pz_draw_batch;
+    if (b.candidates < b.next_trace) return;
+    write_log("ZOMDROID_PZ_DRAW_BATCH candidates=%llu batches=%llu driver_draws=%llu saved=%llu "
+              "indices=%llu fallback=%llu snapshot_miss=%llu max_pending=%zu",
+              b.candidates, b.fused_batches, b.driver_draws, b.saved_draws, b.fused_index_count, b.fallbacks,
+              b.snapshot_misses, b.entries.size());
+    if (b.next_trace == 1)
+        b.next_trace = 1024;
+    else if (b.next_trace == 1024)
+        b.next_trace = 65536;
+    else
+        b.next_trace = std::numeric_limits<unsigned long long>::max();
+#endif
+}
+
+void pz_draw_batch_issue(const pz_draw_batch_entry_t& entry) {
+    if (entry.basevertex == 0)
+        GLES.glDrawElements(g_pz_draw_batch.mode, entry.count, g_pz_draw_batch.type, entry.indices);
+    else
+        GLES.glDrawElementsBaseVertex(g_pz_draw_batch.mode, entry.count, g_pz_draw_batch.type, entry.indices,
+                                      entry.basevertex);
+    ++g_pz_draw_batch.driver_draws;
+}
+
+template <typename T>
+bool pz_draw_batch_append_indices(const unsigned char* bytes, size_t byte_count,
+                                  const pz_draw_batch_entry_t& entry, std::vector<GLuint>& output) {
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(entry.indices);
+    const size_t count = static_cast<size_t>(entry.count);
+    if ((offset % alignof(T)) != 0 || offset > byte_count || count > (byte_count - offset) / sizeof(T)) return false;
+    const T* input = reinterpret_cast<const T*>(bytes + offset);
+    for (size_t i = 0; i < count; ++i) {
+        const int64_t rebased = static_cast<int64_t>(input[i]) + static_cast<int64_t>(entry.basevertex);
+        if (rebased < 0 || static_cast<uint64_t>(rebased) > std::numeric_limits<GLuint>::max()) return false;
+        output.push_back(static_cast<GLuint>(rebased));
+    }
+    return true;
+}
+
+bool pz_draw_batch_fuse() {
+    pz_draw_batch_state_t& b = g_pz_draw_batch;
+    const unsigned char* source = nullptr;
+    size_t source_bytes = 0;
+    if (!mg_pz_buffer_staging_snapshot(b.frontend_ibo, &source, &source_bytes)) return false;
+
+    size_t total = 0;
+    for (const pz_draw_batch_entry_t& entry : b.entries) {
+        const size_t count = static_cast<size_t>(entry.count);
+        if (count > static_cast<size_t>(std::numeric_limits<GLsizei>::max()) - total) return false;
+        total += count;
+    }
+    try {
+        b.fused_indices.clear();
+        b.fused_indices.reserve(total);
+        for (const pz_draw_batch_entry_t& entry : b.entries) {
+            bool ok = false;
+            if (b.type == GL_UNSIGNED_BYTE)
+                ok = pz_draw_batch_append_indices<GLubyte>(source, source_bytes, entry, b.fused_indices);
+            else if (b.type == GL_UNSIGNED_SHORT)
+                ok = pz_draw_batch_append_indices<GLushort>(source, source_bytes, entry, b.fused_indices);
+            else if (b.type == GL_UNSIGNED_INT)
+                ok = pz_draw_batch_append_indices<GLuint>(source, source_bytes, entry, b.fused_indices);
+            if (!ok) return false;
+        }
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+
+    const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
+    if (context != b.owner_context) {
+        b.owner_context = context;
+        b.scratch_ibo = 0;
+    }
+    if (!b.scratch_ibo) GLES.glGenBuffers(1, &b.scratch_ibo);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, b.scratch_ibo);
+    GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(b.fused_indices.size() * sizeof(GLuint)),
+                      b.fused_indices.data(), GL_STREAM_DRAW);
+    GLES.glDrawElements(b.mode, static_cast<GLsizei>(b.fused_indices.size()), GL_UNSIGNED_INT, nullptr);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, b.driver_ibo);
+    ++b.fused_batches;
+    ++b.driver_draws;
+    b.saved_draws += b.entries.size() - 1;
+    b.fused_index_count += b.fused_indices.size();
+    return true;
+}
+
+void pz_draw_batch_flush() {
+    pz_draw_batch_state_t& b = g_pz_draw_batch;
+    if (b.entries.empty()) return;
+    if (b.entries.size() < 2 || !pz_draw_batch_fuse()) {
+        if (b.entries.size() >= 2) ++b.fallbacks;
+        for (const pz_draw_batch_entry_t& entry : b.entries) pz_draw_batch_issue(entry);
+    }
+    b.entries.clear();
+}
+
+bool pz_draw_batch_submit(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex) {
+    if (!mg_pz_draw_batch_active || mode != GL_TRIANGLES || count <= 0 || (count % 3) != 0 ||
+        (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) ||
+        gl_state->current_program == 0)
+        return false;
+
+    const GLuint frontend_ibo = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
+    const GLuint driver_ibo = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
+    const unsigned char* snapshot = nullptr;
+    size_t snapshot_bytes = 0;
+    if (frontend_ibo == 0 || driver_ibo == 0 ||
+        !mg_pz_buffer_staging_snapshot(frontend_ibo, &snapshot, &snapshot_bytes)) {
+        pz_draw_batch_flush();
+        ++g_pz_draw_batch.snapshot_misses;
+        ++g_pz_draw_batch.candidates;
+        pz_draw_batch_trace();
+        return false;
+    }
+
+    pz_draw_batch_state_t& b = g_pz_draw_batch;
+    mg_pz_set_draw_batch_flush(pz_draw_batch_flush);
+    const bool compatible = b.entries.empty() ||
+                            (b.mode == mode && b.type == type && b.program == gl_state->current_program &&
+                             b.frontend_ibo == frontend_ibo && b.driver_ibo == driver_ibo);
+    if (!compatible) pz_draw_batch_flush();
+    if (b.entries.empty()) {
+        b.mode = mode;
+        b.type = type;
+        b.program = gl_state->current_program;
+        b.frontend_ibo = frontend_ibo;
+        b.driver_ibo = driver_ibo;
+    }
+    try {
+        b.entries.push_back({count, indices, basevertex});
+    } catch (const std::bad_alloc&) {
+        pz_draw_batch_flush();
+        return false;
+    }
+    ++b.candidates;
+    pz_draw_batch_trace();
+    if (b.entries.size() >= k_pz_draw_batch_limit) pz_draw_batch_flush();
+    return true;
+}
+#endif
+
 } // namespace
 
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
@@ -635,6 +809,9 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     MG_PZ_CENSUS(mg_pz_census_batch_draw(gl_state->current_program, mode, type, count,
                                          mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER)));
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (!restart_fixed && pz_draw_batch_submit(mode, count, type, indices, 0)) return;
+#endif
     GLES.glDrawElements(mode, count, type, indices);
     if (restart_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     CHECK_GL_ERROR
@@ -719,7 +896,9 @@ void* basevertex_staging(size_t bytes) {
 
 void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex) {
     LOG()
-    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1,
+                                   mode == GL_TRIANGLES && !mg_restart_needs_rewrite(type) &&
+                                       !mg_restart_needs_driver_fixed(type)));
     LOG_D("glDrawElementsBaseVertex, mode: %d, count: %d, type: %d, indices: %p, basevertex: %d", mode, count, type,
           indices, basevertex);
     prepareForDraw();
@@ -728,6 +907,11 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
     // and the driver-supported branch below.
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, basevertex, -1)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    MG_PZ_CENSUS(mg_pz_census_batch_draw(gl_state->current_program, mode, type, count,
+                                         mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER)));
+    if (!restart_fixed && pz_draw_batch_submit(mode, count, type, indices, basevertex)) return;
+#endif
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     struct RestartGuard {
         bool on;

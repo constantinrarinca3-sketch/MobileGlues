@@ -18,6 +18,7 @@ bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = false;
 bool mg_pz_buffer_discard_coalesce_active = false;
+bool mg_pz_draw_batch_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 
@@ -193,8 +194,19 @@ struct batch_state_t {
 };
 
 thread_local batch_state_t g_batch;
+thread_local uint64_t g_resource_epoch = 1;
+thread_local void (*g_draw_batch_flush)(void) = nullptr;
+
+bool pz_tracking_active() {
+    return mg_pz_census_active || mg_pz_draw_batch_active;
+}
+
+void flush_draw_batch() {
+    if (mg_pz_draw_batch_active && g_draw_batch_flush) g_draw_batch_flush();
+}
 
 void batch_break(batch_break_t reason) {
+    flush_draw_batch();
     if (!mg_pz_census_active || !g_batch.previous_valid) return;
     ++g_census.frame.batch_breaks[static_cast<size_t>(reason)];
     g_batch.previous_valid = false;
@@ -210,7 +222,7 @@ void batch_flush_pending() {
 }
 
 void batch_resolve_pending(batch_pending_t expected, bool exact) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     if (g_batch.pending != expected) batch_flush_pending();
     g_batch.pending = batch_pending_t::none;
     if (!exact) batch_break(expected == batch_pending_t::uniform ? batch_break_t::uniform : batch_break_t::attrib);
@@ -300,6 +312,8 @@ void mg_pz_census_init(void) {
     const char* discard_coalesce_value = std::getenv("MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE");
     mg_pz_buffer_discard_coalesce_active =
         discard_coalesce_value != nullptr && std::strcmp(discard_coalesce_value, "1") == 0;
+    const char* draw_batch_value = std::getenv("MOBILEGLUES_PZ_DRAW_BATCH");
+    mg_pz_draw_batch_active = draw_batch_value != nullptr && std::strcmp(draw_batch_value, "1") == 0;
     const char* state_shadow_value = std::getenv("MOBILEGLUES_PZ_STATE_SHADOW");
     mg_pz_state_shadow_active = state_shadow_value != nullptr && std::strcmp(state_shadow_value, "1") == 0;
     const char* runtime_mipmap_value = std::getenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
@@ -310,6 +324,7 @@ void mg_pz_census_init(void) {
     g_attrib_values.clear();
     g_uniform_context = 0;
     g_batch = {};
+    g_resource_epoch = 1;
     if (mg_pz_census_active) {
         LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=3 interval_frames=%u", kReportFrames)
     }
@@ -320,40 +335,44 @@ void mg_pz_census_init(void) {
     if (mg_pz_buffer_discard_coalesce_active) {
         LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
     }
+    if (mg_pz_draw_batch_active) LOG_I("ZOMDROID_PZ_DRAW_BATCH enabled=1 route=cpu_index_fusion")
     if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
     if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
 #endif
 }
 
 void mg_pz_census_gl_call(const char* function) {
-    if (!mg_pz_census_active || function == nullptr) return;
+    if (!pz_tracking_active() || function == nullptr) return;
     batch_flush_pending();
     counters_t& c = g_census.frame;
     if (starts_with(function, "glUniform") || starts_with(function, "glProgramUniform")) {
-        ++c.uniform_calls;
+        if (mg_pz_census_active) ++c.uniform_calls;
         g_batch.pending = batch_pending_t::uniform;
         return;
     } else if (starts_with(function, "glVertexAttrib") || std::strcmp(function, "glEnableVertexAttribArray") == 0 ||
                std::strcmp(function, "glDisableVertexAttribArray") == 0 ||
                std::strcmp(function, "glBindVertexBuffer") == 0) {
-        ++c.vertex_attrib_calls;
+        if (mg_pz_census_active) ++c.vertex_attrib_calls;
         g_batch.pending = batch_pending_t::attrib;
         return;
     } else if (starts_with(function, "glBlend") || starts_with(function, "glDepth") ||
                starts_with(function, "glStencil") || std::strcmp(function, "glColorMask") == 0 ||
                std::strcmp(function, "glCullFace") == 0 || std::strcmp(function, "glFrontFace") == 0) {
-        ++c.fixed_state_calls;
+        if (mg_pz_census_active) ++c.fixed_state_calls;
     } else if (starts_with(function, "glGet") || std::strcmp(function, "glCheckFramebufferStatus") == 0) {
-        ++c.query_calls;
+        if (mg_pz_census_active) ++c.query_calls;
     } else if (std::strcmp(function, "glFinish") == 0 || std::strcmp(function, "glFlush") == 0 ||
                std::strcmp(function, "glFenceSync") == 0 || std::strcmp(function, "glClientWaitSync") == 0 ||
                std::strcmp(function, "glWaitSync") == 0 || std::strcmp(function, "glReadPixels") == 0) {
-        ++c.sync_calls;
+        if (mg_pz_census_active) ++c.sync_calls;
     }
 
-    if (starts_with(function, "glDraw") || starts_with(function, "glMultiDraw") ||
-        starts_with(function, "glGet") || starts_with(function, "glIs") ||
-        std::strcmp(function, "glCheckFramebufferStatus") == 0)
+    if (starts_with(function, "glGet") || starts_with(function, "glIs") ||
+        std::strcmp(function, "glCheckFramebufferStatus") == 0) {
+        batch_break(batch_break_t::state);
+        return;
+    }
+    if (starts_with(function, "glDraw") || starts_with(function, "glMultiDraw"))
         return;
 
     // These calls have value-aware hooks below. Let those hooks decide whether
@@ -368,16 +387,19 @@ void mg_pz_census_gl_call(const char* function) {
     if (starts_with(function, "glBuffer") || starts_with(function, "glMapBuffer") ||
         starts_with(function, "glUnmapBuffer") || starts_with(function, "glFlushMappedBuffer") ||
         starts_with(function, "glTexImage") || starts_with(function, "glTexSubImage") ||
-        starts_with(function, "glCopyTex") || std::strcmp(function, "glGenerateMipmap") == 0)
+        starts_with(function, "glCopyTex") || std::strcmp(function, "glGenerateMipmap") == 0) {
+        ++g_resource_epoch;
+        if (g_resource_epoch == 0) ++g_resource_epoch;
         batch_break(batch_break_t::resource);
-    else
+    } else
         batch_break(batch_break_t::state);
 }
 
 void mg_pz_census_draw(bool indexed, GLenum mode, GLsizei count, GLsizei instances, bool direct_elements_candidate) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     batch_flush_pending();
     if (!direct_elements_candidate) batch_break(batch_break_t::draw);
+    if (!mg_pz_census_active) return;
     counters_t& c = g_census.frame;
     if (indexed)
         ++c.draws_elements;
@@ -396,7 +418,7 @@ void mg_pz_census_draw(bool indexed, GLenum mode, GLsizei count, GLsizei instanc
 }
 
 void mg_pz_census_batch_draw(GLuint program, GLenum mode, GLenum type, GLsizei count, GLuint element_buffer) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     batch_flush_pending();
     const bool eligible = program != 0 && element_buffer != 0 && count > 0 && mode == GL_TRIANGLES &&
                           (type == GL_UNSIGNED_BYTE || type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
@@ -406,18 +428,19 @@ void mg_pz_census_batch_draw(GLuint program, GLenum mode, GLenum type, GLsizei c
     }
 
     counters_t& c = g_census.frame;
-    ++c.batch_elements_candidates;
+    if (mg_pz_census_active) ++c.batch_elements_candidates;
     const bool compatible = g_batch.previous_valid && g_batch.program == program &&
                             g_batch.element_buffer == element_buffer && g_batch.mode == mode && g_batch.type == type;
     if (compatible) {
-        ++c.batch_elements_adjacent;
+        if (mg_pz_census_active) ++c.batch_elements_adjacent;
         ++g_batch.run_length;
     } else {
         if (g_batch.previous_valid) batch_break(batch_break_t::signature);
-        ++c.batch_elements_runs;
+        if (mg_pz_census_active) ++c.batch_elements_runs;
         g_batch.run_length = 1;
     }
-    c.batch_elements_max_run = std::max(c.batch_elements_max_run, g_batch.run_length);
+    if (mg_pz_census_active)
+        c.batch_elements_max_run = std::max(c.batch_elements_max_run, g_batch.run_length);
     g_batch.previous_valid = true;
     g_batch.program = program;
     g_batch.element_buffer = element_buffer;
@@ -426,6 +449,8 @@ void mg_pz_census_batch_draw(GLuint program, GLenum mode, GLenum type, GLsizei c
 }
 
 void mg_pz_census_multidraw(GLsizei commands) {
+    if (!pz_tracking_active()) return;
+    batch_break(batch_break_t::draw);
     if (!mg_pz_census_active) return;
     ++g_census.frame.multidraw_calls;
     if (commands > 0) g_census.frame.draw_commands += static_cast<count_t>(commands);
@@ -433,9 +458,11 @@ void mg_pz_census_multidraw(GLsizei commands) {
 
 #define MG_PAIR_FUNCTION(name, total_field, redundant_field)                                                          \
     void name(bool redundant) {                                                                                        \
-        if (!mg_pz_census_active) return;                                                                              \
-        ++g_census.frame.total_field;                                                                                  \
-        if (redundant) ++g_census.frame.redundant_field;                                                               \
+        if (!pz_tracking_active()) return;                                                                             \
+        if (mg_pz_census_active) {                                                                                     \
+            ++g_census.frame.total_field;                                                                              \
+            if (redundant) ++g_census.frame.redundant_field;                                                           \
+        }                                                                                                              \
         if (!redundant) batch_break(batch_break_t::state);                                                             \
     }
 
@@ -449,17 +476,19 @@ MG_PAIR_FUNCTION(mg_pz_census_enable, enable_disable, enable_disable_redundant)
 #undef MG_PAIR_FUNCTION
 
 void mg_pz_census_bind_vao(bool same_frontend_binding, bool driver_confirmed, bool skipped) {
-    if (!mg_pz_census_active) return;
-    ++g_census.frame.bind_vao;
-    if (same_frontend_binding) ++g_census.frame.bind_vao_same;
-    if (driver_confirmed) ++g_census.frame.bind_vao_driver_confirmed;
-    if (skipped) ++g_census.frame.bind_vao_skipped;
+    if (!pz_tracking_active()) return;
+    if (mg_pz_census_active) {
+        ++g_census.frame.bind_vao;
+        if (same_frontend_binding) ++g_census.frame.bind_vao_same;
+        if (driver_confirmed) ++g_census.frame.bind_vao_driver_confirmed;
+        if (skipped) ++g_census.frame.bind_vao_skipped;
+    }
     if (!same_frontend_binding || !driver_confirmed) batch_break(batch_break_t::state);
 }
 
 bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
-                        size_t bytes) {
-    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return false;
+                         size_t bytes) {
+    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_draw_batch_active) return false;
     if (program == 0 || location < 0) {
         batch_resolve_pending(batch_pending_t::uniform, false);
         return false;
@@ -488,8 +517,10 @@ bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsi
 }
 
 void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
-                                size_t bytes) {
-    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || program == 0 || location < 0) return;
+                                 size_t bytes) {
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_draw_batch_active) || program == 0 ||
+        location < 0)
+        return;
     if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
         batch_break(batch_break_t::uniform);
         mg_pz_census_forget_program(program);
@@ -507,7 +538,7 @@ void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signatu
 }
 
 void mg_pz_census_forget_program(GLuint program) {
-    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return;
+    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_draw_batch_active) return;
     batch_break(batch_break_t::uniform);
     for (auto it = g_uniform_values.begin(); it != g_uniform_values.end();) {
         if (static_cast<GLuint>(it->first >> 32U) == program)
@@ -518,16 +549,21 @@ void mg_pz_census_forget_program(GLuint program) {
 }
 
 void mg_pz_census_context_changed(unsigned long long context_id) {
-    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || context_id == g_uniform_context) return;
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_draw_batch_active) ||
+        context_id == g_uniform_context)
+        return;
+    flush_draw_batch();
     g_uniform_context = context_id;
     g_uniform_values.clear();
     g_attrib_values.clear();
     batch_reset_sequence();
+    ++g_resource_epoch;
 }
 
 void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     batch_resolve_pending(batch_pending_t::attrib, tracked && exact_redundant);
+    if (!mg_pz_census_active) return;
     const size_t index = static_cast<size_t>(kind);
     if (index >= g_census.frame.attrib_kind_calls.size()) return;
     ++g_census.frame.attrib_kind_calls[index];
@@ -544,7 +580,7 @@ void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redund
 }
 
 void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* value, size_t bytes) {
-    if (!mg_pz_census_active || value == nullptr || bytes == 0 || bytes > 128) return;
+    if (!pz_tracking_active() || value == nullptr || bytes == 0 || bytes > 128) return;
     const auto found = g_attrib_values.find(index);
     const bool exact = found != g_attrib_values.end() && found->second.signature == signature &&
                        found->second.bytes == bytes && std::memcmp(found->second.value.data(), value, bytes) == 0;
@@ -556,8 +592,9 @@ void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* val
 }
 
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     batch_break(batch_break_t::resource);
+    if (!mg_pz_census_active) return;
     if (sub_data)
         ++g_census.frame.buffer_sub_data_calls;
     else
@@ -566,13 +603,15 @@ void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data) {
 }
 
 void mg_pz_census_buffer_map(GLsizeiptr bytes) {
-    if (!mg_pz_census_active) return;
+    if (!pz_tracking_active()) return;
     batch_break(batch_break_t::resource);
+    if (!mg_pz_census_active) return;
     ++g_census.frame.buffer_map_calls;
     if (bytes > 0) g_census.frame.buffer_map_bytes += static_cast<count_t>(bytes);
 }
 
 void mg_pz_census_present(bool succeeded) {
+    flush_draw_batch();
     if (!mg_pz_census_active) return;
     batch_flush_pending();
     batch_reset_sequence();
@@ -604,4 +643,16 @@ void mg_pz_census_present(bool succeeded) {
         // first interval or hide a stall at the reporting boundary.
         state.previous_present_ns = now;
     }
+}
+
+uint64_t mg_pz_resource_epoch(void) {
+    return g_resource_epoch;
+}
+
+void mg_pz_set_draw_batch_flush(void (*flush)(void)) {
+    g_draw_batch_flush = flush;
+}
+
+void mg_pz_flush_draw_batch(void) {
+    flush_draw_batch();
 }

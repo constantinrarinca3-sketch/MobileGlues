@@ -74,6 +74,9 @@ extern "C"
 #if defined(ZOMDROID_EXPERIMENTAL)
     // Depth of the emulated desktop client-attribute stack for this context.
     GLint mg_client_attrib_stack_depth();
+    // Returns the most recent complete CPU-staged contents only while no later
+    // application resource mutation could have changed the driver buffer.
+    bool mg_pz_buffer_staging_snapshot(GLuint buffer, const unsigned char** data, size_t* bytes);
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);
