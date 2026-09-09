@@ -109,6 +109,20 @@ This applies only to mutable array and element buffers and requires
 `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. Milestones are reported as
 `ZOMDROID_PZ_BUFFER_DISCARD_COALESCE`.
 
+The fixed-index primitive-restart state can remain resident across compatible indexed draws:
+
+```text
+MOBILEGLUES_PZ_STICKY_RESTART=1  # reconcile restart only at real transitions
+MOBILEGLUES_PZ_STICKY_RESTART=0  # bracket every emulated draw (default)
+```
+
+Desktop `GL_PRIMITIVE_RESTART` is virtualized because GLES only exposes the fixed-index form. When
+the application's restart index already equals the fixed sentinel, the normal path enables and
+disables the GLES capability around every indexed draw. This path keeps it enabled across consecutive
+compatible draws and changes it only when the index type or virtual restart state requires a real
+transition. Custom restart-index rewrites use the same state machine. Milestones are reported as
+`ZOMDROID_PZ_STICKY_RESTART` with the old and new driver-call counts.
+
 The fixed-state shadow is independently opt-in:
 
 ```text

@@ -18,6 +18,7 @@ bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
 bool mg_pz_buffer_streaming_active = false;
 bool mg_pz_buffer_discard_coalesce_active = false;
+bool mg_pz_sticky_restart_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 
@@ -300,6 +301,8 @@ void mg_pz_census_init(void) {
     const char* discard_coalesce_value = std::getenv("MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE");
     mg_pz_buffer_discard_coalesce_active =
         discard_coalesce_value != nullptr && std::strcmp(discard_coalesce_value, "1") == 0;
+    const char* sticky_restart_value = std::getenv("MOBILEGLUES_PZ_STICKY_RESTART");
+    mg_pz_sticky_restart_active = sticky_restart_value != nullptr && std::strcmp(sticky_restart_value, "1") == 0;
     const char* state_shadow_value = std::getenv("MOBILEGLUES_PZ_STATE_SHADOW");
     mg_pz_state_shadow_active = state_shadow_value != nullptr && std::strcmp(state_shadow_value, "1") == 0;
     const char* runtime_mipmap_value = std::getenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
@@ -320,6 +323,7 @@ void mg_pz_census_init(void) {
     if (mg_pz_buffer_discard_coalesce_active) {
         LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
     }
+    if (mg_pz_sticky_restart_active) LOG_I("ZOMDROID_PZ_STICKY_RESTART enabled=1")
     if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
     if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
 #endif
