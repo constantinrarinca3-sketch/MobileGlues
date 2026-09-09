@@ -491,16 +491,16 @@ static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, 
     ++stats.attempts;
     GLsizeiptr tracked_size = 0;
     const bool size_known = get_known_buffer_data_size(buffer, &tracked_size);
+    const bool invalidated = (access & (GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_INVALIDATE_RANGE_BIT)) != 0;
 
     if (offset != 0 || length <= 0 || (access & GL_MAP_WRITE_BIT) == 0 || (access & GL_MAP_READ_BIT) != 0 ||
-        (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0 ||
-        (access & (GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)) != 0) {
+        !invalidated || (access & (GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)) != 0) {
         ++stats.miss_access;
         const char* reason = offset != 0                                      ? "offset"
                              : length <= 0                                    ? "length"
                              : (access & GL_MAP_WRITE_BIT) == 0                ? "not_write"
                              : (access & GL_MAP_READ_BIT) != 0                 ? "read"
-                             : (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0    ? "no_invalidate_buffer"
+                             : !invalidated                                  ? "no_invalidate"
                                                                               : "persistent_or_coherent";
         trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, reason);
         return nullptr;

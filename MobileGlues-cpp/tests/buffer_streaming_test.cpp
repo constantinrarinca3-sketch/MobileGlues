@@ -49,6 +49,13 @@ int main() {
     expect(last_error == GL_INVALID_OPERATION, "double map reports GL_INVALID_OPERATION");
     mg_test_cancel_staging_map(buffer);
 
+    const GLbitfield write_full_range =
+        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT;
+    handled = false;
+    pointer = mg_test_try_staging_map(buffer, 0, 4096, write_full_range, &handled);
+    expect(handled && pointer != nullptr, "a full-buffer invalidated range uses CPU staging");
+    mg_test_cancel_staging_map(buffer);
+
     handled = true;
     pointer = mg_test_try_staging_map(buffer, 16, 4080, write_discard, &handled);
     expect(!handled && pointer == nullptr, "partial maps stay on the driver path");

@@ -87,7 +87,8 @@ MOBILEGLUES_PZ_BUFFER_STREAMING=1  # CPU staging enabled
 MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping (default)
 ```
 
-It intercepts only complete write-only invalidating maps of mutable, tracked buffers. The application
+It intercepts only complete write-only invalidating maps of mutable, tracked buffers. Whole-buffer
+maps using either `GL_MAP_INVALIDATE_BUFFER_BIT` or `GL_MAP_INVALIDATE_RANGE_BIT` qualify. The application
 writes into aligned CPU staging memory; unmap replaces the driver's store and uploads the completed
 buffer in one call, avoiding a direct map/unmap synchronization with an in-flight GPU buffer. Reads,
 partial maps, immutable storage and unknown buffer names keep the normal driver path. While enabled,
