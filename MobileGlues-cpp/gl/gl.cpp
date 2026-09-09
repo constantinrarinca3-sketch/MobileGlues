@@ -14,6 +14,7 @@
 #include "../config/settings.h"
 #include "mg.h"
 #include "framebuffer.h"
+#include "buffer.h"
 #include "../egl/context.h"
 #include <mutex>
 #include <memory>
@@ -119,6 +120,7 @@ void InitDepthClearCoreProfile() {
     GLES.glGenBuffers(1, &obj.vbo);
 
     GLES.glBindVertexArray(obj.vao);
+    mg_driver_vertex_array_bound(obj.vao);
     GLES.glBindBuffer(GL_ARRAY_BUFFER, obj.vbo);
     GLES.glBufferData(GL_ARRAY_BUFFER, sizeof(kFullScreenTri), kFullScreenTri, GL_STATIC_DRAW);
 
@@ -127,6 +129,7 @@ void InitDepthClearCoreProfile() {
 
     GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
     GLES.glBindVertexArray(0);
+    mg_driver_vertex_array_bound(0);
 }
 
 void DrawDepthClearTri() {
@@ -146,8 +149,10 @@ void DrawDepthClearTri() {
 
     GLES.glUseProgram(obj.program);
     GLES.glBindVertexArray(obj.vao);
+    mg_driver_vertex_array_bound(obj.vao);
     GLES.glDrawArrays(GL_TRIANGLES, 0, 3);
     GLES.glBindVertexArray(0);
+    mg_driver_vertex_array_bound(0);
     GLES.glUseProgram(0);
 
     GLES.glDepthFunc(prevDepthFunc);

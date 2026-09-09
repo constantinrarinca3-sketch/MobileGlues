@@ -314,6 +314,7 @@ void GenerateDefaultFSSource() {
 static UnorderedMap<unsigned, GLuint> DefaultFSMap; // essl version <-> shader id
 void glLinkProgram(GLuint program) {
     LOG()
+    MG_PZ_CENSUS(mg_pz_census_forget_program(program));
 
     LOG_D("glLinkProgram(%d)", program)
     if (!shaderInfo.converted.empty() && shaderInfo.frag_data_changed) {

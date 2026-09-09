@@ -60,6 +60,11 @@ extern "C"
 
     GLuint find_bound_array();
 
+    // Publish direct driver-side VAO binds made by internal renderer helpers.
+    // The frontend fast path may only skip a bind while this shadow is known.
+    void mg_driver_vertex_array_bound(GLuint driver_array);
+    void mg_driver_vertex_array_unknown();
+
     static GLenum get_binding_query(GLenum target);
 
     void InitBufferMap(size_t expectedSize);

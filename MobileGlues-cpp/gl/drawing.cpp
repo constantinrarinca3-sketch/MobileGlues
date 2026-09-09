@@ -642,6 +642,7 @@ void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean laye
 void glUniform1i(GLint location, GLint v0) {
     LOG()
     LOG_D("glUniform1i, location: %d, v0: %d", location, v0)
+    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location, 0x101U, 1, &v0, sizeof(v0)));
     GLES.glUniform1i(location, v0);
     CHECK_GL_ERROR
 }

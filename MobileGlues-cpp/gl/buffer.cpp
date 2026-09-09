@@ -128,6 +128,8 @@ struct buffer_ctx_state_t { // private to one context
     std::vector<buffer_identity_t> element_array_buffer_per_vao;
     std::array<GLuint, 13> bound_buffers{};
     GLuint bound_array = 0;
+    GLuint driver_bound_array = 0;
+    bool driver_bound_array_known = false;
 #if defined(ZOMDROID_EXPERIMENTAL)
     ska::flat_hash_map<GLuint, vertex_array_state_t> vertex_array_states;
     std::vector<client_attrib_snapshot_t> client_attrib_stack;
@@ -179,6 +181,15 @@ void mg_buffer_forget_context(unsigned long long ctx_id) {
     if (it == g_buf_ctxs.end()) return;
     if (g_bc == it->second.get()) g_bc = &g_buf_ctx_default;
     g_buf_ctxs.erase(it);
+}
+
+void mg_driver_vertex_array_bound(GLuint driver_array) {
+    g_bc->driver_bound_array = driver_array;
+    g_bc->driver_bound_array_known = true;
+}
+
+void mg_driver_vertex_array_unknown() {
+    g_bc->driver_bound_array_known = false;
 }
 
 #define g_gen_buffers (g_bg->gen_buffers)
@@ -761,6 +772,14 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
     LOG_D("glBindVertexBuffer, bindingindex = %d, buffer = %d, offset = %p, stride = %i", bindingindex, buffer, offset,
           stride)
 #if defined(ZOMDROID_EXPERIMENTAL)
+    if (mg_pz_census_active) {
+        const bool tracked = bindingindex < kTrackedVertexAttribs;
+        const bool exact = tracked && current_vertex_array_state().bindings[bindingindex].configured &&
+                           current_vertex_array_state().bindings[bindingindex].buffer == buffer &&
+                           current_vertex_array_state().bindings[bindingindex].offset == offset &&
+                           current_vertex_array_state().bindings[bindingindex].stride == stride;
+        mg_pz_census_attrib(mg_pz_attrib_kind::vertex_buffer, tracked, exact);
+    }
     if (bindingindex < kTrackedVertexAttribs) {
         auto& binding = current_vertex_array_state().bindings[bindingindex];
         binding.buffer = buffer;
@@ -1350,10 +1369,16 @@ void glDeleteVertexArrays(GLsizei n, const GLuint* arrays) {
     LOG()
     LOG_D("glDeleteVertexArrays(%i, %p)", n, arrays)
     for (int i = 0; i < n; ++i) {
-        if (find_real_array(arrays[i])) {
-            GLuint real_array = find_real_array(arrays[i]);
+        const GLuint real_array = find_real_array(arrays[i]);
+        if (real_array) {
             GLES.glDeleteVertexArrays(1, &real_array);
             CHECK_GL_ERROR
+            if (g_bc->driver_bound_array_known && g_bc->driver_bound_array == real_array)
+                mg_driver_vertex_array_bound(0);
+        }
+        if (g_bound_array == arrays[i]) {
+            g_bound_array = 0;
+            set_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER, get_ibo_by_vao(0));
         }
         remove_array(arrays[i]);
     }
@@ -1368,7 +1393,7 @@ GLboolean glIsVertexArray(GLuint array) {
 void glBindVertexArray(GLuint array) {
     LOG()
     LOG_D("glBindVertexArray(%d)", array)
-    MG_PZ_CENSUS(mg_pz_census_bind_vao(g_bound_array == array));
+    const bool same_frontend = g_bound_array == array;
     g_bound_array = array;
 
     // update bound ibo
@@ -1376,7 +1401,19 @@ void glBindVertexArray(GLuint array) {
 
     if (!has_array(array) || array == 0) {
         LOG_D("Does not have va=%d found!", array)
+        const bool driver_confirmed = array == 0 && g_bc->driver_bound_array_known && g_bc->driver_bound_array == 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        const bool skip = mg_pz_vao_fastpath_active && same_frontend && driver_confirmed;
+#else
+        const bool skip = false;
+#endif
+        MG_PZ_CENSUS(mg_pz_census_bind_vao(same_frontend, driver_confirmed, skip));
+        if (skip) return;
         GLES.glBindVertexArray(array);
+        if (array == 0)
+            mg_driver_vertex_array_bound(0);
+        else
+            mg_driver_vertex_array_unknown();
         CHECK_GL_ERROR
         return;
     }
@@ -1389,7 +1426,16 @@ void glBindVertexArray(GLuint array) {
         CHECK_GL_ERROR
     }
     LOG_D("glBindVertexArray: %d -> %d", array, real_array)
+    const bool driver_confirmed = g_bc->driver_bound_array_known && g_bc->driver_bound_array == real_array;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const bool skip = mg_pz_vao_fastpath_active && same_frontend && driver_confirmed;
+#else
+    const bool skip = false;
+#endif
+    MG_PZ_CENSUS(mg_pz_census_bind_vao(same_frontend, driver_confirmed, skip));
+    if (skip) return;
     GLES.glBindVertexArray(real_array);
+    mg_driver_vertex_array_bound(real_array);
     CHECK_GL_ERROR
 }
 
@@ -1551,17 +1597,37 @@ extern "C" GLAPI GLAPIENTRY void glPopClientAttrib(void) {
 }
 
 NATIVE_FUNCTION_HEAD(void, glEnableVertexAttribArray, GLuint index)
+    if (mg_pz_census_active) {
+        const bool tracked = index < kTrackedVertexAttribs;
+        const bool exact = tracked && current_vertex_array_state().attribs[index].enabled == GL_TRUE;
+        mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact);
+    }
     if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_TRUE;
     GLES.glEnableVertexAttribArray(index);
 }
 
 NATIVE_FUNCTION_HEAD(void, glDisableVertexAttribArray, GLuint index)
+    if (mg_pz_census_active) {
+        const bool tracked = index < kTrackedVertexAttribs;
+        const bool exact = tracked && current_vertex_array_state().attribs[index].enabled == GL_FALSE;
+        mg_pz_census_attrib(mg_pz_attrib_kind::enable, tracked, exact);
+    }
     if (index < kTrackedVertexAttribs) current_vertex_array_state().attribs[index].enabled = GL_FALSE;
     GLES.glDisableVertexAttribArray(index);
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized,
                      GLsizei stride, const void* pointer)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    if (mg_pz_census_active) {
+        const bool tracked = index < kTrackedVertexAttribs;
+        const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
+        const bool exact = previous && previous->configured && !previous->uses_binding_model && !previous->integer &&
+                           previous->size == size && previous->type == type && previous->normalized == normalized &&
+                           previous->stride == stride && previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
+                           previous->buffer == frontend_buffer;
+        mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
+    }
     if (index < kTrackedVertexAttribs) {
         auto& attrib = current_vertex_array_state().attribs[index];
         attrib.size = size;
@@ -1569,7 +1635,7 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLen
         attrib.normalized = normalized;
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
-        attrib.buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+        attrib.buffer = frontend_buffer;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = false;
@@ -1581,6 +1647,16 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLen
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride,
                      const void* pointer)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+    if (mg_pz_census_active) {
+        const bool tracked = index < kTrackedVertexAttribs;
+        const auto* previous = tracked ? &current_vertex_array_state().attribs[index] : nullptr;
+        const bool exact = previous && previous->configured && !previous->uses_binding_model && previous->integer &&
+                           previous->size == size && previous->type == type && previous->stride == stride &&
+                           previous->pointer == reinterpret_cast<uintptr_t>(pointer) &&
+                           previous->buffer == frontend_buffer;
+        mg_pz_census_attrib(mg_pz_attrib_kind::pointer, tracked, exact);
+    }
     if (index < kTrackedVertexAttribs) {
         auto& attrib = current_vertex_array_state().attribs[index];
         attrib.size = size;
@@ -1588,7 +1664,7 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
         attrib.normalized = GL_FALSE;
         attrib.stride = stride;
         attrib.pointer = reinterpret_cast<uintptr_t>(pointer);
-        attrib.buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
+        attrib.buffer = frontend_buffer;
         attrib.binding = index;
         attrib.relative_offset = 0;
         attrib.integer = true;
@@ -1599,6 +1675,11 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)
+    if (mg_pz_census_active) {
+        const bool tracked = index < kTrackedVertexAttribs;
+        const bool exact = tracked && current_vertex_array_state().attribs[index].divisor == divisor;
+        mg_pz_census_attrib(mg_pz_attrib_kind::divisor, tracked, exact);
+    }
     if (index < kTrackedVertexAttribs) {
         auto& state = current_vertex_array_state();
         state.attribs[index].divisor = divisor;
@@ -1609,6 +1690,14 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribDivisor, GLuint index, GLuint divisor)
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size, GLenum type, GLboolean normalized,
                      GLuint relativeoffset)
+    if (mg_pz_census_active) {
+        const bool tracked = attribindex < kTrackedVertexAttribs;
+        const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
+        const bool exact = previous && previous->configured && previous->uses_binding_model && !previous->integer &&
+                           previous->size == size && previous->type == type && previous->normalized == normalized &&
+                           previous->relative_offset == relativeoffset;
+        mg_pz_census_attrib(mg_pz_attrib_kind::format, tracked, exact);
+    }
     if (attribindex < kTrackedVertexAttribs) {
         auto& attrib = current_vertex_array_state().attribs[attribindex];
         attrib.size = size;
@@ -1623,6 +1712,14 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribFormat, GLuint attribindex, GLint size,
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
+    if (mg_pz_census_active) {
+        const bool tracked = attribindex < kTrackedVertexAttribs;
+        const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
+        const bool exact = previous && previous->configured && previous->uses_binding_model && previous->integer &&
+                           previous->size == size && previous->type == type &&
+                           previous->relative_offset == relativeoffset;
+        mg_pz_census_attrib(mg_pz_attrib_kind::format, tracked, exact);
+    }
     if (attribindex < kTrackedVertexAttribs) {
         auto& attrib = current_vertex_array_state().attribs[attribindex];
         attrib.size = size;
@@ -1637,6 +1734,13 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIFormat, GLuint attribindex, GLint size
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bindingindex)
+    if (mg_pz_census_active) {
+        const bool tracked = attribindex < kTrackedVertexAttribs && bindingindex < kTrackedVertexAttribs;
+        const auto* previous = tracked ? &current_vertex_array_state().attribs[attribindex] : nullptr;
+        const bool exact = previous && previous->configured && previous->uses_binding_model &&
+                           previous->binding == bindingindex;
+        mg_pz_census_attrib(mg_pz_attrib_kind::binding, tracked, exact);
+    }
     if (attribindex < kTrackedVertexAttribs && bindingindex < kTrackedVertexAttribs) {
         auto& attrib = current_vertex_array_state().attribs[attribindex];
         attrib.binding = bindingindex;
@@ -1646,6 +1750,12 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribBinding, GLuint attribindex, GLuint bin
 }
 
 NATIVE_FUNCTION_HEAD(void, glVertexBindingDivisor, GLuint bindingindex, GLuint divisor)
+    if (mg_pz_census_active) {
+        const bool tracked = bindingindex < kTrackedVertexAttribs;
+        const bool exact = tracked && current_vertex_array_state().bindings[bindingindex].configured &&
+                           current_vertex_array_state().bindings[bindingindex].divisor == divisor;
+        mg_pz_census_attrib(mg_pz_attrib_kind::divisor, tracked, exact);
+    }
     if (bindingindex < kTrackedVertexAttribs) {
         auto& binding = current_vertex_array_state().bindings[bindingindex];
         binding.divisor = divisor;

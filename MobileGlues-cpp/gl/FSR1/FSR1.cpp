@@ -105,7 +105,10 @@ struct GLStateGuard {
 
     ~GLStateGuard() {
         if (saved & GUARD_PROGRAM) GLES.glUseProgram(prevProgram);
-        if (saved & GUARD_VAO) GLES.glBindVertexArray(prevVAO);
+        if (saved & GUARD_VAO) {
+            GLES.glBindVertexArray(prevVAO);
+            mg_driver_vertex_array_bound(static_cast<GLuint>(prevVAO));
+        }
         if (saved & GUARD_ARRAY_BUFFER) GLES.glBindBuffer(GL_ARRAY_BUFFER, prevArrayBuffer);
         if (saved & GUARD_TEXTURE) {
             // Unit 0 is current for the guard's lifetime, but say so anyway: a body
@@ -271,6 +274,7 @@ void InitFullscreenQuad() {
     GLES.glGenBuffers(1, &FSR1_Context::g_quadVBO);
 
     GLES.glBindVertexArray(FSR1_Context::g_quadVAO);
+    mg_driver_vertex_array_bound(FSR1_Context::g_quadVAO);
     GLES.glBindBuffer(GL_ARRAY_BUFFER, FSR1_Context::g_quadVBO);
 
     GLES.glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
@@ -283,6 +287,7 @@ void InitFullscreenQuad() {
 
     GLES.glBindBuffer(GL_ARRAY_BUFFER, 0);
     GLES.glBindVertexArray(0);
+    mg_driver_vertex_array_bound(0);
 }
 
 bool fsrInitialized = false;
@@ -461,6 +466,7 @@ void ApplyFSR() {
     GLES.glUniform2fv(FSR1_Context::g_viewportSizeLoc, 1, viewportSize);
 
     GLES.glBindVertexArray(FSR1_Context::g_quadVAO);
+    mg_driver_vertex_array_bound(FSR1_Context::g_quadVAO);
     GLES.glDrawArrays(GL_TRIANGLES, 0, 6);
 
     GLES.glBindFramebuffer(GL_READ_FRAMEBUFFER, FSR1_Context::g_targetFBO);

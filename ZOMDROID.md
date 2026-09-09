@@ -35,3 +35,17 @@ An absent variable is also disabled. When enabled, the renderer emits one compac
 redundant state calls and buffer upload/map traffic. It does not alter rendering or identify
 zombies by itself; compare repeatable routes with low and high zombie counts. Keep it disabled
 for ordinary play because the per-call counting is diagnostic overhead.
+
+Schema 2 additionally reports exact repeated uniform values and vertex-attrib state. All associated
+comparison/cache work remains inside `MOBILEGLUES_PZ_CENSUS=1`; disabling or omitting the variable
+removes that work from the rendering path.
+
+The independent VAO optimization is selected through the renderer environment:
+
+```text
+MOBILEGLUES_PZ_VAO_FASTPATH=1  # enabled
+MOBILEGLUES_PZ_VAO_FASTPATH=0  # disabled (default)
+```
+
+It skips a repeated bind only when both MobileGlues' frontend VAO and the real driver VAO are known
+to match. Internal renderer binds update the same per-context shadow. Every other case reaches GLES.

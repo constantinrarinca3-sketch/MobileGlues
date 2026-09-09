@@ -22,6 +22,7 @@
 #include "../../gles/loader.h"
 #include "../../includes.h"
 #include "../framebuffer.h"
+#include "../buffer.h"
 #include "../glsl/glsl_for_es.h"
 #include "../log.h"
 #include "../mg.h"

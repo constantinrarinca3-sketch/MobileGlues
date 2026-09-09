@@ -8,6 +8,7 @@
 #include "context.h"
 #include "../gl/log.h"
 #include "../gl/mg.h"
+#include "../gl/pz_census.h"
 #include "trace.h"
 #include <mutex>
 #include <ska/flat_hash_map.hpp>
@@ -251,6 +252,7 @@ void mg_context_make_current(EGLDisplay dpy, EGLSurface draw, EGLSurface read, E
         // 0 selects each subsystem's fallback instance, the one used before any
         // tracked context is current.
         mg_buffer_bind_context(0, 0);
+        MG_PZ_CENSUS(mg_pz_census_context_changed(0));
         mg_texture_bind_context(0, 0);
         mg_framebuffer_bind_context(0);
         mg_fsr1_bind_context(0);
@@ -282,6 +284,7 @@ void mg_context_make_current(EGLDisplay dpy, EGLSurface draw, EGLSurface read, E
     g_current_ref = it->second;
     g_current_ctx = g_current_ref.get();
     mg_buffer_bind_context(g_current_ctx->id, g_current_ctx->share_group->id);
+    MG_PZ_CENSUS(mg_pz_census_context_changed(g_current_ctx->id));
     mg_texture_bind_context(g_current_ctx->id, g_current_ctx->share_group->id);
     mg_framebuffer_bind_context(g_current_ctx->id);
     mg_fsr1_bind_context(g_current_ctx->id);

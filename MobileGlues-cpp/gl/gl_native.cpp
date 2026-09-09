@@ -20,6 +20,95 @@
 
 #define DEBUG 0
 
+namespace {
+template <typename T, typename... Rest>
+void census_uniform_scalars(GLuint program, GLint location, uint32_t signature, T first, Rest... rest) {
+    const T values[] = {first, static_cast<T>(rest)...};
+    mg_pz_census_uniform(program, location, signature, 1, values, sizeof(values));
+}
+
+template <typename T, typename... Rest>
+void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... rest) {
+    const T values[] = {first, static_cast<T>(rest)...};
+    mg_pz_census_attrib_value(index, signature, values, sizeof(values));
+}
+} // namespace
+
+#define MG_UNIFORM_SCALAR1(name, type, signature)                                                                      \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0)                                                         \
+    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0));                          \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0)
+#define MG_UNIFORM_SCALAR2(name, type, signature)                                                                      \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1)                                                \
+    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1));                      \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1)
+#define MG_UNIFORM_SCALAR3(name, type, signature)                                                                      \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1, type v2)                                       \
+    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1, v2));                  \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1, v2)
+#define MG_UNIFORM_SCALAR4(name, type, signature)                                                                      \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1, type v2, type v3)                              \
+    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1, v2, v3));              \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1, v2, v3)
+#define MG_UNIFORM_VECTOR(name, type, components, signature)                                                           \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, GLsizei count, const type* value)                                \
+    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location, signature, count, value,                    \
+                                       components * sizeof(type)));                                                    \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, count, value)
+#define MG_UNIFORM_MATRIX(name, columns, rows)                                                                         \
+    NATIVE_FUNCTION_HEAD(void, name, GLint location, GLsizei count, GLboolean transpose, const GLfloat* value)         \
+    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location,                                             \
+                                       0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,     \
+                                       columns * rows * sizeof(GLfloat)));                                              \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, location, count, transpose, value)
+#define MG_PROGRAM_UNIFORM_SCALAR1(name, type, signature)                                                              \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0)                                          \
+    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0));                                            \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0)
+#define MG_PROGRAM_UNIFORM_SCALAR2(name, type, signature)                                                              \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1)                                 \
+    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1));                                        \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1)
+#define MG_PROGRAM_UNIFORM_SCALAR3(name, type, signature)                                                              \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1, type v2)                        \
+    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1, v2));                                    \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1, v2)
+#define MG_PROGRAM_UNIFORM_SCALAR4(name, type, signature)                                                              \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1, type v2, type v3)               \
+    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1, v2, v3));                                \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1, v2, v3)
+#define MG_PROGRAM_UNIFORM_VECTOR(name, type, components, signature)                                                   \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, GLsizei count, const type* value)                 \
+    MG_PZ_CENSUS(mg_pz_census_uniform(program, location, signature, count, value, components * sizeof(type)));         \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, count, value)
+#define MG_PROGRAM_UNIFORM_MATRIX(name, columns, rows)                                                                 \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, GLsizei count, GLboolean transpose,               \
+                         const GLfloat* value)                                                                         \
+    MG_PZ_CENSUS(mg_pz_census_uniform(program, location,                                                               \
+                                       0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,     \
+                                       columns * rows * sizeof(GLfloat)));                                              \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, count, transpose, value)
+#define MG_ATTRIB_SCALAR1(name, type, signature)                                                                       \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint index, type v0)                                                           \
+    MG_PZ_CENSUS(census_attrib_scalars(index, signature, v0));                                                        \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, index, v0)
+#define MG_ATTRIB_SCALAR2(name, type, signature)                                                                       \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint index, type v0, type v1)                                                  \
+    MG_PZ_CENSUS(census_attrib_scalars(index, signature, v0, v1));                                                    \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, index, v0, v1)
+#define MG_ATTRIB_SCALAR3(name, type, signature)                                                                       \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint index, type v0, type v1, type v2)                                         \
+    MG_PZ_CENSUS(census_attrib_scalars(index, signature, v0, v1, v2));                                                \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, index, v0, v1, v2)
+#define MG_ATTRIB_SCALAR4(name, type, signature)                                                                       \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint index, type v0, type v1, type v2, type v3)                                \
+    MG_PZ_CENSUS(census_attrib_scalars(index, signature, v0, v1, v2, v3));                                            \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, index, v0, v1, v2, v3)
+#define MG_ATTRIB_VECTOR(name, type, components, signature)                                                            \
+    NATIVE_FUNCTION_HEAD(void, name, GLuint index, const type* value)                                                 \
+    MG_PZ_CENSUS(mg_pz_census_attrib_value(index, signature, value, components * sizeof(type)));                      \
+    NATIVE_FUNCTION_END_NO_RETURN(void, name, index, value)
+
 //NATIVE_FUNCTION_HEAD(void, glActiveTexture, GLenum texture) NATIVE_FUNCTION_END_NO_RETURN(void, glActiveTexture, texture)
 //NATIVE_FUNCTION_HEAD(void, glAttachShader, GLuint program, GLuint shader) NATIVE_FUNCTION_END_NO_RETURN(void, glAttachShader, program,shader)
 NATIVE_FUNCTION_HEAD(void, glBindAttribLocation, GLuint program, GLuint index, const GLchar *name) NATIVE_FUNCTION_END_NO_RETURN(void, glBindAttribLocation, program,index,name)
@@ -50,7 +139,10 @@ NATIVE_FUNCTION_HEAD(void, glCompressedTexSubImage2D, GLenum target, GLint level
 NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
 //NATIVE_FUNCTION_HEAD(void, glDeleteBuffers, GLsizei n, const GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteBuffers, n,buffers)
 // NATIVE_FUNCTION_HEAD(void, glDeleteFramebuffers, GLsizei n, const GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteFramebuffers, n,framebuffers)   // implemented in gl/framebuffer.cpp
-NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program) mg_program_deleted(program); NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
+NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program)
+    MG_PZ_CENSUS(mg_pz_census_forget_program(program));
+    mg_program_deleted(program);
+NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 NATIVE_FUNCTION_HEAD(void, glDeleteRenderbuffers, GLsizei n, const GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteRenderbuffers, n,renderbuffers)
 NATIVE_FUNCTION_HEAD(void, glDeleteShader, GLuint shader) mg_shader_deleted(shader); NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteShader, shader)
 //NATIVE_FUNCTION_HEAD(void, glDeleteTextures, GLsizei n, const GLuint *textures) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteTextures, n,textures)
@@ -161,35 +253,35 @@ NATIVE_FUNCTION_HEAD(void, glTexParameterfv, GLenum target, GLenum pname, const 
 //NATIVE_FUNCTION_HEAD(void, glTexParameteri, GLenum target, GLenum pname, GLint param) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteri, target,pname,param)
 //NATIVE_FUNCTION_HEAD(void, glTexParameteriv, GLenum target, GLenum pname, const GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteriv, target,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glTexSubImage2D, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) NATIVE_FUNCTION_END_NO_RETURN(void, glTexSubImage2D, target,level,xoffset,yoffset,width,height,format,type,pixels)
-NATIVE_FUNCTION_HEAD(void, glUniform1f, GLint location, GLfloat v0) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1f, location,v0)
-NATIVE_FUNCTION_HEAD(void, glUniform1fv, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1fv, location,count,value)
+MG_UNIFORM_SCALAR1(glUniform1f, GLfloat, 0x301U)
+MG_UNIFORM_VECTOR(glUniform1fv, GLfloat, 1, 0x301U)
 //NATIVE_FUNCTION_HEAD(void, glUniform1i, GLint location, GLint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1i, location,v0)
-NATIVE_FUNCTION_HEAD(void, glUniform1iv, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1iv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform2f, GLint location, GLfloat v0, GLfloat v1) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2f, location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glUniform2fv, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2fv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform2i, GLint location, GLint v0, GLint v1) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2i, location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glUniform2iv, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2iv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform3f, GLint location, GLfloat v0, GLfloat v1, GLfloat v2) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3f, location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glUniform3fv, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3fv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform3i, GLint location, GLint v0, GLint v1, GLint v2) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3i, location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glUniform3iv, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3iv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform4f, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4f, location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glUniform4fv, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4fv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform4i, GLint location, GLint v0, GLint v1, GLint v2, GLint v3) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4i, location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glUniform4iv, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4iv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix2fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix2fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix3fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix3fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix4fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix4fv, location,count,transpose,value)
+MG_UNIFORM_VECTOR(glUniform1iv, GLint, 1, 0x101U)
+MG_UNIFORM_SCALAR2(glUniform2f, GLfloat, 0x302U)
+MG_UNIFORM_VECTOR(glUniform2fv, GLfloat, 2, 0x302U)
+MG_UNIFORM_SCALAR2(glUniform2i, GLint, 0x102U)
+MG_UNIFORM_VECTOR(glUniform2iv, GLint, 2, 0x102U)
+MG_UNIFORM_SCALAR3(glUniform3f, GLfloat, 0x303U)
+MG_UNIFORM_VECTOR(glUniform3fv, GLfloat, 3, 0x303U)
+MG_UNIFORM_SCALAR3(glUniform3i, GLint, 0x103U)
+MG_UNIFORM_VECTOR(glUniform3iv, GLint, 3, 0x103U)
+MG_UNIFORM_SCALAR4(glUniform4f, GLfloat, 0x304U)
+MG_UNIFORM_VECTOR(glUniform4fv, GLfloat, 4, 0x304U)
+MG_UNIFORM_SCALAR4(glUniform4i, GLint, 0x104U)
+MG_UNIFORM_VECTOR(glUniform4iv, GLint, 4, 0x104U)
+MG_UNIFORM_MATRIX(glUniformMatrix2fv, 2, 2)
+MG_UNIFORM_MATRIX(glUniformMatrix3fv, 3, 3)
+MG_UNIFORM_MATRIX(glUniformMatrix4fv, 4, 4)
 //NATIVE_FUNCTION_HEAD(void, glUseProgram, GLuint program) NATIVE_FUNCTION_END_NO_RETURN(void, glUseProgram, program)
 NATIVE_FUNCTION_HEAD(void, glValidateProgram, GLuint program) NATIVE_FUNCTION_END_NO_RETURN(void, glValidateProgram, program)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib1f, GLuint index, GLfloat x) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib1f, index,x)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib1fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib1fv, index,v)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib2f, GLuint index, GLfloat x, GLfloat y) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib2f, index,x,y)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib2fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib2fv, index,v)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib3f, GLuint index, GLfloat x, GLfloat y, GLfloat z) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib3f, index,x,y,z)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib3fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib3fv, index,v)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib4f, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib4f, index,x,y,z,w)
-NATIVE_FUNCTION_HEAD(void, glVertexAttrib4fv, GLuint index, const GLfloat *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttrib4fv, index,v)
+MG_ATTRIB_SCALAR1(glVertexAttrib1f, GLfloat, 0x301U)
+MG_ATTRIB_VECTOR(glVertexAttrib1fv, GLfloat, 1, 0x301U)
+MG_ATTRIB_SCALAR2(glVertexAttrib2f, GLfloat, 0x302U)
+MG_ATTRIB_VECTOR(glVertexAttrib2fv, GLfloat, 2, 0x302U)
+MG_ATTRIB_SCALAR3(glVertexAttrib3f, GLfloat, 0x303U)
+MG_ATTRIB_VECTOR(glVertexAttrib3fv, GLfloat, 3, 0x303U)
+MG_ATTRIB_SCALAR4(glVertexAttrib4f, GLfloat, 0x304U)
+MG_ATTRIB_VECTOR(glVertexAttrib4fv, GLfloat, 4, 0x304U)
 #if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribPointer, GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribPointer, index,size,type,normalized,stride,pointer)
 #endif
@@ -211,12 +303,12 @@ NATIVE_FUNCTION_HEAD(void, glGetQueryObjectuiv, GLuint id, GLenum pname, GLuint 
 //NATIVE_FUNCTION_HEAD(GLboolean, glUnmapBuffer, GLenum target) NATIVE_FUNCTION_END(GLboolean, glUnmapBuffer, target)
 NATIVE_FUNCTION_HEAD(void, glGetBufferPointerv, GLenum target, GLenum pname, void **params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetBufferPointerv, target,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glDrawBuffers, GLsizei n, const GLenum *bufs) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawBuffers, n,bufs)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix2x3fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix2x3fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix3x2fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix3x2fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix2x4fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix2x4fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix4x2fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix4x2fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix3x4fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix3x4fv, location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glUniformMatrix4x3fv, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniformMatrix4x3fv, location,count,transpose,value)
+MG_UNIFORM_MATRIX(glUniformMatrix2x3fv, 2, 3)
+MG_UNIFORM_MATRIX(glUniformMatrix3x2fv, 3, 2)
+MG_UNIFORM_MATRIX(glUniformMatrix2x4fv, 2, 4)
+MG_UNIFORM_MATRIX(glUniformMatrix4x2fv, 4, 2)
+MG_UNIFORM_MATRIX(glUniformMatrix3x4fv, 3, 4)
+MG_UNIFORM_MATRIX(glUniformMatrix4x3fv, 4, 3)
 // NATIVE_FUNCTION_HEAD(void, glBlitFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) NATIVE_FUNCTION_END_NO_RETURN(void, glBlitFramebuffer, srcX0,srcY0,srcX1,srcY1,dstX0,dstY0,dstX1,dstY1,mask,filter)   // implemented in gl/framebuffer.cpp
 //NATIVE_FUNCTION_HEAD(void, glRenderbufferStorageMultisample, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) NATIVE_FUNCTION_END_NO_RETURN(void, glRenderbufferStorageMultisample, target,samples,internalformat,width,height)
 // NATIVE_FUNCTION_HEAD(void, glFramebufferTextureLayer, GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferTextureLayer, target,attachment,texture,level,layer)   // implemented in gl/framebuffer.cpp
@@ -237,20 +329,20 @@ NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLe
 #endif
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIiv, GLuint index, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIiv, index,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIuiv, GLuint index, GLenum pname, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIuiv, index,pname,params)
-NATIVE_FUNCTION_HEAD(void, glVertexAttribI4i, GLuint index, GLint x, GLint y, GLint z, GLint w) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribI4i, index,x,y,z,w)
-NATIVE_FUNCTION_HEAD(void, glVertexAttribI4ui, GLuint index, GLuint x, GLuint y, GLuint z, GLuint w) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribI4ui, index,x,y,z,w)
-NATIVE_FUNCTION_HEAD(void, glVertexAttribI4iv, GLuint index, const GLint *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribI4iv, index,v)
-NATIVE_FUNCTION_HEAD(void, glVertexAttribI4uiv, GLuint index, const GLuint *v) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribI4uiv, index,v)
+MG_ATTRIB_SCALAR4(glVertexAttribI4i, GLint, 0x104U)
+MG_ATTRIB_SCALAR4(glVertexAttribI4ui, GLuint, 0x204U)
+MG_ATTRIB_VECTOR(glVertexAttribI4iv, GLint, 4, 0x104U)
+MG_ATTRIB_VECTOR(glVertexAttribI4uiv, GLuint, 4, 0x204U)
 NATIVE_FUNCTION_HEAD(void, glGetUniformuiv, GLuint program, GLint location, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformuiv, program,location,params)
 NATIVE_FUNCTION_HEAD(GLint, glGetFragDataLocation, GLuint program, const GLchar *name) NATIVE_FUNCTION_END(GLint, glGetFragDataLocation, program,name)
-NATIVE_FUNCTION_HEAD(void, glUniform1ui, GLint location, GLuint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1ui, location,v0)
-NATIVE_FUNCTION_HEAD(void, glUniform2ui, GLint location, GLuint v0, GLuint v1) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2ui, location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glUniform3ui, GLint location, GLuint v0, GLuint v1, GLuint v2) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3ui, location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glUniform4ui, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4ui, location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glUniform1uiv, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1uiv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform2uiv, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform2uiv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform3uiv, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform3uiv, location,count,value)
-NATIVE_FUNCTION_HEAD(void, glUniform4uiv, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform4uiv, location,count,value)
+MG_UNIFORM_SCALAR1(glUniform1ui, GLuint, 0x201U)
+MG_UNIFORM_SCALAR2(glUniform2ui, GLuint, 0x202U)
+MG_UNIFORM_SCALAR3(glUniform3ui, GLuint, 0x203U)
+MG_UNIFORM_SCALAR4(glUniform4ui, GLuint, 0x204U)
+MG_UNIFORM_VECTOR(glUniform1uiv, GLuint, 1, 0x201U)
+MG_UNIFORM_VECTOR(glUniform2uiv, GLuint, 2, 0x202U)
+MG_UNIFORM_VECTOR(glUniform3uiv, GLuint, 3, 0x203U)
+MG_UNIFORM_VECTOR(glUniform4uiv, GLuint, 4, 0x204U)
 NATIVE_FUNCTION_HEAD(void, glClearBufferiv, GLenum buffer, GLint drawbuffer, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glClearBufferiv, buffer,drawbuffer,value)
 NATIVE_FUNCTION_HEAD(void, glClearBufferuiv, GLenum buffer, GLint drawbuffer, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glClearBufferuiv, buffer,drawbuffer,value)
 NATIVE_FUNCTION_HEAD(void, glClearBufferfv, GLenum buffer, GLint drawbuffer, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glClearBufferfv, buffer,drawbuffer,value)
@@ -319,39 +411,39 @@ NATIVE_FUNCTION_HEAD(void, glDeleteProgramPipelines, GLsizei n, const GLuint *pi
 NATIVE_FUNCTION_HEAD(void, glGenProgramPipelines, GLsizei n, GLuint *pipelines) NATIVE_FUNCTION_END_NO_RETURN(void, glGenProgramPipelines, n,pipelines)
 NATIVE_FUNCTION_HEAD(GLboolean, glIsProgramPipeline, GLuint pipeline) NATIVE_FUNCTION_END(GLboolean, glIsProgramPipeline, pipeline)
 NATIVE_FUNCTION_HEAD(void, glGetProgramPipelineiv, GLuint pipeline, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramPipelineiv, pipeline,pname,params)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1i, GLuint program, GLint location, GLint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1i, program,location,v0)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2i, GLuint program, GLint location, GLint v0, GLint v1) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2i, program,location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3i, GLuint program, GLint location, GLint v0, GLint v1, GLint v2) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3i, program,location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4i, GLuint program, GLint location, GLint v0, GLint v1, GLint v2, GLint v3) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4i, program,location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1ui, GLuint program, GLint location, GLuint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1ui, program,location,v0)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2ui, GLuint program, GLint location, GLuint v0, GLuint v1) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2ui, program,location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3ui, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3ui, program,location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4ui, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4ui, program,location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1f, GLuint program, GLint location, GLfloat v0) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1f, program,location,v0)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2f, GLuint program, GLint location, GLfloat v0, GLfloat v1) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2f, program,location,v0,v1)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3f, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3f, program,location,v0,v1,v2)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4f, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4f, program,location,v0,v1,v2,v3)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1iv, GLuint program, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1iv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2iv, GLuint program, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2iv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3iv, GLuint program, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3iv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4iv, GLuint program, GLint location, GLsizei count, const GLint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4iv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1uiv, GLuint program, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1uiv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2uiv, GLuint program, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2uiv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3uiv, GLuint program, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3uiv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4uiv, GLuint program, GLint location, GLsizei count, const GLuint *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4uiv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform1fv, GLuint program, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform1fv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform2fv, GLuint program, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform2fv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform3fv, GLuint program, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform3fv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniform4fv, GLuint program, GLint location, GLsizei count, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniform4fv, program,location,count,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix2fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix2fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix3fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix3fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix4fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix4fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix2x3fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix2x3fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix3x2fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix3x2fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix2x4fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix2x4fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix4x2fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix4x2fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix3x4fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix3x4fv, program,location,count,transpose,value)
-NATIVE_FUNCTION_HEAD(void, glProgramUniformMatrix4x3fv, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramUniformMatrix4x3fv, program,location,count,transpose,value)
+MG_PROGRAM_UNIFORM_SCALAR1(glProgramUniform1i, GLint, 0x101U)
+MG_PROGRAM_UNIFORM_SCALAR2(glProgramUniform2i, GLint, 0x102U)
+MG_PROGRAM_UNIFORM_SCALAR3(glProgramUniform3i, GLint, 0x103U)
+MG_PROGRAM_UNIFORM_SCALAR4(glProgramUniform4i, GLint, 0x104U)
+MG_PROGRAM_UNIFORM_SCALAR1(glProgramUniform1ui, GLuint, 0x201U)
+MG_PROGRAM_UNIFORM_SCALAR2(glProgramUniform2ui, GLuint, 0x202U)
+MG_PROGRAM_UNIFORM_SCALAR3(glProgramUniform3ui, GLuint, 0x203U)
+MG_PROGRAM_UNIFORM_SCALAR4(glProgramUniform4ui, GLuint, 0x204U)
+MG_PROGRAM_UNIFORM_SCALAR1(glProgramUniform1f, GLfloat, 0x301U)
+MG_PROGRAM_UNIFORM_SCALAR2(glProgramUniform2f, GLfloat, 0x302U)
+MG_PROGRAM_UNIFORM_SCALAR3(glProgramUniform3f, GLfloat, 0x303U)
+MG_PROGRAM_UNIFORM_SCALAR4(glProgramUniform4f, GLfloat, 0x304U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform1iv, GLint, 1, 0x101U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform2iv, GLint, 2, 0x102U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform3iv, GLint, 3, 0x103U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform4iv, GLint, 4, 0x104U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform1uiv, GLuint, 1, 0x201U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform2uiv, GLuint, 2, 0x202U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform3uiv, GLuint, 3, 0x203U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform4uiv, GLuint, 4, 0x204U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform1fv, GLfloat, 1, 0x301U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform2fv, GLfloat, 2, 0x302U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform3fv, GLfloat, 3, 0x303U)
+MG_PROGRAM_UNIFORM_VECTOR(glProgramUniform4fv, GLfloat, 4, 0x304U)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix2fv, 2, 2)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix3fv, 3, 3)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix4fv, 4, 4)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix2x3fv, 2, 3)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix3x2fv, 3, 2)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix2x4fv, 2, 4)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix4x2fv, 4, 2)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix3x4fv, 3, 4)
+MG_PROGRAM_UNIFORM_MATRIX(glProgramUniformMatrix4x3fv, 4, 3)
 NATIVE_FUNCTION_HEAD(void, glValidateProgramPipeline, GLuint pipeline) NATIVE_FUNCTION_END_NO_RETURN(void, glValidateProgramPipeline, pipeline)
 NATIVE_FUNCTION_HEAD(void, glGetProgramPipelineInfoLog, GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog) NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramPipelineInfoLog, pipeline,bufSize,length,infoLog)
 //NATIVE_FUNCTION_HEAD(void, glBindImageTexture, GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format) NATIVE_FUNCTION_END_NO_RETURN(void, glBindImageTexture, unit,texture,level,layered,layer,access,format)
