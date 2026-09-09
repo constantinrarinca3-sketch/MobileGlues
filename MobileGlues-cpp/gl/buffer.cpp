@@ -11,6 +11,7 @@
 #include <mutex>
 #include <memory>
 #include <cstdint>
+#include <limits>
 #include <ska/flat_hash_map.hpp>
 #include <array>
 #include "texture.h"
@@ -139,6 +140,7 @@ struct buffer_ctx_state_t { // private to one context
 #endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     unsigned long long ebo_lifetime_guard_hits = 0;
+    unsigned long long map_size_fastpath_hits = 0;
 #endif
 };
 
@@ -377,6 +379,14 @@ void set_buffer_data_size(GLuint buffer, size_t size) {
 size_t get_buffer_data_size(GLuint buffer) {
     if (buffer < g_buffer_datasize.size()) return g_buffer_datasize[buffer];
     return 0;
+}
+
+bool get_known_buffer_data_size(GLuint buffer, GLsizeiptr* size) {
+    if (size == nullptr || buffer == 0 || !has_buffer(buffer) || buffer >= g_buffer_datasize.size()) return false;
+    const size_t tracked = g_buffer_datasize[buffer];
+    if (tracked == 0 || tracked > static_cast<size_t>(std::numeric_limits<GLsizeiptr>::max())) return false;
+    *size = static_cast<GLsizeiptr>(tracked);
+    return true;
 }
 
 static inline int binding_target_to_index(GLenum target) {
@@ -1249,10 +1259,23 @@ void* glMapBuffer(GLenum target, GLenum access) {
         trace_zomdroid_buffer_call("MAP_OES_EXIT", target, 0, 0, access, ptr);
         return ptr;
     }
-    GLint buffer_size;
-    glGetBufferParameteriv(target, GL_BUFFER_SIZE, &buffer_size);
-    if (buffer_size <= 0 || glGetError() != GL_NO_ERROR) {
-        return nullptr;
+    GLsizeiptr buffer_size = 0;
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+    const bool size_known = get_known_buffer_data_size(frontend_buffer, &buffer_size);
+    if (!size_known) {
+        GLint queried_size = 0;
+        glGetBufferParameteriv(target, GL_BUFFER_SIZE, &queried_size);
+        if (queried_size <= 0 || glGetError() != GL_NO_ERROR) return nullptr;
+        buffer_size = queried_size;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    } else {
+        ++g_bc->map_size_fastpath_hits;
+        const unsigned long long hit = g_bc->map_size_fastpath_hits;
+        if (hit == 1 || hit == 1024 || hit == 65536) {
+            write_log("ZOMDROID_BUFFER_MAP_SIZE_FASTPATH buffer=%u bytes=%lld driver_query_skipped=1 hit=%llu",
+                      frontend_buffer, static_cast<long long>(buffer_size), hit);
+        }
+#endif
     }
     GLbitfield flags = 0;
     switch (access) {

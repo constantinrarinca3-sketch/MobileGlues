@@ -75,3 +75,7 @@ MOBILEGLUES_PZ_UNIFORM_FASTPATH=0  # disabled (default)
 Only valid, single-value writes with an identical program, location, type and bit-exact payload are
 skipped. Relink, deletion, context switches and unsupported array writes invalidate the shadow;
 internal alpha-test and buffer-texture writes keep it synchronized.
+
+Whole-buffer write maps reuse MobileGlues' tracked allocation size instead of issuing a synchronous
+`GL_BUFFER_SIZE` driver query before every `glMapBuffer`. Buffers whose size is unknown still use the
+driver query, so pass-through names and unusual allocation paths retain the previous behavior.
