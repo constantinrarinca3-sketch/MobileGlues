@@ -84,6 +84,16 @@ struct client_attrib_snapshot_t {
 };
 #endif
 
+// An element-array binding belongs to a VAO, but the frontend buffer name can
+// be recycled after glDeleteBuffers.  Remembering only that name makes an old
+// VAO appear to reference the new object that later inherited it.  The GLES VAO
+// correctly detached the deleted object, while our tracker would then restore
+// the unrelated replacement after one of the internal temporary IBO binds.
+struct buffer_identity_t {
+    GLuint name = 0;
+    uint64_t lifetime = 0;
+};
+
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 // First-use breadcrumbs go quiet after an entry point has been seen. Map/unmap
 // can fail on a later invocation, so retain a small ordered enter/exit window
@@ -107,13 +117,14 @@ struct buffer_group_state_t { // shared across a share group
     std::vector<char> gen_buffer_exists;
     std::vector<GLuint> free_buffer_ids;
     std::vector<size_t> buffer_datasize;
+    std::vector<uint64_t> buffer_lifetimes;
 };
 
 struct buffer_ctx_state_t { // private to one context
     std::vector<GLuint> gen_arrays;
     std::vector<char> gen_array_exists;
     std::vector<GLuint> free_array_ids;
-    std::vector<GLuint> element_array_buffer_per_vao;
+    std::vector<buffer_identity_t> element_array_buffer_per_vao;
     std::array<GLuint, 13> bound_buffers{};
     GLuint bound_array = 0;
 #if defined(ZOMDROID_EXPERIMENTAL)
@@ -122,6 +133,9 @@ struct buffer_ctx_state_t { // private to one context
     unsigned long long client_attrib_push_hits = 0;
     unsigned long long client_attrib_pop_hits = 0;
     unsigned long long client_attrib_restore_hits = 0;
+#endif
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    unsigned long long ebo_lifetime_guard_hits = 0;
 #endif
 };
 
@@ -170,6 +184,7 @@ void mg_buffer_forget_context(unsigned long long ctx_id) {
 #define g_gen_buffer_exists (g_bg->gen_buffer_exists)
 #define g_free_buffer_ids (g_bg->free_buffer_ids)
 #define g_buffer_datasize (g_bg->buffer_datasize)
+#define g_buffer_lifetimes (g_bg->buffer_lifetimes)
 #define g_gen_arrays (g_bc->gen_arrays)
 #define g_gen_array_exists (g_bc->gen_array_exists)
 #define g_free_array_ids (g_bc->free_array_ids)
@@ -229,6 +244,7 @@ static inline int ensure_buffer_capacity(GLuint id) {
         g_gen_buffers.resize(id + 1, 0);
         g_gen_buffer_exists.resize(id + 1, 0);
         if (g_buffer_datasize.size() <= (size_t)id) g_buffer_datasize.resize(id + 1, 0);
+        if (g_buffer_lifetimes.size() <= (size_t)id) g_buffer_lifetimes.resize(id + 1, 0);
     }
     return 0;
 }
@@ -237,9 +253,20 @@ static inline int ensure_array_capacity(GLuint id) {
     if ((int)g_gen_arrays.size() <= (int)id) {
         g_gen_arrays.resize(id + 1, 0);
         g_gen_array_exists.resize(id + 1, 0);
-        if (g_element_array_buffer_per_vao.size() <= (size_t)id) g_element_array_buffer_per_vao.resize(id + 1, 0);
+        if (g_element_array_buffer_per_vao.size() <= (size_t)id)
+            g_element_array_buffer_per_vao.resize(id + 1);
     }
     return 0;
+}
+
+static uint64_t begin_buffer_lifetime(GLuint id) {
+    ensure_buffer_capacity(id);
+    uint64_t& lifetime = g_buffer_lifetimes[id];
+    ++lifetime;
+    // Zero identifies a name that was never allocated by this frontend.  Keep
+    // it reserved even after the practically unreachable 64-bit wraparound.
+    if (lifetime == 0) ++lifetime;
+    return lifetime;
 }
 
 GLuint gen_buffer() {
@@ -250,6 +277,7 @@ GLuint gen_buffer() {
         g_gen_buffers[id] = 0;
         g_gen_buffer_exists[id] = 1;
         g_buffer_datasize[id] = 0;
+        begin_buffer_lifetime(id);
         if (id > (GLuint)maxBufferId) maxBufferId = id;
         return id;
     }
@@ -258,6 +286,7 @@ GLuint gen_buffer() {
     g_gen_buffers[maxBufferId] = 0;
     g_gen_buffer_exists[maxBufferId] = 1;
     g_buffer_datasize[maxBufferId] = 0;
+    begin_buffer_lifetime((GLuint)maxBufferId);
     return (GLuint)maxBufferId;
 }
 
@@ -287,7 +316,31 @@ GLuint find_real_buffer(GLuint key) {
 }
 
 GLuint get_ibo_by_vao(GLuint vao) {
-    if (vao < g_element_array_buffer_per_vao.size()) return g_element_array_buffer_per_vao[vao];
+    if (vao >= g_element_array_buffer_per_vao.size()) return 0;
+
+    const buffer_identity_t& binding = g_element_array_buffer_per_vao[vao];
+    if (binding.name == 0) return 0;
+
+    // Names bound without first passing through glGenBuffers have no frontend
+    // lifetime.  Preserve that legacy pass-through until a generated object
+    // takes the same name; at that point treating it as the old object would be
+    // precisely the alias this guard exists to reject.
+    if (binding.lifetime == 0) return has_buffer(binding.name) ? 0 : binding.name;
+
+    const bool alive = has_buffer(binding.name);
+    const uint64_t current = binding.name < g_buffer_lifetimes.size() ? g_buffer_lifetimes[binding.name] : 0;
+    if (alive && current == binding.lifetime) return binding.name;
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    ++g_bc->ebo_lifetime_guard_hits;
+    const unsigned long long hit = g_bc->ebo_lifetime_guard_hits;
+    if (hit == 1 || hit == 1024 || hit == 65536) {
+        write_log("ZOMDROID_EBO_LIFETIME_GUARD vao=%u stale_name=%u saved_lifetime=%llu current_lifetime=%llu "
+                  "alive=%d semantic_applied=1 hit=%llu",
+                  vao, binding.name, static_cast<unsigned long long>(binding.lifetime),
+                  static_cast<unsigned long long>(current), alive ? 1 : 0, hit);
+    }
+#endif
     return 0;
 }
 
@@ -297,7 +350,11 @@ GLuint find_bound_array() {
 
 void update_vao_ibo_binding(GLuint vao, GLuint ibo) {
     ensure_array_capacity(vao);
-    g_element_array_buffer_per_vao[vao] = ibo;
+    buffer_identity_t& binding = g_element_array_buffer_per_vao[vao];
+    binding.name = ibo;
+    binding.lifetime = (ibo != 0 && has_buffer(ibo) && ibo < g_buffer_lifetimes.size())
+                           ? g_buffer_lifetimes[ibo]
+                           : 0;
 }
 
 void set_buffer_data_size(GLuint buffer, size_t size) {
@@ -484,7 +541,7 @@ GLuint gen_array() {
         ensure_array_capacity(id);
         g_gen_arrays[id] = 0;
         g_gen_array_exists[id] = 1;
-        g_element_array_buffer_per_vao[id] = 0;
+        g_element_array_buffer_per_vao[id] = {};
         if (id > (GLuint)maxArrayId) maxArrayId = id;
         return id;
     }
@@ -492,7 +549,7 @@ GLuint gen_array() {
     ensure_array_capacity((GLuint)maxArrayId);
     g_gen_arrays[maxArrayId] = 0;
     g_gen_array_exists[maxArrayId] = 1;
-    g_element_array_buffer_per_vao[maxArrayId] = 0;
+    g_element_array_buffer_per_vao[maxArrayId] = {};
     return (GLuint)maxArrayId;
 }
 
@@ -511,7 +568,7 @@ void remove_array(GLuint key) {
     if (key < g_gen_array_exists.size() && g_gen_array_exists[key]) {
         g_gen_array_exists[key] = 0;
         g_gen_arrays[key] = 0;
-        if (key < g_element_array_buffer_per_vao.size()) g_element_array_buffer_per_vao[key] = 0;
+        if (key < g_element_array_buffer_per_vao.size()) g_element_array_buffer_per_vao[key] = {};
         g_free_array_ids.push_back(key);
     }
 #if defined(ZOMDROID_EXPERIMENTAL)
@@ -559,9 +616,11 @@ void InitBufferMap(size_t expectedSize) {
     g_gen_buffers.reserve(expectedSize + 2);
     g_gen_buffer_exists.reserve(expectedSize + 2);
     g_buffer_datasize.reserve(expectedSize + 2);
+    g_buffer_lifetimes.reserve(expectedSize + 2);
     g_gen_buffers.resize(1, 0);
     g_gen_buffer_exists.resize(1, 0);
     g_buffer_datasize.resize(1, 0);
+    g_buffer_lifetimes.resize(1, 0);
 }
 
 void InitVertexArrayMap(size_t expectedSize) {
@@ -570,7 +629,7 @@ void InitVertexArrayMap(size_t expectedSize) {
     g_element_array_buffer_per_vao.reserve(expectedSize + 2);
     g_gen_arrays.resize(1, 0);
     g_gen_array_exists.resize(1, 0);
-    g_element_array_buffer_per_vao.resize(1, 0);
+    g_element_array_buffer_per_vao.resize(1);
 }
 
 void glGenBuffers(GLsizei n, GLuint* buffers) {
