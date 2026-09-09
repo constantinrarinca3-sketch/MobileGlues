@@ -11,7 +11,6 @@
 #include "log.h"
 #include "program.h"
 #include "shader.h"
-#include "buffer.h"
 #include "server_attrib.h"
 #include "texture.h"
 #include "../gles/loader.h"
@@ -495,21 +494,9 @@ NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar* 
     CHECK_GL_ERROR
     return location;
 }
-NATIVE_FUNCTION_HEAD(void, glGetVertexAttribfv, GLuint index, GLenum pname, GLfloat *params)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribfv, index,pname,params)
-NATIVE_FUNCTION_HEAD(void, glGetVertexAttribiv, GLuint index, GLenum pname, GLint *params)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribiv, index,pname,params)
-NATIVE_FUNCTION_HEAD(void, glGetVertexAttribPointerv, GLuint index, GLenum pname, void **pointer)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribPointerv, index,pname,pointer)
+NATIVE_FUNCTION_HEAD(void, glGetVertexAttribfv, GLuint index, GLenum pname, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribfv, index,pname,params)
+NATIVE_FUNCTION_HEAD(void, glGetVertexAttribiv, GLuint index, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribiv, index,pname,params)
+NATIVE_FUNCTION_HEAD(void, glGetVertexAttribPointerv, GLuint index, GLenum pname, void **pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribPointerv, index,pname,pointer)
 //NATIVE_FUNCTION_HEAD(void, glHint, GLenum target, GLenum mode) NATIVE_FUNCTION_END_NO_RETURN(void, glHint, target,mode)
 //NATIVE_FUNCTION_HEAD(GLboolean, glIsBuffer, GLuint buffer) NATIVE_FUNCTION_END(GLboolean, glIsBuffer, buffer)
 // NATIVE_FUNCTION_HEAD(GLboolean, glIsEnabled, GLenum cap) NATIVE_FUNCTION_END(GLboolean, glIsEnabled, cap)   // moved to gl/enable.cpp (virtual enable state table)
@@ -629,16 +616,8 @@ NATIVE_FUNCTION_HEAD(void, glGetTransformFeedbackVarying, GLuint program, GLuint
 #if !defined(ZOMDROID_EXPERIMENTAL)
 NATIVE_FUNCTION_HEAD(void, glVertexAttribIPointer, GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer) NATIVE_FUNCTION_END_NO_RETURN(void, glVertexAttribIPointer, index,size,type,stride,pointer)
 #endif
-NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIiv, GLuint index, GLenum pname, GLint *params)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIiv, index,pname,params)
-NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIuiv, GLuint index, GLenum pname, GLuint *params)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIuiv, index,pname,params)
+NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIiv, GLuint index, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIiv, index,pname,params)
+NATIVE_FUNCTION_HEAD(void, glGetVertexAttribIuiv, GLuint index, GLenum pname, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetVertexAttribIuiv, index,pname,params)
 MG_ATTRIB_SCALAR4(glVertexAttribI4i, GLint, 0x104U)
 MG_ATTRIB_SCALAR4(glVertexAttribI4ui, GLuint, 0x204U)
 MG_ATTRIB_VECTOR(glVertexAttribI4iv, GLint, 4, 0x104U)
@@ -704,16 +683,8 @@ NATIVE_FUNCTION_HEAD(void, glInvalidateSubFramebuffer, GLenum target, GLsizei nu
 NATIVE_FUNCTION_HEAD(void, glGetInternalformativ, GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetInternalformativ, target,internalformat,pname,bufSize,params)
 //NATIVE_FUNCTION_HEAD(void, glDispatchCompute, GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) NATIVE_FUNCTION_END_NO_RETURN(void, glDispatchCompute, num_groups_x,num_groups_y,num_groups_z)
 NATIVE_FUNCTION_HEAD(void, glDispatchComputeIndirect, GLintptr indirect) NATIVE_FUNCTION_END_NO_RETURN(void, glDispatchComputeIndirect, indirect)
-NATIVE_FUNCTION_HEAD(void, glDrawArraysIndirect, GLenum mode, const void *indirect)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glDrawArraysIndirect, mode,indirect)
-NATIVE_FUNCTION_HEAD(void, glDrawElementsIndirect, GLenum mode, GLenum type, const void *indirect)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    mg_pz_flush_deferred_vertex_attribs();
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glDrawElementsIndirect, mode,type,indirect)
+NATIVE_FUNCTION_HEAD(void, glDrawArraysIndirect, GLenum mode, const void *indirect) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawArraysIndirect, mode,indirect)
+NATIVE_FUNCTION_HEAD(void, glDrawElementsIndirect, GLenum mode, GLenum type, const void *indirect) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawElementsIndirect, mode,type,indirect)
 NATIVE_FUNCTION_HEAD(void, glFramebufferParameteri, GLenum target, GLenum pname, GLint param) NATIVE_FUNCTION_END_NO_RETURN(void, glFramebufferParameteri, target,pname,param)
 NATIVE_FUNCTION_HEAD(void, glGetFramebufferParameteriv, GLenum target, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetFramebufferParameteriv, target,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetProgramInterfaceiv, GLuint program, GLenum programInterface, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramInterfaceiv, program,programInterface,pname,params)

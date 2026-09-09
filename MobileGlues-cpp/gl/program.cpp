@@ -43,8 +43,6 @@ UnorderedMap<GLuint, shader_uniform_defaults> program_map_uniform_defaults;
 #if defined(ZOMDROID_EXPERIMENTAL)
 using pz_alpha_shader_bindings = UnorderedMap<GLuint, mg_glsl_compat::pz_alpha_shader_kind>;
 UnorderedMap<GLuint, pz_alpha_shader_bindings> program_map_pz_alpha_shaders;
-UnorderedMap<GLuint, UnorderedMap<GLuint, bool>> program_map_basevertex_shaders;
-UnorderedMap<GLuint, bool> program_map_uses_vertex_id;
 
 struct pz_alpha_program_state {
     mg_glsl_compat::pz_alpha_shader_kind kind = mg_glsl_compat::pz_alpha_shader_kind::none;
@@ -205,23 +203,6 @@ void configure_pz_alpha_program(GLuint program) {
     }
 #endif
 }
-
-void configure_basevertex_program(GLuint program) {
-    const auto attached = program_map_basevertex_shaders.find(program);
-    if (attached == program_map_basevertex_shaders.end() || attached->second.empty()) {
-        program_map_uses_vertex_id[program] = true;
-        return;
-    }
-
-    bool uses_vertex_id = false;
-    for (const auto& shader : attached->second) {
-        if (mg_shader_uses_vertex_id(shader.first)) {
-            uses_vertex_id = true;
-            break;
-        }
-    }
-    program_map_uses_vertex_id[program] = uses_vertex_id;
-}
 #endif
 
 } // namespace
@@ -270,11 +251,6 @@ void mg_prepare_pz_alpha_test(GLuint program) {
                   static_cast<double>(reference), upload ? 1 : 0, hit);
     }
 #endif
-}
-
-bool mg_program_uses_vertex_id(GLuint program) {
-    const auto it = program_map_uses_vertex_id.find(program);
-    return it == program_map_uses_vertex_id.end() || it->second;
 }
 #endif
 
@@ -403,7 +379,6 @@ void glLinkProgram(GLuint program) {
     apply_uniform_defaults(program);
 #if defined(ZOMDROID_EXPERIMENTAL)
     configure_pz_alpha_program(program);
-    configure_basevertex_program(program);
 #endif
 
     CHECK_GL_ERROR
@@ -463,7 +438,6 @@ void glAttachShader(GLuint program, GLuint shader) {
     else
         alpha_shaders[shader] = alpha_kind;
     program_map_pz_alpha_state.erase(program);
-    program_map_basevertex_shaders[program][shader] = true;
 #endif
 
     GLint type = 0;
@@ -498,11 +472,6 @@ void mg_shader_detached(GLuint program, GLuint shader) {
         if (alpha_it->second.empty()) program_map_pz_alpha_shaders.erase(alpha_it);
     }
     program_map_pz_alpha_state.erase(program);
-    const auto basevertex_it = program_map_basevertex_shaders.find(program);
-    if (basevertex_it != program_map_basevertex_shaders.end()) {
-        basevertex_it->second.erase(shader);
-        if (basevertex_it->second.empty()) program_map_basevertex_shaders.erase(basevertex_it);
-    }
 #endif
 }
 
@@ -516,8 +485,6 @@ void mg_program_deleted(GLuint program) {
 #if defined(ZOMDROID_EXPERIMENTAL)
     program_map_pz_alpha_shaders.erase(program);
     program_map_pz_alpha_state.erase(program);
-    program_map_basevertex_shaders.erase(program);
-    program_map_uses_vertex_id.erase(program);
 #endif
 }
 
@@ -529,8 +496,6 @@ GLuint glCreateProgram() {
 #if defined(ZOMDROID_EXPERIMENTAL)
     program_map_pz_alpha_shaders.erase(program);
     program_map_pz_alpha_state.erase(program);
-    program_map_basevertex_shaders.erase(program);
-    program_map_uses_vertex_id[program] = true;
 #endif
     if (hardware->emulate_texture_buffer) {
         program_map_is_sampler_buffer_emulated[program] = false;

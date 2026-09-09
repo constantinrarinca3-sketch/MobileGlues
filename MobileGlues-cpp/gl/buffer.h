@@ -74,10 +74,6 @@ extern "C"
 #if defined(ZOMDROID_EXPERIMENTAL)
     // Depth of the emulated desktop client-attribute stack for this context.
     GLint mg_client_attrib_stack_depth();
-    // Reconcile staged pointer state before draws that cannot represent it, or
-    // return a common base vertex for a compatible indexed draw.
-    void mg_pz_flush_deferred_vertex_attribs();
-    bool mg_pz_prepare_basevertex_draw(bool program_uses_vertex_id, GLint* basevertex);
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);

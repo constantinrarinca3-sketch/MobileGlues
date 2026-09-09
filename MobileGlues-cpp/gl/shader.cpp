@@ -28,7 +28,6 @@ UnorderedMap<GLuint, bool> shader_map_is_sampler_buffer_emulated;
 UnorderedMap<GLuint, std::vector<mg_glsl_compat::uniform_default_value>> shader_map_uniform_defaults;
 #if defined(ZOMDROID_EXPERIMENTAL)
 UnorderedMap<GLuint, mg_glsl_compat::pz_alpha_shader_kind> shader_map_pz_alpha_kind;
-UnorderedMap<GLuint, bool> shader_map_uses_vertex_id;
 #endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 UnorderedMap<GLuint, bool> zomdroid_tile_depth_shader;
@@ -44,12 +43,6 @@ mg_glsl_compat::pz_alpha_shader_kind mg_shader_pz_alpha_kind(GLuint shader) {
     const auto it = shader_map_pz_alpha_kind.find(shader);
     return it == shader_map_pz_alpha_kind.end() ? mg_glsl_compat::pz_alpha_shader_kind::none : it->second;
 }
-
-bool mg_shader_uses_vertex_id(GLuint shader) {
-    const auto it = shader_map_uses_vertex_id.find(shader);
-    // An untracked source cannot prove that changing gl_VertexID is safe.
-    return it == shader_map_uses_vertex_id.end() || it->second;
-}
 #endif
 
 void mg_shader_deleted(GLuint shader) {
@@ -57,7 +50,6 @@ void mg_shader_deleted(GLuint shader) {
     shader_map_is_sampler_buffer_emulated.erase(shader);
 #if defined(ZOMDROID_EXPERIMENTAL)
     shader_map_pz_alpha_kind.erase(shader);
-    shader_map_uses_vertex_id.erase(shader);
 #endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     zomdroid_tile_depth_shader.erase(shader);
@@ -243,11 +235,6 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &shader_type);
 #if defined(ZOMDROID_EXPERIMENTAL)
     shader_map_pz_alpha_kind.erase(shader);
-    // A textual hit in a comment only disables the optimization, which is the
-    // safe failure mode. Missing a real use would change gl_VertexID when a
-    // pointer offset is represented as baseVertex.
-    shader_map_uses_vertex_id[shader] = glsl_src.find("gl_VertexID") != std::string::npos ||
-                                        glsl_src.find("gl_BaseVertex") != std::string::npos;
     mg_glsl_compat::pz_alpha_rewrite_result alpha_rewrite;
     if (shader_type == GL_FRAGMENT_SHADER) {
         alpha_rewrite = mg_glsl_compat::rewrite_pz_alpha_test_family(glsl_src);
