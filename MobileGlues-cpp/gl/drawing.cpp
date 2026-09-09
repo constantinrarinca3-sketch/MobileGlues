@@ -624,13 +624,17 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
     LOG()
-    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
+    MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1,
+                                   mode == GL_TRIANGLES && !mg_restart_needs_rewrite(type) &&
+                                       !mg_restart_needs_driver_fixed(type)));
     LOG_D("glDrawElements, mode: %d, count: %d, type: %d, indices: %p", mode, count, type, indices)
     prepareForDraw();
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
     if (restart_fixed) GLES.glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    MG_PZ_CENSUS(mg_pz_census_batch_draw(gl_state->current_program, mode, type, count,
+                                         mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER)));
     GLES.glDrawElements(mode, count, type, indices);
     if (restart_fixed) GLES.glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
     CHECK_GL_ERROR

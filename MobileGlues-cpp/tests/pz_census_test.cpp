@@ -76,6 +76,10 @@ int main() {
         mg_pz_census_gl_call("glEnableVertexAttribArray");
         mg_pz_census_attrib(mg_pz_attrib_kind::enable, true, frame != 0, frame != 0);
         mg_pz_census_buffer_data(128, false);
+        mg_pz_census_batch_draw(7, GL_TRIANGLES, GL_UNSIGNED_SHORT, 6, 3);
+        mg_pz_census_batch_draw(7, GL_TRIANGLES, GL_UNSIGNED_SHORT, 12, 3);
+        mg_pz_census_bind_texture(false);
+        mg_pz_census_batch_draw(7, GL_TRIANGLES, GL_UNSIGNED_SHORT, 18, 3);
         mg_pz_census_present(true);
     }
 
@@ -83,7 +87,7 @@ int main() {
     expect(last_file_log.find("draw_a=300") != std::string::npos, "array draws must be aggregated");
     expect(last_file_log.find("items=1800") != std::string::npos, "draw item count must be aggregated");
     expect(last_file_log.find("program=300/100") != std::string::npos, "redundant program calls must be split");
-    expect(last_file_log.find("schema=2") != std::string::npos, "schema 2 must be reported");
+    expect(last_file_log.find("schema=3") != std::string::npos, "schema 3 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
     expect(last_file_log.find("uniform=300/300/299/299") != std::string::npos,
@@ -91,6 +95,10 @@ int main() {
     expect(last_file_log.find("attrib=300/300/299/299") != std::string::npos,
            "attribute tracked, exact and skipped counts must be split");
     expect(last_file_log.find("upload=300+0/38400B") != std::string::npos, "buffer bytes must be aggregated");
+    expect(last_file_log.find("batch_e=900/300/600/2") != std::string::npos,
+           "exact adjacent element-draw runs must be reported");
+    expect(last_file_log.find("batch_break=300/0/0/0/0/0") != std::string::npos,
+           "state barriers must terminate candidate runs");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);

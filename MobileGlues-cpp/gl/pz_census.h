@@ -31,7 +31,9 @@ enum class mg_pz_attrib_kind : uint8_t {
 
 void mg_pz_census_init(void);
 void mg_pz_census_gl_call(const char* function);
-void mg_pz_census_draw(bool indexed, GLenum mode, GLsizei count, GLsizei instances);
+void mg_pz_census_draw(bool indexed, GLenum mode, GLsizei count, GLsizei instances,
+                       bool direct_elements_candidate = false);
+void mg_pz_census_batch_draw(GLuint program, GLenum mode, GLenum type, GLsizei count, GLuint element_buffer);
 void mg_pz_census_multidraw(GLsizei commands);
 void mg_pz_census_use_program(bool redundant);
 void mg_pz_census_bind_texture(bool redundant);
