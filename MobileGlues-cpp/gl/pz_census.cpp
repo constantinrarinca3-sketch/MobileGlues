@@ -194,7 +194,6 @@ struct batch_state_t {
 };
 
 thread_local batch_state_t g_batch;
-thread_local uint64_t g_resource_epoch = 1;
 thread_local void (*g_draw_batch_flush)(void) = nullptr;
 
 bool pz_tracking_active() {
@@ -324,7 +323,6 @@ void mg_pz_census_init(void) {
     g_attrib_values.clear();
     g_uniform_context = 0;
     g_batch = {};
-    g_resource_epoch = 1;
     if (mg_pz_census_active) {
         LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=3 interval_frames=%u", kReportFrames)
     }
@@ -388,8 +386,6 @@ void mg_pz_census_gl_call(const char* function) {
         starts_with(function, "glUnmapBuffer") || starts_with(function, "glFlushMappedBuffer") ||
         starts_with(function, "glTexImage") || starts_with(function, "glTexSubImage") ||
         starts_with(function, "glCopyTex") || std::strcmp(function, "glGenerateMipmap") == 0) {
-        ++g_resource_epoch;
-        if (g_resource_epoch == 0) ++g_resource_epoch;
         batch_break(batch_break_t::resource);
     } else
         batch_break(batch_break_t::state);
@@ -557,7 +553,6 @@ void mg_pz_census_context_changed(unsigned long long context_id) {
     g_uniform_values.clear();
     g_attrib_values.clear();
     batch_reset_sequence();
-    ++g_resource_epoch;
 }
 
 void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped) {
@@ -643,10 +638,6 @@ void mg_pz_census_present(bool succeeded) {
         // first interval or hide a stall at the reporting boundary.
         state.previous_present_ns = now;
     }
-}
-
-uint64_t mg_pz_resource_epoch(void) {
-    return g_resource_epoch;
 }
 
 void mg_pz_set_draw_batch_flush(void (*flush)(void)) {

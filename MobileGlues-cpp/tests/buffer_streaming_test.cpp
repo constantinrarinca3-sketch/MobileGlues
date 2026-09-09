@@ -14,7 +14,6 @@ bool mg_pz_buffer_discard_coalesce_active = true;
 bool mg_pz_draw_batch_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
-uint64_t mg_pz_resource_epoch(void) { return 1; }
 
 static GLenum last_error = GL_NO_ERROR;
 static int failures = 0;

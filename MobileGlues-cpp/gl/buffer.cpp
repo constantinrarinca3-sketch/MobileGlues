@@ -111,7 +111,6 @@ struct buffer_staging_map_t {
     GLbitfield access = 0;
     bool mapped = false;
     bool completed_upload = false;
-    uint64_t completed_epoch = 0;
     bool discard_elided = false;
     GLsizeiptr discard_size = 0;
     GLenum discard_usage = GL_STATIC_DRAW;
@@ -474,13 +473,17 @@ static bool staging_map_active(GLuint buffer) {
     return found != g_buffer_staging_maps.end() && found->second.mapped;
 }
 
+static void invalidate_staging_snapshot(GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found != g_buffer_staging_maps.end()) found->second.completed_upload = false;
+}
+
 bool mg_pz_buffer_staging_snapshot(GLuint buffer, const unsigned char** data, size_t* bytes) {
     if (!mg_pz_draw_batch_active || data == nullptr || bytes == nullptr) return false;
     const auto found = g_buffer_staging_maps.find(buffer);
     if (found == g_buffer_staging_maps.end()) return false;
     const buffer_staging_map_t& staging = found->second;
-    if (staging.mapped || !staging.completed_upload || staging.completed_epoch != mg_pz_resource_epoch() ||
-        staging.size <= 0 || staging.storage.empty())
+    if (staging.mapped || !staging.completed_upload || staging.size <= 0 || staging.storage.empty())
         return false;
     constexpr uintptr_t kMapAlignment = 64;
     const uintptr_t base = reinterpret_cast<uintptr_t>(staging.storage.data());
@@ -572,6 +575,7 @@ static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, 
         staging.size = length;
         staging.access = access;
         staging.mapped = true;
+        staging.completed_upload = false;
         *handled = true;
         ++stats.hits;
         trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "hit");
@@ -624,6 +628,7 @@ static bool try_elide_buffer_discard(GLenum target, GLuint buffer, GLsizeiptr si
 
     buffer_staging_map_t& staging = found->second;
     staging.discard_elided = true;
+    staging.completed_upload = false;
     staging.discard_size = size;
     staging.discard_usage = usage;
     buffer_discard_coalesce_stats_t& stats = g_bc->buffer_discard_coalesce_stats;
@@ -1539,6 +1544,7 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
         trace_discard_coalesce(frontend_buffer, size, "superseded",
                                g_bc->buffer_discard_coalesce_stats.superseded);
     }
+    invalidate_staging_snapshot(frontend_buffer);
 #endif
     borrowed_target_t t(target);
     GLES.glBufferData(t.target, size, data, usage);
@@ -1568,6 +1574,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void
     // A partial update needs the discard to exist first. This is an uncommon
     // deviation from the learned discard/full-map sequence and keeps its old path.
     flush_elided_discard(target, frontend_buffer);
+    invalidate_staging_snapshot(frontend_buffer);
 #endif
     borrowed_target_t t(target);
     GLES.glBufferSubData(t.target, offset, size, data);
@@ -1733,6 +1740,9 @@ void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
 #endif
     borrowed_target_t t(target);
     void* ptr = GLES.glMapBufferRange(t.target, offset, length, access);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (ptr) invalidate_staging_snapshot(frontend_buffer);
+#endif
     if (ptr) MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
     trace_zomdroid_buffer_call("MAP_RANGE_EXIT", target, offset, length, access, ptr);
     return ptr;
@@ -1757,7 +1767,6 @@ GLboolean glUnmapBuffer(GLenum target) {
                                    g_bc->buffer_discard_coalesce_stats.paired);
         }
         staged->second.completed_upload = true;
-        staged->second.completed_epoch = mg_pz_resource_epoch();
         staged->second.mapped = false;
         staged->second.pointer = nullptr;
         trace_zomdroid_buffer_call("UNMAP_STAGING_UPLOAD", target, 0, staged->second.size, staged->second.access,
@@ -1808,6 +1817,7 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
             trace_discard_coalesce(frontend_buffer, size, "superseded_by_storage",
                                    g_bc->buffer_discard_coalesce_stats.superseded);
         }
+        invalidate_staging_snapshot(frontend_buffer);
 #endif
         borrowed_target_t t(target);
         GLES.glBufferStorageEXT(t.target, size, data, flags);
