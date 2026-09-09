@@ -63,6 +63,11 @@ struct mg_upload_fix_t {
     // rewritten freely.
     bool has_data() const { return has_data_; }
 
+    // Diagnostic accessors. A conversion means MobileGlues allocated and
+    // rewrote this many bytes on the CPU before calling GLES.
+    bool converted() const { return converted_; }
+    size_t converted_bytes() const { return converted_bytes_; }
+
     // want_format, when non-zero, is the client format the destination is going
     // to be labelled with. The conversion emits that many channels, so the enum
     // handed to the driver always describes the bytes behind it. Pass 0 (the

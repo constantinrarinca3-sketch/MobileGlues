@@ -29,6 +29,7 @@
 #include "../gles/gles.h"
 #include "../gles/loader.h"
 #include "framebuffer.h"
+#include "buffer.h"
 #include "log.h"
 #include "transfer.h"
 #include "pixel.h"
@@ -36,6 +37,19 @@
 #include <GL/gl.h>
 
 #define DEBUG 0
+
+static size_t pz_texture_upload_bytes(GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type) {
+    if (width <= 0 || height <= 0 || depth <= 0) return 0;
+    const GLsizei bytes_per_pixel = pixel_sizeof(format, type);
+    if (bytes_per_pixel <= 0) return 0;
+    size_t result = static_cast<size_t>(width);
+    for (size_t factor : {static_cast<size_t>(height), static_cast<size_t>(depth),
+                          static_cast<size_t>(bytes_per_pixel)}) {
+        if (factor != 0 && result > static_cast<size_t>(-1) / factor) return 0;
+        result *= factor;
+    }
+    return result;
+}
 
 #define TX_WARN_ONCE(...)                                                                                              \
     do {                                                                                                               \
@@ -977,11 +991,18 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     // conversion below is told to emit that many channels. The type always comes
     // from the conversion, which is the one thing that knows what the bytes are.
     // An allocation has no bytes to describe, so there both are adopted.
+    const GLenum source_format = format;
+    const GLenum source_type = type;
     GLenum want_if = static_cast<GLenum>(internalFormat), want_fmt = format, want_type = type;
     internal_convert(&want_if, &want_type, &want_fmt, mg_upload_has_data(pixels));
     internalFormat = static_cast<GLint>(want_if);
 
     mg_upload_fix_t fix(width, height, 1, format, type, pixels, want_fmt, /*three_d=*/false);
+    MG_PZ_CENSUS(mg_pz_census_texture_upload(
+        false, source_format, fix.has_data(), fix.converted(), mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0,
+        fix.dropped(), fix.converted() ? fix.converted_bytes()
+                                      : pz_texture_upload_bytes(width, height, 1, source_format, source_type),
+        fix.converted_bytes()));
     // A conversion this layer refused -- a source it could not map, or dimensions
     // whose product does not fit in memory -- means the call has already raised its
     // error and must not go on to define the level. Without this, `pixels` having
@@ -1039,11 +1060,18 @@ void glTexImage3D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
           target, level, internalFormat, width, height, depth, border, format, type)
 
     // Same ordering as glTexImage2D; see the note there.
+    const GLenum source_format = format;
+    const GLenum source_type = type;
     GLenum want_if = static_cast<GLenum>(internalFormat), want_fmt = format, want_type = type;
     internal_convert(&want_if, &want_type, &want_fmt, mg_upload_has_data(pixels));
     internalFormat = static_cast<GLint>(want_if);
 
     mg_upload_fix_t fix(width, height, depth, format, type, pixels, want_fmt);
+    MG_PZ_CENSUS(mg_pz_census_texture_upload(
+        false, source_format, fix.has_data(), fix.converted(), mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0,
+        fix.dropped(), fix.converted() ? fix.converted_bytes()
+                                      : pz_texture_upload_bytes(width, height, depth, source_format, source_type),
+        fix.converted_bytes()));
     // A conversion this layer refused -- a source it could not map, or dimensions
     // whose product does not fit in memory -- means the call has already raised its
     // error and must not go on to define the level. Without this, `pixels` having
@@ -1551,7 +1579,14 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
     // code set a texture swizzle here instead -- sampling state, permanently
     // changed as a side effect of an upload, wrong the moment the application
     // uploads RGBA to the same texture, renders into it, or swizzles it itself.
+    const GLenum source_format = format;
+    const GLenum source_type = type;
     mg_upload_fix_t fix(width, height, 1, format, type, pixels, /*want_format=*/0, /*three_d=*/false);
+    MG_PZ_CENSUS(mg_pz_census_texture_upload(
+        true, source_format, fix.has_data(), fix.converted(), mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0,
+        fix.dropped(), fix.converted() ? fix.converted_bytes()
+                                      : pz_texture_upload_bytes(width, height, 1, source_format, source_type),
+        fix.converted_bytes()));
     // A dropped conversion leaves pixels null, and glTexSubImage2D has no
     // allocate-only form: with the unpack buffer unbound the driver would read
     // client memory from address zero.
@@ -1811,7 +1846,14 @@ void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
     LOG_D("glTexSubImage3D, target = %s, level = %d, offset = (%d,%d,%d), size = (%d,%d,%d), format = %s, type = %s",
           glEnumToString(target), level, xoffset, yoffset, zoffset, width, height, depth, glEnumToString(format),
           glEnumToString(type))
+    const GLenum source_format = format;
+    const GLenum source_type = type;
     mg_upload_fix_t fix(width, height, depth, format, type, pixels);
+    MG_PZ_CENSUS(mg_pz_census_texture_upload(
+        true, source_format, fix.has_data(), fix.converted(), mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0,
+        fix.dropped(), fix.converted() ? fix.converted_bytes()
+                                      : pz_texture_upload_bytes(width, height, depth, source_format, source_type),
+        fix.converted_bytes()));
     if (fix.dropped()) {
         CHECK_GL_ERROR
         return;

@@ -72,6 +72,18 @@ struct counters_t {
     count_t buffer_upload_bytes = 0;
     count_t buffer_map_calls = 0;
     count_t buffer_map_bytes = 0;
+    count_t texture_image_calls = 0;
+    count_t texture_sub_image_calls = 0;
+    count_t texture_data_calls = 0;
+    count_t texture_upload_bytes = 0;
+    count_t texture_max_upload_bytes = 0;
+    count_t texture_rgba_calls = 0;
+    count_t texture_bgra_calls = 0;
+    count_t texture_other_calls = 0;
+    count_t texture_conversion_calls = 0;
+    count_t texture_conversion_bytes = 0;
+    count_t texture_pbo_calls = 0;
+    count_t texture_dropped_calls = 0;
 
     // Exact, diagnostic-only upper bound for replacing adjacent direct
     // glDrawElements calls with one multi-draw submission. `adjacent` is also
@@ -130,6 +142,18 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(buffer_upload_bytes);
     MG_ADD_FIELD(buffer_map_calls);
     MG_ADD_FIELD(buffer_map_bytes);
+    MG_ADD_FIELD(texture_image_calls);
+    MG_ADD_FIELD(texture_sub_image_calls);
+    MG_ADD_FIELD(texture_data_calls);
+    MG_ADD_FIELD(texture_upload_bytes);
+    out.texture_max_upload_bytes = std::max(out.texture_max_upload_bytes, in.texture_max_upload_bytes);
+    MG_ADD_FIELD(texture_rgba_calls);
+    MG_ADD_FIELD(texture_bgra_calls);
+    MG_ADD_FIELD(texture_other_calls);
+    MG_ADD_FIELD(texture_conversion_calls);
+    MG_ADD_FIELD(texture_conversion_bytes);
+    MG_ADD_FIELD(texture_pbo_calls);
+    MG_ADD_FIELD(texture_dropped_calls);
     MG_ADD_FIELD(batch_elements_candidates);
     MG_ADD_FIELD(batch_elements_adjacent);
     MG_ADD_FIELD(batch_elements_runs);
@@ -253,7 +277,7 @@ void report(const census_state_t& state) {
     const double worst_ms = static_cast<double>(state.worst_ns) / 1000000.0;
     const counters_t& c = state.window;
     const counters_t& w = state.worst_frame;
-    LOG_I("ZOMDROID_PZ_CENSUS schema=3 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
+    LOG_I("ZOMDROID_PZ_CENSUS schema=4 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
@@ -261,8 +285,10 @@ void report(const census_state_t& state) {
           "attrib_enable=%llu/%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
+          "tex_upload=%llu+%llu/%llu/%lluB/%lluB tex_src=%llu/%llu/%llu "
+          "tex_convert=%llu/%lluB tex_pbo=%llu tex_drop=%llu "
           "batch_e=%llu/%llu/%llu/%llu batch_break=%llu/%llu/%llu/%llu/%llu/%llu "
-          "worst_draw=%llu worst_items=%llu worst_upload=%lluB",
+          "worst_draw=%llu worst_items=%llu worst_upload=%lluB worst_tex=%llu/%lluB/%lluB",
           state.frames, average_ms, worst_ms, state.over_20_ms, state.over_33_ms, state.over_50_ms,
           state.over_100_ms, state.failed_swaps, c.draws_arrays, c.draws_elements, c.multidraw_calls,
           c.draw_commands, c.draw_items, c.triangles, c.quads, c.other_modes, c.use_program,
@@ -278,9 +304,13 @@ void report(const census_state_t& state) {
           c.attrib_kind_calls[4], c.attrib_kind_exact[4], c.attrib_kind_calls[5], c.attrib_kind_exact[5],
           c.attrib_kind_calls[6], c.attrib_kind_exact[6], c.fixed_state_calls, c.query_calls, c.sync_calls,
           c.buffer_data_calls, c.buffer_sub_data_calls, c.buffer_upload_bytes, c.buffer_map_calls,
-          c.buffer_map_bytes, c.batch_elements_candidates, c.batch_elements_adjacent, c.batch_elements_runs,
+          c.buffer_map_bytes, c.texture_image_calls, c.texture_sub_image_calls, c.texture_data_calls,
+          c.texture_upload_bytes, c.texture_max_upload_bytes, c.texture_rgba_calls, c.texture_bgra_calls,
+          c.texture_other_calls, c.texture_conversion_calls, c.texture_conversion_bytes, c.texture_pbo_calls,
+          c.texture_dropped_calls, c.batch_elements_candidates, c.batch_elements_adjacent, c.batch_elements_runs,
           c.batch_elements_max_run, c.batch_breaks[0], c.batch_breaks[1], c.batch_breaks[2], c.batch_breaks[3],
-          c.batch_breaks[4], c.batch_breaks[5], w.draw_commands, w.draw_items, w.buffer_upload_bytes)
+          c.batch_breaks[4], c.batch_breaks[5], w.draw_commands, w.draw_items, w.buffer_upload_bytes,
+          w.texture_data_calls, w.texture_upload_bytes, w.texture_conversion_bytes)
 }
 
 } // namespace
@@ -311,7 +341,7 @@ void mg_pz_census_init(void) {
     g_uniform_context = 0;
     g_batch = {};
     if (mg_pz_census_active) {
-        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=3 interval_frames=%u", kReportFrames)
+        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=4 interval_frames=%u", kReportFrames)
     }
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
@@ -570,6 +600,33 @@ void mg_pz_census_buffer_map(GLsizeiptr bytes) {
     batch_break(batch_break_t::resource);
     ++g_census.frame.buffer_map_calls;
     if (bytes > 0) g_census.frame.buffer_map_bytes += static_cast<count_t>(bytes);
+}
+
+void mg_pz_census_texture_upload(bool sub_image, GLenum source_format, bool has_data, bool converted, bool from_pbo,
+                                 bool dropped, size_t bytes, size_t converted_bytes) {
+    if (!mg_pz_census_active) return;
+    counters_t& c = g_census.frame;
+    if (sub_image)
+        ++c.texture_sub_image_calls;
+    else
+        ++c.texture_image_calls;
+    if (dropped) ++c.texture_dropped_calls;
+    if (!has_data) return;
+
+    ++c.texture_data_calls;
+    c.texture_upload_bytes += static_cast<count_t>(bytes);
+    c.texture_max_upload_bytes = std::max(c.texture_max_upload_bytes, static_cast<count_t>(bytes));
+    if (source_format == GL_RGBA)
+        ++c.texture_rgba_calls;
+    else if (source_format == GL_BGRA)
+        ++c.texture_bgra_calls;
+    else
+        ++c.texture_other_calls;
+    if (converted) {
+        ++c.texture_conversion_calls;
+        c.texture_conversion_bytes += static_cast<count_t>(converted_bytes);
+    }
+    if (from_pbo) ++c.texture_pbo_calls;
 }
 
 void mg_pz_census_present(bool succeeded) {

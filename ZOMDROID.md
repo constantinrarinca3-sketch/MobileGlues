@@ -36,7 +36,7 @@ redundant state calls and buffer upload/map traffic. It does not alter rendering
 zombies by itself; compare repeatable routes with low and high zombie counts. Keep it disabled
 for ordinary play because the per-call counting is diagnostic overhead.
 
-Schema 3 additionally reports exact repeated uniform values, vertex-attrib state and conservative
+Schema 4 additionally reports exact repeated uniform values, vertex-attrib state and conservative
 adjacent `glDrawElements` batching eligibility. `batch_e=candidates/adjacent/runs/max_run`; adjacent
 is the upper bound on driver submissions a future multi-draw implementation could remove.
 `batch_break=state/uniform/attrib/resource/other_draw/signature` explains why runs ended. Only direct
@@ -44,6 +44,11 @@ indexed triangle draws backed by an element buffer qualify, and every uncertain 
 All associated
 comparison/cache work remains inside `MOBILEGLUES_PZ_CENSUS=1`; disabling or omitting the variable
 removes that work from the rendering path.
+
+The same census line also measures uncompressed texture traffic without another switch.
+`tex_upload=image+subimage/data/bytes/largest`, `tex_src=RGBA/BGRA/other`, and
+`tex_convert=calls/bytes` show whether CPU pixel conversion is a meaningful target. `tex_pbo`
+counts uploads already sourced from an unpack PBO; `tex_drop` counts rejected conversions.
 
 The independent VAO optimization is selected through the renderer environment:
 
