@@ -304,12 +304,18 @@ void setupBufferTextureUniforms(GLuint program) {
     for (const GLint locSampler : info.samplers) {
         if (locSampler < 0) continue;
         GLES.glUniform1i(locSampler, kBufferTextureUnit);
+        MG_PZ_UNIFORM_STATE(mg_pz_uniform_driver_write(program, locSampler, 0x101U, 1, &kBufferTextureUnit,
+                                                        sizeof(kBufferTextureUnit)));
         wrote_sampler = true;
     }
     if (!wrote_sampler) return;
 
     GLES.glUniform1i(info.locWidth, texObject->width);
+    MG_PZ_UNIFORM_STATE(
+        mg_pz_uniform_driver_write(program, info.locWidth, 0x101U, 1, &texObject->width, sizeof(texObject->width)));
     GLES.glUniform1i(info.locHeight, texObject->height);
+    MG_PZ_UNIFORM_STATE(
+        mg_pz_uniform_driver_write(program, info.locHeight, 0x101U, 1, &texObject->height, sizeof(texObject->height)));
 }
 
 void prepareForDraw() {
@@ -642,7 +648,11 @@ void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean laye
 void glUniform1i(GLint location, GLint v0) {
     LOG()
     LOG_D("glUniform1i, location: %d, v0: %d", location, v0)
-    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location, 0x101U, 1, &v0, sizeof(v0)));
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if ((mg_pz_census_active || mg_pz_uniform_fastpath_active) &&
+        mg_pz_uniform_call(gl_state->current_program, location, 0x101U, 1, &v0, sizeof(v0)))
+        return;
+#endif
     GLES.glUniform1i(location, v0);
     CHECK_GL_ERROR
 }

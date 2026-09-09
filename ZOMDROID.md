@@ -59,3 +59,14 @@ MOBILEGLUES_PZ_ATTRIB_FASTPATH=0  # disabled (default)
 
 It currently removes only exact repeated `glEnableVertexAttribArray` and
 `glDisableVertexAttribArray` calls, and only while the real driver VAO is confirmed.
+
+The uniform fast path is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_UNIFORM_FASTPATH=1  # enabled
+MOBILEGLUES_PZ_UNIFORM_FASTPATH=0  # disabled (default)
+```
+
+Only valid, single-value writes with an identical program, location, type and bit-exact payload are
+skipped. Relink, deletion, context switches and unsupported array writes invalidate the shadow;
+internal alpha-test and buffer-texture writes keep it synchronized.

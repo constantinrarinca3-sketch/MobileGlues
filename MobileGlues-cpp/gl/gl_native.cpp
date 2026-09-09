@@ -22,9 +22,9 @@
 
 namespace {
 template <typename T, typename... Rest>
-void census_uniform_scalars(GLuint program, GLint location, uint32_t signature, T first, Rest... rest) {
+bool uniform_scalars_should_skip(GLuint program, GLint location, uint32_t signature, T first, Rest... rest) {
     const T values[] = {first, static_cast<T>(rest)...};
-    mg_pz_census_uniform(program, location, signature, 1, values, sizeof(values));
+    return mg_pz_uniform_call(program, location, signature, 1, values, sizeof(values));
 }
 
 template <typename T, typename... Rest>
@@ -34,59 +34,77 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
 }
 } // namespace
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define MG_UNIFORM_RETURN_IF_REDUNDANT(call)                                                                           \
+    do {                                                                                                               \
+        if ((mg_pz_census_active || mg_pz_uniform_fastpath_active) && (call)) return;                                  \
+    } while (0)
+#else
+#define MG_UNIFORM_RETURN_IF_REDUNDANT(call)                                                                           \
+    do {                                                                                                               \
+    } while (0)
+#endif
+
 #define MG_UNIFORM_SCALAR1(name, type, signature)                                                                      \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0)                                                         \
-    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0));                          \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        uniform_scalars_should_skip(gl_state->current_program, location, signature, v0));                              \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0)
 #define MG_UNIFORM_SCALAR2(name, type, signature)                                                                      \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1)                                                \
-    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1));                      \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        uniform_scalars_should_skip(gl_state->current_program, location, signature, v0, v1));                          \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1)
 #define MG_UNIFORM_SCALAR3(name, type, signature)                                                                      \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1, type v2)                                       \
-    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1, v2));                  \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        uniform_scalars_should_skip(gl_state->current_program, location, signature, v0, v1, v2));                      \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1, v2)
 #define MG_UNIFORM_SCALAR4(name, type, signature)                                                                      \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, type v0, type v1, type v2, type v3)                              \
-    MG_PZ_CENSUS(census_uniform_scalars(gl_state->current_program, location, signature, v0, v1, v2, v3));              \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        uniform_scalars_should_skip(gl_state->current_program, location, signature, v0, v1, v2, v3));                  \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, v0, v1, v2, v3)
 #define MG_UNIFORM_VECTOR(name, type, components, signature)                                                           \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, GLsizei count, const type* value)                                \
-    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location, signature, count, value,                    \
-                                       components * sizeof(type)));                                                    \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(mg_pz_uniform_call(gl_state->current_program, location, signature, count, value,     \
+                                                       components * sizeof(type)));                                    \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, count, value)
 #define MG_UNIFORM_MATRIX(name, columns, rows)                                                                         \
     NATIVE_FUNCTION_HEAD(void, name, GLint location, GLsizei count, GLboolean transpose, const GLfloat* value)         \
-    MG_PZ_CENSUS(mg_pz_census_uniform(gl_state->current_program, location,                                             \
-                                       0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,     \
-                                       columns * rows * sizeof(GLfloat)));                                              \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        mg_pz_uniform_call(gl_state->current_program, location,                                                        \
+                           0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,                 \
+                           columns * rows * sizeof(GLfloat)));                                                          \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, location, count, transpose, value)
 #define MG_PROGRAM_UNIFORM_SCALAR1(name, type, signature)                                                              \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0)                                          \
-    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0));                                            \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(uniform_scalars_should_skip(program, location, signature, v0));                     \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0)
 #define MG_PROGRAM_UNIFORM_SCALAR2(name, type, signature)                                                              \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1)                                 \
-    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1));                                        \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(uniform_scalars_should_skip(program, location, signature, v0, v1));                 \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1)
 #define MG_PROGRAM_UNIFORM_SCALAR3(name, type, signature)                                                              \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1, type v2)                        \
-    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1, v2));                                    \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(uniform_scalars_should_skip(program, location, signature, v0, v1, v2));             \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1, v2)
 #define MG_PROGRAM_UNIFORM_SCALAR4(name, type, signature)                                                              \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, type v0, type v1, type v2, type v3)               \
-    MG_PZ_CENSUS(census_uniform_scalars(program, location, signature, v0, v1, v2, v3));                                \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(uniform_scalars_should_skip(program, location, signature, v0, v1, v2, v3));         \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, v0, v1, v2, v3)
 #define MG_PROGRAM_UNIFORM_VECTOR(name, type, components, signature)                                                   \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, GLsizei count, const type* value)                 \
-    MG_PZ_CENSUS(mg_pz_census_uniform(program, location, signature, count, value, components * sizeof(type)));         \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        mg_pz_uniform_call(program, location, signature, count, value, components * sizeof(type)));                    \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, count, value)
 #define MG_PROGRAM_UNIFORM_MATRIX(name, columns, rows)                                                                 \
     NATIVE_FUNCTION_HEAD(void, name, GLuint program, GLint location, GLsizei count, GLboolean transpose,               \
                          const GLfloat* value)                                                                         \
-    MG_PZ_CENSUS(mg_pz_census_uniform(program, location,                                                               \
-                                       0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,     \
-                                       columns * rows * sizeof(GLfloat)));                                              \
+    MG_UNIFORM_RETURN_IF_REDUNDANT(                                                                                    \
+        mg_pz_uniform_call(program, location,                                                                          \
+                           0x400U | (columns << 4U) | rows | (transpose ? 0x1000U : 0U), count, value,                 \
+                           columns * rows * sizeof(GLfloat)));                                                          \
     NATIVE_FUNCTION_END_NO_RETURN(void, name, program, location, count, transpose, value)
 #define MG_ATTRIB_SCALAR1(name, type, signature)                                                                       \
     NATIVE_FUNCTION_HEAD(void, name, GLuint index, type v0)                                                           \
@@ -140,7 +158,7 @@ NATIVE_FUNCTION_HEAD(void, glCullFace, GLenum mode) NATIVE_FUNCTION_END_NO_RETUR
 //NATIVE_FUNCTION_HEAD(void, glDeleteBuffers, GLsizei n, const GLuint *buffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteBuffers, n,buffers)
 // NATIVE_FUNCTION_HEAD(void, glDeleteFramebuffers, GLsizei n, const GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteFramebuffers, n,framebuffers)   // implemented in gl/framebuffer.cpp
 NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program)
-    MG_PZ_CENSUS(mg_pz_census_forget_program(program));
+    MG_PZ_UNIFORM_STATE(mg_pz_census_forget_program(program));
     mg_program_deleted(program);
 NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 NATIVE_FUNCTION_HEAD(void, glDeleteRenderbuffers, GLsizei n, const GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteRenderbuffers, n,renderbuffers)

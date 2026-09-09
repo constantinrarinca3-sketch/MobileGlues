@@ -17,6 +17,7 @@ extern bool mg_pz_census_active;
 // enables it; it remains usable with the diagnostic census disabled.
 extern bool mg_pz_vao_fastpath_active;
 extern bool mg_pz_attrib_fastpath_active;
+extern bool mg_pz_uniform_fastpath_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,
@@ -39,8 +40,10 @@ void mg_pz_census_bind_buffer(bool same_frontend_binding);
 void mg_pz_census_bind_vao(bool same_frontend_binding, bool driver_confirmed, bool skipped);
 void mg_pz_census_bind_framebuffer(bool same_effective_binding);
 void mg_pz_census_enable(bool redundant);
-void mg_pz_census_uniform(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
-                          size_t bytes);
+bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
+                        size_t bytes);
+void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
+                                size_t bytes);
 void mg_pz_census_forget_program(GLuint program);
 void mg_pz_census_context_changed(unsigned long long context_id);
 void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped = false);
@@ -56,6 +59,17 @@ void mg_pz_census_present(bool succeeded);
     } while (0)
 #else
 #define MG_PZ_CENSUS(call)                                                                                             \
+    do {                                                                                                               \
+    } while (0)
+#endif
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define MG_PZ_UNIFORM_STATE(call)                                                                                      \
+    do {                                                                                                               \
+        if (mg_pz_census_active || mg_pz_uniform_fastpath_active) call;                                                \
+    } while (0)
+#else
+#define MG_PZ_UNIFORM_STATE(call)                                                                                      \
     do {                                                                                                               \
     } while (0)
 #endif

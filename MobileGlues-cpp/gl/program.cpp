@@ -222,9 +222,17 @@ void mg_prepare_pz_alpha_test(GLuint program) {
                         target.last_enabled != enabled || target.last_function != function ||
                         target.last_reference != reference;
     if (upload) {
-        GLES.glUniform1i(target.enabled_location, enabled ? 1 : 0);
-        GLES.glUniform1i(target.function_location, static_cast<GLint>(function));
+        const GLint enabled_value = enabled ? 1 : 0;
+        const GLint function_value = static_cast<GLint>(function);
+        GLES.glUniform1i(target.enabled_location, enabled_value);
+        MG_PZ_UNIFORM_STATE(mg_pz_uniform_driver_write(program, target.enabled_location, 0x101U, 1, &enabled_value,
+                                                        sizeof(enabled_value)));
+        GLES.glUniform1i(target.function_location, function_value);
+        MG_PZ_UNIFORM_STATE(mg_pz_uniform_driver_write(program, target.function_location, 0x101U, 1, &function_value,
+                                                        sizeof(function_value)));
         GLES.glUniform1f(target.reference_location, reference);
+        MG_PZ_UNIFORM_STATE(mg_pz_uniform_driver_write(program, target.reference_location, 0x301U, 1, &reference,
+                                                        sizeof(reference)));
         target.last_context = context;
         target.last_enabled = enabled;
         target.last_function = function;
@@ -314,7 +322,7 @@ void GenerateDefaultFSSource() {
 static UnorderedMap<unsigned, GLuint> DefaultFSMap; // essl version <-> shader id
 void glLinkProgram(GLuint program) {
     LOG()
-    MG_PZ_CENSUS(mg_pz_census_forget_program(program));
+    MG_PZ_UNIFORM_STATE(mg_pz_census_forget_program(program));
 
     LOG_D("glLinkProgram(%d)", program)
     if (!shaderInfo.converted.empty() && shaderInfo.frag_data_changed) {

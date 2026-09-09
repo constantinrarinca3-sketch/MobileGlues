@@ -34,11 +34,13 @@ static void expect(bool condition, const char* message) {
 int main() {
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
+    setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active, "0 must disable the census");
     expect(!mg_pz_vao_fastpath_active, "0 must disable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "0 must disable the attribute fast path");
+    expect(!mg_pz_uniform_fastpath_active, "0 must disable the uniform fast path");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
     mg_pz_census_init();
@@ -46,17 +48,21 @@ int main() {
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "true", 1);
+    setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "true", 1);
     mg_pz_census_init();
     expect(!mg_pz_vao_fastpath_active, "only the exact value 1 may enable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "only the exact value 1 may enable the attribute fast path");
+    expect(!mg_pz_uniform_fastpath_active, "only the exact value 1 may enable the uniform fast path");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "1", 1);
+    setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
     mg_pz_census_init();
     expect(mg_pz_census_active, "1 must enable the census");
     expect(mg_pz_vao_fastpath_active, "1 must enable the VAO fast path");
     expect(mg_pz_attrib_fastpath_active, "1 must enable the attribute fast path");
+    expect(mg_pz_uniform_fastpath_active, "1 must enable the uniform fast path");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
 
@@ -64,7 +70,8 @@ int main() {
         mg_pz_census_draw(false, GL_TRIANGLES, 6, 1);
         mg_pz_census_use_program(frame % 3 == 0);
         mg_pz_census_gl_call("glUniform4fv");
-        mg_pz_census_uniform(7, 3, 0x304U, 1, uniform_value, sizeof(uniform_value));
+        const bool uniform_skipped = mg_pz_uniform_call(7, 3, 0x304U, 1, uniform_value, sizeof(uniform_value));
+        expect(uniform_skipped == (frame != 0), "only repeated uniform payloads may be skipped");
         mg_pz_census_bind_vao(true, true, true);
         mg_pz_census_gl_call("glEnableVertexAttribArray");
         mg_pz_census_attrib(mg_pz_attrib_kind::enable, true, frame != 0, frame != 0);
@@ -79,8 +86,8 @@ int main() {
     expect(last_file_log.find("schema=2") != std::string::npos, "schema 2 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
-    expect(last_file_log.find("uniform=300/300/299") != std::string::npos,
-           "uniform tracked and exact counts must be split");
+    expect(last_file_log.find("uniform=300/300/299/299") != std::string::npos,
+           "uniform tracked, exact and skipped counts must be split");
     expect(last_file_log.find("attrib=300/300/299/299") != std::string::npos,
            "attribute tracked, exact and skipped counts must be split");
     expect(last_file_log.find("upload=300+0/38400B") != std::string::npos, "buffer bytes must be aggregated");
@@ -88,8 +95,10 @@ int main() {
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
+    setenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH", "0", 1);
     mg_pz_census_init();
-    expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active,
+    expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active &&
+               !mg_pz_uniform_fastpath_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);

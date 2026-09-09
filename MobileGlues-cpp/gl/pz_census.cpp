@@ -15,6 +15,7 @@
 bool mg_pz_census_active = false;
 bool mg_pz_vao_fastpath_active = false;
 bool mg_pz_attrib_fastpath_active = false;
+bool mg_pz_uniform_fastpath_active = false;
 
 namespace {
 
@@ -51,6 +52,7 @@ struct counters_t {
     count_t uniform_calls = 0;
     count_t uniform_tracked = 0;
     count_t uniform_exact = 0;
+    count_t uniform_skipped = 0;
     count_t vertex_attrib_calls = 0;
     count_t attrib_tracked = 0;
     count_t attrib_exact = 0;
@@ -97,6 +99,7 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(uniform_calls);
     MG_ADD_FIELD(uniform_tracked);
     MG_ADD_FIELD(uniform_exact);
+    MG_ADD_FIELD(uniform_skipped);
     MG_ADD_FIELD(vertex_attrib_calls);
     MG_ADD_FIELD(attrib_tracked);
     MG_ADD_FIELD(attrib_exact);
@@ -181,7 +184,7 @@ void report(const census_state_t& state) {
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
-          "uniform=%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
+          "uniform=%llu/%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
           "attrib_enable=%llu/%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
@@ -193,8 +196,9 @@ void report(const census_state_t& state) {
           c.active_texture_redundant, c.bind_buffer, c.bind_buffer_same, c.bind_vao, c.bind_vao_same,
           c.bind_vao_driver_confirmed, c.bind_vao_skipped,
           c.bind_framebuffer, c.bind_framebuffer_same, c.enable_disable, c.enable_disable_redundant,
-          c.uniform_calls, c.uniform_tracked, c.uniform_exact, c.vertex_attrib_calls, c.attrib_tracked, c.attrib_exact,
-          c.attrib_skipped, c.attrib_kind_calls[0], c.attrib_kind_exact[0], c.attrib_kind_skipped[0],
+          c.uniform_calls, c.uniform_tracked, c.uniform_exact, c.uniform_skipped, c.vertex_attrib_calls,
+          c.attrib_tracked, c.attrib_exact, c.attrib_skipped, c.attrib_kind_calls[0], c.attrib_kind_exact[0],
+          c.attrib_kind_skipped[0],
           c.attrib_kind_calls[1], c.attrib_kind_exact[1],
           c.attrib_kind_calls[2], c.attrib_kind_exact[2], c.attrib_kind_calls[3], c.attrib_kind_exact[3],
           c.attrib_kind_calls[4], c.attrib_kind_exact[4], c.attrib_kind_calls[5], c.attrib_kind_exact[5],
@@ -213,6 +217,8 @@ void mg_pz_census_init(void) {
     mg_pz_vao_fastpath_active = vao_value != nullptr && std::strcmp(vao_value, "1") == 0;
     const char* attrib_value = std::getenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH");
     mg_pz_attrib_fastpath_active = attrib_value != nullptr && std::strcmp(attrib_value, "1") == 0;
+    const char* uniform_value = std::getenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH");
+    mg_pz_uniform_fastpath_active = uniform_value != nullptr && std::strcmp(uniform_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -222,6 +228,7 @@ void mg_pz_census_init(void) {
     }
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
+    if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
 #endif
 }
 
@@ -296,16 +303,38 @@ void mg_pz_census_bind_vao(bool same_frontend_binding, bool driver_confirmed, bo
     if (skipped) ++g_census.frame.bind_vao_skipped;
 }
 
-void mg_pz_census_uniform(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
-                          size_t bytes) {
-    if (!mg_pz_census_active || location < 0 || count != 1 || value == nullptr || bytes == 0 || bytes > 128) return;
-    counters_t& c = g_census.frame;
-    ++c.uniform_tracked;
+bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
+                        size_t bytes) {
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || program == 0 || location < 0) return false;
     const uint64_t key = (static_cast<uint64_t>(program) << 32U) | static_cast<uint32_t>(location);
+    if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
+        mg_pz_census_forget_program(program);
+        return false;
+    }
     const auto found = g_uniform_values.find(key);
     const bool exact = found != g_uniform_values.end() && found->second.signature == signature &&
                        found->second.bytes == bytes && std::memcmp(found->second.value.data(), value, bytes) == 0;
-    if (exact) ++c.uniform_exact;
+    if (mg_pz_census_active) {
+        ++g_census.frame.uniform_tracked;
+        if (exact) ++g_census.frame.uniform_exact;
+    }
+    uniform_value_t& stored = g_uniform_values[key];
+    stored.signature = signature;
+    stored.bytes = static_cast<uint16_t>(bytes);
+    std::memcpy(stored.value.data(), value, bytes);
+    const bool skipped = mg_pz_uniform_fastpath_active && exact;
+    if (mg_pz_census_active && skipped) ++g_census.frame.uniform_skipped;
+    return skipped;
+}
+
+void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
+                                size_t bytes) {
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || program == 0 || location < 0) return;
+    if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
+        mg_pz_census_forget_program(program);
+        return;
+    }
+    const uint64_t key = (static_cast<uint64_t>(program) << 32U) | static_cast<uint32_t>(location);
     uniform_value_t& stored = g_uniform_values[key];
     stored.signature = signature;
     stored.bytes = static_cast<uint16_t>(bytes);
@@ -313,7 +342,7 @@ void mg_pz_census_uniform(GLuint program, GLint location, uint32_t signature, GL
 }
 
 void mg_pz_census_forget_program(GLuint program) {
-    if (!mg_pz_census_active) return;
+    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return;
     for (auto it = g_uniform_values.begin(); it != g_uniform_values.end();) {
         if (static_cast<GLuint>(it->first >> 32U) == program)
             it = g_uniform_values.erase(it);
@@ -323,7 +352,7 @@ void mg_pz_census_forget_program(GLuint program) {
 }
 
 void mg_pz_census_context_changed(unsigned long long context_id) {
-    if (!mg_pz_census_active || context_id == g_uniform_context) return;
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || context_id == g_uniform_context) return;
     g_uniform_context = context_id;
     g_uniform_values.clear();
     g_attrib_values.clear();
