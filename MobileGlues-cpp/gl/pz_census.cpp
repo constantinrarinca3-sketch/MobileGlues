@@ -16,6 +16,7 @@ bool mg_pz_census_active = false;
 bool mg_pz_vao_fastpath_active = false;
 bool mg_pz_attrib_fastpath_active = false;
 bool mg_pz_uniform_fastpath_active = false;
+bool mg_pz_buffer_streaming_active = false;
 
 namespace {
 
@@ -291,6 +292,8 @@ void mg_pz_census_init(void) {
     mg_pz_attrib_fastpath_active = attrib_value != nullptr && std::strcmp(attrib_value, "1") == 0;
     const char* uniform_value = std::getenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH");
     mg_pz_uniform_fastpath_active = uniform_value != nullptr && std::strcmp(uniform_value, "1") == 0;
+    const char* streaming_value = std::getenv("MOBILEGLUES_PZ_BUFFER_STREAMING");
+    mg_pz_buffer_streaming_active = streaming_value != nullptr && std::strcmp(streaming_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -302,6 +305,7 @@ void mg_pz_census_init(void) {
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
     if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
+    if (mg_pz_buffer_streaming_active) LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging")
 #endif
 }
 

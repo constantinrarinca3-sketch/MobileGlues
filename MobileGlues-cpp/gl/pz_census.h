@@ -18,6 +18,7 @@ extern bool mg_pz_census_active;
 extern bool mg_pz_vao_fastpath_active;
 extern bool mg_pz_attrib_fastpath_active;
 extern bool mg_pz_uniform_fastpath_active;
+extern bool mg_pz_buffer_streaming_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,

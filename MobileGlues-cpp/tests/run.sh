@@ -12,6 +12,8 @@ $CXX -o /tmp/mg_pixel_test  tests/pixel_size_test.cpp         gl/pixel.cpp
 $CXX -o /tmp/mg_fb_test     tests/framebuffer_shuffle_test.cpp gl/framebuffer.cpp
 $CXX -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_buffer_lifetime_test tests/buffer_lifetime_test.cpp gl/buffer.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o /tmp/mg_buffer_streaming_test tests/buffer_streaming_test.cpp gl/buffer.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_server_attrib_test tests/server_attrib_test.cpp gl/server_attrib.cpp gl/enable.cpp gl/pz_census.cpp
 $CXX -o /tmp/mg_quad_test   tests/quad_indices_test.cpp
@@ -23,6 +25,8 @@ echo
 /tmp/mg_fb_test
 echo
 /tmp/mg_buffer_lifetime_test
+echo
+/tmp/mg_buffer_streaming_test
 echo
 /tmp/mg_server_attrib_test
 echo

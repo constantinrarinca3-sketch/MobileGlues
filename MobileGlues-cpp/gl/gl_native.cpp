@@ -319,7 +319,7 @@ NATIVE_FUNCTION_HEAD(void, glEndQuery, GLenum target) NATIVE_FUNCTION_END_NO_RET
 NATIVE_FUNCTION_HEAD(void, glGetQueryiv, GLenum target, GLenum pname, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetQueryiv, target,pname,params)
 NATIVE_FUNCTION_HEAD(void, glGetQueryObjectuiv, GLuint id, GLenum pname, GLuint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetQueryObjectuiv, id,pname,params)
 //NATIVE_FUNCTION_HEAD(GLboolean, glUnmapBuffer, GLenum target) NATIVE_FUNCTION_END(GLboolean, glUnmapBuffer, target)
-NATIVE_FUNCTION_HEAD(void, glGetBufferPointerv, GLenum target, GLenum pname, void **params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetBufferPointerv, target,pname,params)
+// NATIVE_FUNCTION_HEAD(void, glGetBufferPointerv, GLenum target, GLenum pname, void **params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetBufferPointerv, target,pname,params)   // moved to gl/buffer.cpp so CPU staging maps expose their frontend pointer
 //NATIVE_FUNCTION_HEAD(void, glDrawBuffers, GLsizei n, const GLenum *bufs) NATIVE_FUNCTION_END_NO_RETURN(void, glDrawBuffers, n,bufs)
 MG_UNIFORM_MATRIX(glUniformMatrix2x3fv, 2, 3)
 MG_UNIFORM_MATRIX(glUniformMatrix3x2fv, 3, 2)

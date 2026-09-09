@@ -12,6 +12,7 @@
 #include <memory>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <ska/flat_hash_map.hpp>
 #include <array>
 #include "texture.h"
@@ -96,6 +97,22 @@ struct buffer_identity_t {
     uint64_t lifetime = 0;
 };
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+enum class buffer_storage_kind_t : uint8_t {
+    none,
+    mutable_store,
+    immutable_store,
+};
+
+struct buffer_staging_map_t {
+    std::vector<unsigned char> storage;
+    void* pointer = nullptr;
+    GLsizeiptr size = 0;
+    GLbitfield access = 0;
+    bool mapped = false;
+};
+#endif
+
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 // First-use breadcrumbs go quiet after an entry point has been seen. Map/unmap
 // can fail on a later invocation, so retain a small ordered enter/exit window
@@ -120,6 +137,11 @@ struct buffer_group_state_t { // shared across a share group
     std::vector<GLuint> free_buffer_ids;
     std::vector<size_t> buffer_datasize;
     std::vector<uint64_t> buffer_lifetimes;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    std::vector<GLenum> buffer_usage;
+    std::vector<buffer_storage_kind_t> buffer_storage_kind;
+    ska::flat_hash_map<GLuint, buffer_staging_map_t> buffer_staging_maps;
+#endif
 };
 
 struct buffer_ctx_state_t { // private to one context
@@ -141,6 +163,7 @@ struct buffer_ctx_state_t { // private to one context
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     unsigned long long ebo_lifetime_guard_hits = 0;
     unsigned long long map_size_fastpath_hits = 0;
+    unsigned long long buffer_streaming_map_hits = 0;
 #endif
 };
 
@@ -199,6 +222,11 @@ void mg_driver_vertex_array_unknown() {
 #define g_free_buffer_ids (g_bg->free_buffer_ids)
 #define g_buffer_datasize (g_bg->buffer_datasize)
 #define g_buffer_lifetimes (g_bg->buffer_lifetimes)
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define g_buffer_usage (g_bg->buffer_usage)
+#define g_buffer_storage_kind (g_bg->buffer_storage_kind)
+#define g_buffer_staging_maps (g_bg->buffer_staging_maps)
+#endif
 #define g_gen_arrays (g_bc->gen_arrays)
 #define g_gen_array_exists (g_bc->gen_array_exists)
 #define g_free_array_ids (g_bc->free_array_ids)
@@ -259,6 +287,11 @@ static inline int ensure_buffer_capacity(GLuint id) {
         g_gen_buffer_exists.resize(id + 1, 0);
         if (g_buffer_datasize.size() <= (size_t)id) g_buffer_datasize.resize(id + 1, 0);
         if (g_buffer_lifetimes.size() <= (size_t)id) g_buffer_lifetimes.resize(id + 1, 0);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (g_buffer_usage.size() <= (size_t)id) g_buffer_usage.resize(id + 1, GL_STATIC_DRAW);
+        if (g_buffer_storage_kind.size() <= (size_t)id)
+            g_buffer_storage_kind.resize(id + 1, buffer_storage_kind_t::none);
+#endif
     }
     return 0;
 }
@@ -291,6 +324,11 @@ GLuint gen_buffer() {
         g_gen_buffers[id] = 0;
         g_gen_buffer_exists[id] = 1;
         g_buffer_datasize[id] = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        g_buffer_usage[id] = GL_STATIC_DRAW;
+        g_buffer_storage_kind[id] = buffer_storage_kind_t::none;
+        g_buffer_staging_maps.erase(id);
+#endif
         begin_buffer_lifetime(id);
         if (id > (GLuint)maxBufferId) maxBufferId = id;
         return id;
@@ -300,6 +338,10 @@ GLuint gen_buffer() {
     g_gen_buffers[maxBufferId] = 0;
     g_gen_buffer_exists[maxBufferId] = 1;
     g_buffer_datasize[maxBufferId] = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    g_buffer_usage[maxBufferId] = GL_STATIC_DRAW;
+    g_buffer_storage_kind[maxBufferId] = buffer_storage_kind_t::none;
+#endif
     begin_buffer_lifetime((GLuint)maxBufferId);
     return (GLuint)maxBufferId;
 }
@@ -320,6 +362,10 @@ void remove_buffer(GLuint key) {
         g_gen_buffer_exists[key] = 0;
         g_gen_buffers[key] = 0;
         if (key < g_buffer_datasize.size()) g_buffer_datasize[key] = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (key < g_buffer_storage_kind.size()) g_buffer_storage_kind[key] = buffer_storage_kind_t::none;
+        g_buffer_staging_maps.erase(key);
+#endif
         g_free_buffer_ids.push_back(key);
     }
 }
@@ -388,6 +434,91 @@ bool get_known_buffer_data_size(GLuint buffer, GLsizeiptr* size) {
     *size = static_cast<GLsizeiptr>(tracked);
     return true;
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+static void record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, buffer_storage_kind_t kind) {
+    if (buffer == 0 || !has_buffer(buffer) || size < 0) return;
+    ensure_buffer_capacity(buffer);
+    g_buffer_datasize[buffer] = static_cast<size_t>(size);
+    g_buffer_usage[buffer] = usage;
+    g_buffer_storage_kind[buffer] = kind;
+}
+
+static bool staging_map_active(GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    return found != g_buffer_staging_maps.end() && found->second.mapped;
+}
+
+static void* try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled) {
+    *handled = false;
+    if (!mg_pz_buffer_streaming_active || offset != 0 || length <= 0 || (access & GL_MAP_WRITE_BIT) == 0 ||
+        (access & GL_MAP_READ_BIT) != 0 || (access & GL_MAP_INVALIDATE_BUFFER_BIT) == 0 ||
+        (access & (GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)) != 0) {
+        return nullptr;
+    }
+
+    GLsizeiptr tracked_size = 0;
+    if (!get_known_buffer_data_size(buffer, &tracked_size) || tracked_size != length ||
+        buffer >= g_buffer_storage_kind.size() ||
+        g_buffer_storage_kind[buffer] != buffer_storage_kind_t::mutable_store) {
+        return nullptr;
+    }
+
+    auto existing = g_buffer_staging_maps.find(buffer);
+    if (existing != g_buffer_staging_maps.end() && existing->second.mapped) {
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        *handled = true;
+        return nullptr;
+    }
+
+    constexpr size_t kMapAlignment = 64;
+    const size_t bytes = static_cast<size_t>(length);
+    if (bytes > std::numeric_limits<size_t>::max() - (kMapAlignment - 1)) return nullptr;
+
+    try {
+        buffer_staging_map_t& staging = g_buffer_staging_maps[buffer];
+        staging.storage.resize(bytes + kMapAlignment - 1);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(staging.storage.data());
+        const uintptr_t aligned = (base + kMapAlignment - 1) & ~(uintptr_t{kMapAlignment - 1});
+        staging.pointer = reinterpret_cast<void*>(aligned);
+        staging.size = length;
+        staging.access = access;
+        staging.mapped = true;
+        *handled = true;
+        MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        ++g_bc->buffer_streaming_map_hits;
+        const unsigned long long hit = g_bc->buffer_streaming_map_hits;
+        if (hit == 1 || hit == 1024 || hit == 65536) {
+            write_log("ZOMDROID_PZ_BUFFER_STREAMING_MAP buffer=%u bytes=%lld cpu_staging=1 hit=%llu", buffer,
+                      static_cast<long long>(length), hit);
+        }
+#endif
+        return staging.pointer;
+    } catch (const std::bad_alloc&) {
+        // Allocation pressure must retain the normal driver mapping path.
+        return nullptr;
+    }
+}
+
+#if defined(MOBILEGLUES_TESTING)
+void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable) {
+    record_buffer_storage(buffer, size, usage,
+                          immutable ? buffer_storage_kind_t::immutable_store : buffer_storage_kind_t::mutable_store);
+}
+
+void* mg_test_try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled) {
+    return try_staging_map(buffer, offset, length, access, handled);
+}
+
+void mg_test_cancel_staging_map(GLuint buffer) {
+    const auto found = g_buffer_staging_maps.find(buffer);
+    if (found == g_buffer_staging_maps.end()) return;
+    found->second.mapped = false;
+    found->second.pointer = nullptr;
+}
+#endif
+#endif
 
 static inline int binding_target_to_index(GLenum target) {
     switch (target) {
@@ -639,10 +770,19 @@ void InitBufferMap(size_t expectedSize) {
     g_gen_buffer_exists.reserve(expectedSize + 2);
     g_buffer_datasize.reserve(expectedSize + 2);
     g_buffer_lifetimes.reserve(expectedSize + 2);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    g_buffer_usage.reserve(expectedSize + 2);
+    g_buffer_storage_kind.reserve(expectedSize + 2);
+    g_buffer_staging_maps.reserve(expectedSize + 2);
+#endif
     g_gen_buffers.resize(1, 0);
     g_gen_buffer_exists.resize(1, 0);
     g_buffer_datasize.resize(1, 0);
     g_buffer_lifetimes.resize(1, 0);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    g_buffer_usage.resize(1, GL_STATIC_DRAW);
+    g_buffer_storage_kind.resize(1, buffer_storage_kind_t::none);
+#endif
 }
 
 void InitVertexArrayMap(size_t expectedSize) {
@@ -1219,9 +1359,25 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
     MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
     LOG_D("glBufferData, target = %s, size = %d, data = 0x%x, usage = %s", glEnumToString(target), size, data,
           glEnumToString(usage))
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (staging_map_active(frontend_buffer)) {
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        return;
+    }
+    const bool immutable_storage = frontend_buffer < g_buffer_storage_kind.size() &&
+                                   g_buffer_storage_kind[frontend_buffer] == buffer_storage_kind_t::immutable_store;
+#endif
     borrowed_target_t t(target);
     GLES.glBufferData(t.target, size, data, usage);
-    set_buffer_data_size(find_bound_buffer_by_target(target), size);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // glBufferData is rejected by GLES for immutable storage, so retain the
+    // existing immutable record instead of making a later map eligible.
+    if (!immutable_storage)
+        record_buffer_storage(frontend_buffer, size, usage, buffer_storage_kind_t::mutable_store);
+#else
+    set_buffer_data_size(frontend_buffer, size);
+#endif
     CHECK_GL_ERROR
 }
 
@@ -1231,6 +1387,13 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void
     LOG()
     MG_PZ_CENSUS(mg_pz_census_buffer_data(size, true));
     LOG_D("glBufferSubData, target = %s, offset = %p, size = %zi", glEnumToString(target), (void*)offset, size)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (staging_map_active(frontend_buffer)) {
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        return;
+    }
+#endif
     borrowed_target_t t(target);
     GLES.glBufferSubData(t.target, offset, size, data);
     CHECK_GL_ERROR
@@ -1239,8 +1402,52 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void
 void glGetBufferParameteriv(GLenum target, GLenum pname, GLint* params) {
     LOG()
     LOG_D("glGetBufferParameteriv, target = %s, pname = %s", glEnumToString(target), glEnumToString(pname))
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+    const auto staged = g_buffer_staging_maps.find(frontend_buffer);
+    if (params != nullptr && staged != g_buffer_staging_maps.end() && staged->second.mapped) {
+        switch (pname) {
+        case GL_BUFFER_MAPPED:
+            *params = GL_TRUE;
+            return;
+        case GL_BUFFER_ACCESS:
+            *params = GL_WRITE_ONLY;
+            return;
+        case GL_BUFFER_ACCESS_FLAGS:
+            *params = static_cast<GLint>(staged->second.access);
+            return;
+        case GL_BUFFER_MAP_OFFSET:
+            *params = 0;
+            return;
+        case GL_BUFFER_MAP_LENGTH:
+        case GL_BUFFER_SIZE:
+            *params = staged->second.size > std::numeric_limits<GLint>::max()
+                          ? std::numeric_limits<GLint>::max()
+                          : static_cast<GLint>(staged->second.size);
+            return;
+        default:
+            break;
+        }
+    }
+#endif
     borrowed_target_t t(target);
     GLES.glGetBufferParameteriv(t.target, pname, params);
+    CHECK_GL_ERROR
+}
+
+void glGetBufferPointerv(GLenum target, GLenum pname, void** params) {
+    LOG()
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+    const auto staged = g_buffer_staging_maps.find(frontend_buffer);
+    if (params != nullptr && pname == GL_BUFFER_MAP_POINTER && staged != g_buffer_staging_maps.end() &&
+        staged->second.mapped) {
+        *params = staged->second.pointer;
+        return;
+    }
+#endif
+    borrowed_target_t t(target);
+    GLES.glGetBufferPointerv(t.target, pname, params);
     CHECK_GL_ERROR
 }
 
@@ -1284,6 +1491,9 @@ void* glMapBuffer(GLenum target, GLenum access) {
         break;
     case GL_WRITE_ONLY:
         flags = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_pz_buffer_streaming_active) flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+#endif
         break;
     case GL_READ_WRITE:
         flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
@@ -1321,6 +1531,21 @@ void* glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitf
     if (global_settings.buffer_coherent_as_flush) access &= ~GL_MAP_FLUSH_EXPLICIT_BIT;
     //    access |= GL_MAP_UNSYNCHRONIZED_BIT;
     trace_zomdroid_buffer_call("MAP_RANGE_ENTER", target, offset, length, access, nullptr);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+    if (staging_map_active(frontend_buffer)) {
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        trace_zomdroid_buffer_call("MAP_STAGING_REJECT", target, offset, length, access, nullptr);
+        return nullptr;
+    }
+    bool staging_handled = false;
+    void* staging = try_staging_map(frontend_buffer, offset, length, access, &staging_handled);
+    if (staging_handled) {
+        trace_zomdroid_buffer_call(staging ? "MAP_STAGING_EXIT" : "MAP_STAGING_REJECT", target, offset, length,
+                                   access, staging);
+        return staging;
+    }
+#endif
     if (!GLES.glMapBufferRange) {
         trace_zomdroid_buffer_call("MAP_RANGE_MISSING", target, offset, length, access, nullptr);
         mg_set_gl_error(GL_INVALID_OPERATION);
@@ -1337,6 +1562,22 @@ GLboolean glUnmapBuffer(GLenum target) {
     LOG()
     LOG_D("%s(%s)", __func__, glEnumToString(target));
     trace_zomdroid_buffer_call("UNMAP_ENTER", target, 0, 0, 0, nullptr);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+    auto staged = g_buffer_staging_maps.find(frontend_buffer);
+    if (staged != g_buffer_staging_maps.end() && staged->second.mapped) {
+        borrowed_target_t t(target);
+        const GLenum usage = frontend_buffer < g_buffer_usage.size() ? g_buffer_usage[frontend_buffer]
+                                                                     : GL_STREAM_DRAW;
+        GLES.glBufferData(t.target, staged->second.size, staged->second.pointer, usage);
+        staged->second.mapped = false;
+        staged->second.pointer = nullptr;
+        trace_zomdroid_buffer_call("UNMAP_STAGING_UPLOAD", target, 0, staged->second.size, staged->second.access,
+                                   nullptr);
+        CHECK_GL_ERROR
+        return GL_TRUE;
+    }
+#endif
     borrowed_target_t t(target);
     GLboolean result = GL_FALSE;
     if (!GLES.glMapBufferRange && g_gles_caps.GL_OES_mapbuffer && GLES.glUnmapBufferOES) {
@@ -1363,17 +1604,35 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
         if (global_settings.buffer_coherent_as_flush &&
             ((flags & GL_MAP_PERSISTENT_BIT) != 0 || (flags & GL_DYNAMIC_STORAGE_BIT) != 0))
             flags |= (GL_MAP_WRITE_BIT | GL_MAP_COHERENT_BIT | GL_MAP_PERSISTENT_BIT);
+        const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (staging_map_active(frontend_buffer)) {
+            mg_set_gl_error(GL_INVALID_OPERATION);
+            return;
+        }
+        const bool already_immutable = frontend_buffer < g_buffer_storage_kind.size() &&
+                                       g_buffer_storage_kind[frontend_buffer] ==
+                                           buffer_storage_kind_t::immutable_store;
+#endif
         borrowed_target_t t(target);
         GLES.glBufferStorageEXT(t.target, size, data, flags);
         MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
         // Allocates storage just as glBufferData does, so it owes the same record.
-        set_buffer_data_size(find_bound_buffer_by_target(target), size);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (!already_immutable)
+            record_buffer_storage(frontend_buffer, size, GL_STATIC_DRAW, buffer_storage_kind_t::immutable_store);
+#else
+        set_buffer_data_size(frontend_buffer, size);
+#endif
     }
     CHECK_GL_ERROR
 }
 
 void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) {
     LOG()
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (staging_map_active(find_bound_buffer_by_target(target))) return;
+#endif
     if (!global_settings.buffer_coherent_as_flush) {
         borrowed_target_t t(target);
         GLES.glFlushMappedBufferRange(t.target, offset, length);

@@ -79,3 +79,15 @@ internal alpha-test and buffer-texture writes keep it synchronized.
 Whole-buffer write maps reuse MobileGlues' tracked allocation size instead of issuing a synchronous
 `GL_BUFFER_SIZE` driver query before every `glMapBuffer`. Buffers whose size is unknown still use the
 driver query, so pass-through names and unusual allocation paths retain the previous behavior.
+
+The experimental dynamic-buffer streaming path is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_BUFFER_STREAMING=1  # CPU staging enabled
+MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping (default)
+```
+
+It intercepts only complete write-only invalidating maps of mutable, tracked buffers. The application
+writes into aligned CPU staging memory; unmap replaces the driver's store and uploads the completed
+buffer in one call, avoiding a direct map/unmap synchronization with an in-flight GPU buffer. Reads,
+partial maps, immutable storage and unknown buffer names keep the normal driver path.
