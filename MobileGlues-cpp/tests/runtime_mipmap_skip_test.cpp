@@ -22,6 +22,7 @@ extern "C" void write_log_n(const char*, ...) {}
 
 bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target);
 GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param);
+void mg_test_runtime_mipmap_reset(TextureObject* texture);
 TextureObject* GetOrCreateTextureObject(GLuint index);
 void mg_texture_bind_context(unsigned long long ctx_id, unsigned long long group_id);
 void mg_texture_forget_context(unsigned long long ctx_id);
@@ -48,6 +49,13 @@ int main() {
            "the existing fallback must prove level-0-only sampling");
     expect(!mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
            "later generation must be skipped after the level-0 fallback");
+
+    mg_test_runtime_mipmap_reset(&texture);
+    expect(!texture.runtime_mipmap_generated && !texture.runtime_mipmap_base_only &&
+               !texture.runtime_mipmap_fallback_logged,
+           "redefining texture storage must clear learned mipmap state");
+    expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
+           "generation after storage redefinition must reach the driver");
 
     TextureObject untouched{};
     untouched.texture = 8;

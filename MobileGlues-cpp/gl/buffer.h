@@ -73,6 +73,8 @@ extern "C"
     void InitVertexArrayMap(size_t expectedSize);
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+    // Upper bound of the vertex-input state mirrored by the frontend.
+    GLint mg_max_tracked_vertex_attribs();
     // Depth of the emulated desktop client-attribute stack for this context.
     GLint mg_client_attrib_stack_depth();
     // Record persistent-stream backings referenced by the current vertex input.

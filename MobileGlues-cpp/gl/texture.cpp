@@ -518,6 +518,13 @@ namespace {
 std::atomic<unsigned long long> g_runtime_mipmap_skips{0};
 #endif
 
+void reset_runtime_mipmap_learning(TextureObject* texture) {
+    if (!texture) return;
+    texture->runtime_mipmap_generated = false;
+    texture->runtime_mipmap_fallback_logged = false;
+    texture->runtime_mipmap_base_only = false;
+}
+
 bool runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
     if (!texture || texture->texture == 0 || target != GL_TEXTURE_2D) return true;
 
@@ -589,6 +596,10 @@ bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
 
 GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param) {
     return runtime_mipmap_min_filter(texture, target, pname, param);
+}
+
+void mg_test_runtime_mipmap_reset(TextureObject* texture) {
+    reset_runtime_mipmap_learning(texture);
 }
 #endif
 
@@ -1047,6 +1058,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     }
 
     GET_TEXTURE_OBJECT(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (level == 0) reset_runtime_mipmap_learning(tex);
+#endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
     tex->width = width;
@@ -1164,6 +1178,9 @@ void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
     GLES.glTexStorage2D(target, levels, internalFormat, width, height);
 
     GET_TEXTURE_OBJECT(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    reset_runtime_mipmap_learning(tex);
+#endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
     tex->width = width;

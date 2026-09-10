@@ -65,6 +65,21 @@ int main() {
 
     {
         std::string source =
+            "struct Material { vec4 texture; };\n"
+            "uniform sampler2D texture;\n"
+            "void main() { Material obj; vec4 a = obj . texture; "
+            "vec4 b = texture2D(texture, vec2(0.0)); }\n"
+            "// texture must stay unchanged in comments\n";
+        const auto result = mg_glsl_compat::rewrite_legacy_texture2d_calls(source);
+        assert(result.calls_rewritten && result.sampler_identifier_renamed);
+        assert(source.find("vec4 texture;") != std::string::npos);
+        assert(source.find("obj . texture") != std::string::npos);
+        assert(source.find("texture(zomdroid_texture_sampler, vec2(0.0))") != std::string::npos);
+        assert(source.find("// texture must stay unchanged") != std::string::npos);
+    }
+
+    {
+        std::string source =
             "vec4 outline(sampler2D texture, vec2 uv) { return texture2D(texture, uv); }\n";
         const auto result = mg_glsl_compat::rewrite_legacy_texture2d_calls(source);
         assert(result.calls_rewritten);

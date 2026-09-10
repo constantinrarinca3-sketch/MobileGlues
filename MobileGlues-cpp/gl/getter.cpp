@@ -129,6 +129,15 @@ void glGetIntegerv(GLenum pname, GLint* params) {
         break;
     }
 #if defined(ZOMDROID_EXPERIMENTAL)
+    case GL_MAX_VERTEX_ATTRIBS:
+    case GL_MAX_VERTEX_ATTRIB_BINDINGS: {
+        GLint driver_limit = mg_max_tracked_vertex_attribs();
+        GLES.glGetIntegerv(pname, &driver_limit);
+        CHECK_GL_ERROR
+        const GLint tracked_limit = mg_max_tracked_vertex_attribs();
+        (*params) = driver_limit < tracked_limit ? driver_limit : tracked_limit;
+        break;
+    }
     case GL_ATTRIB_STACK_DEPTH:
         (*params) = mg_server_attrib_stack_depth();
         break;

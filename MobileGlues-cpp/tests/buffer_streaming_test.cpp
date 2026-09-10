@@ -29,6 +29,7 @@ extern "C" void mg_set_gl_error(GLenum error) {
 void mg_pz_census_buffer_map(GLsizeiptr) {}
 
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable);
+void mg_test_mark_persistent_storage(GLuint buffer, GLsizeiptr size, GLenum usage);
 void mg_test_replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size);
 void mg_test_patch_buffer_index_shadow(GLenum target, GLuint buffer, GLintptr offset, GLsizeiptr size,
                                        const void* data);
@@ -44,6 +45,13 @@ static void expect(bool condition, const char* message) {
     std::printf("FAIL %s\n", message);
     ++failures;
 }
+
+static void fake_gen_buffers(GLsizei n, GLuint* buffers) {
+    for (GLsizei i = 0; i < n; ++i) buffers[i] = 100u + static_cast<GLuint>(i);
+}
+
+static void fake_bind_buffer(GLenum, GLuint) {}
+static void fake_buffer_data(GLenum, GLsizeiptr, const void*, GLenum) {}
 
 int main() {
     InitBufferMap(8);
@@ -122,6 +130,18 @@ int main() {
            "size changes stay on the direct path");
     expect(!mg_test_try_elide_buffer_discard(GL_ARRAY_BUFFER, buffer, 4096, GL_DYNAMIC_DRAW),
            "usage changes stay on the direct path");
+
+    g_gles_func.glGenBuffers = fake_gen_buffers;
+    g_gles_func.glBindBuffer = fake_bind_buffer;
+    g_gles_func.glBufferData = fake_buffer_data;
+    mg_test_mark_persistent_storage(buffer, 4096, GL_STREAM_DRAW);
+    last_error = GL_NO_ERROR;
+    handled = false;
+    pointer = mg_test_try_staging_map(buffer, 0, 4096, write_discard, &handled);
+    expect(handled && pointer != nullptr,
+           "a persistent store that loses eligibility demotes to CPU staging");
+    expect(last_error == GL_NO_ERROR, "policy demotion must not report GL_OUT_OF_MEMORY");
+    mg_test_cancel_staging_map(buffer);
 
     bool retired[4] = {false, false, false, false};
     expect(mg_test_choose_gpu_ring_slot(retired, 1, 0) == 1,

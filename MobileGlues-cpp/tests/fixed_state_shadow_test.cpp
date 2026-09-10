@@ -99,15 +99,19 @@ int main() {
     glDepthFunc(GL_LEQUAL);
     expect(depth_func_calls == 1, "an exact depth-function repeat must be skipped");
 
+    glDepthFunc(0xdead);
+    glDepthFunc(0xdead);
+    expect(depth_func_calls == 3, "repeated invalid enums must always reach the driver");
+
     MGContext second{};
     second.id = 2;
     g_current_ctx = &second;
     glDepthFunc(GL_LEQUAL);
-    expect(depth_func_calls == 2, "a context switch must invalidate the shadow");
+    expect(depth_func_calls == 4, "a context switch must invalidate the shadow");
 
     mg_pz_state_shadow_active = false;
     glDepthFunc(GL_LEQUAL);
-    expect(depth_func_calls == 3, "disabling the optimization must restore direct calls");
+    expect(depth_func_calls == 5, "disabling the optimization must restore direct calls");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "fixed-state shadow checks passed", failures);
     return failures != 0;

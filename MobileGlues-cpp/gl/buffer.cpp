@@ -289,6 +289,12 @@ thread_local buffer_ctx_state_t* g_bc = &g_buf_ctx_default;
 
 } // namespace
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+GLint mg_max_tracked_vertex_attribs() {
+    return static_cast<GLint>(kTrackedVertexAttribs);
+}
+#endif
+
 void mg_buffer_bind_context(unsigned long long ctx_id, unsigned long long group_id) {
     if (ctx_id == 0) {
         g_bg = &g_buf_group_default;
@@ -518,6 +524,8 @@ static bool frontend_buffer_identity_alive(GLuint buffer, uint64_t lifetime) {
 
 static void record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, buffer_storage_kind_t kind);
 static bool staging_map_active(GLuint buffer);
+static bool replace_persistent_with_mutable(GLenum target, GLuint buffer, GLsizeiptr size, const void* data,
+                                            GLenum usage);
 
 static bool ring_driver_vao_matches_frontend() {
     if (!g_bc->driver_bound_array_known) return false;
@@ -1183,9 +1191,29 @@ static void* try_staging_map(GLenum target, GLuint buffer, GLintptr offset, GLsi
         return nullptr;
     }
 
-    const buffer_storage_kind_t kind = buffer < g_buffer_storage_kind.size()
-                                           ? g_buffer_storage_kind[buffer]
-                                           : buffer_storage_kind_t::none;
+    buffer_storage_kind_t kind = buffer < g_buffer_storage_kind.size()
+                                     ? g_buffer_storage_kind[buffer]
+                                     : buffer_storage_kind_t::none;
+    if (kind == buffer_storage_kind_t::persistent_stream) {
+        // A context/share-group change or a newly discovered unsupported use can
+        // revoke ring eligibility after promotion.  This map invalidates the
+        // complete store, so replace it with a mutable store and use the normal
+        // staging path.  Treating that policy transition as allocation failure
+        // used to raise a false GL_OUT_OF_MEMORY.
+        if (!persistent_stream_capable(target, buffer, length)) {
+            const GLenum usage = buffer < g_buffer_usage.size() ? g_buffer_usage[buffer] : GL_STREAM_DRAW;
+            replace_persistent_with_mutable(target, buffer, length, nullptr, usage);
+            kind = buffer < g_buffer_storage_kind.size() ? g_buffer_storage_kind[buffer]
+                                                          : buffer_storage_kind_t::none;
+            if (kind == buffer_storage_kind_t::persistent_stream) {
+                *handled = true;
+                ++stats.allocation_failures;
+                trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access,
+                                               "persistent_demotion_failed");
+                return nullptr;
+            }
+        }
+    }
     if (kind == buffer_storage_kind_t::persistent_stream) {
         void* pointer = select_persistent_backing(target, buffer, length);
         *handled = true;
@@ -1310,6 +1338,10 @@ static void flush_elided_discard(GLenum target, GLuint buffer) {
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable) {
     record_buffer_storage(buffer, size, usage,
                           immutable ? buffer_storage_kind_t::immutable_store : buffer_storage_kind_t::mutable_store);
+}
+
+void mg_test_mark_persistent_storage(GLuint buffer, GLsizeiptr size, GLenum usage) {
+    record_buffer_storage(buffer, size, usage, buffer_storage_kind_t::persistent_stream);
 }
 
 void mg_test_replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size) {

@@ -339,6 +339,104 @@ inline std::vector<uniform_default_value> collect_uniform_defaults(const std::st
 // used texture2D(). Once the shader is promoted to core GLSL, texture2D() must
 // become texture(), and that old sampler name shadows the built-in function.
 // Rename only the non-call identifier tokens before rewriting the calls.
+inline size_t next_glsl_token_char(const std::string& glsl, size_t position) {
+    while (position < glsl.size()) {
+        if (std::isspace(static_cast<unsigned char>(glsl[position]))) {
+            ++position;
+            continue;
+        }
+        if (position + 1 < glsl.size() && glsl[position] == '/' && glsl[position + 1] == '/') {
+            const size_t end = glsl.find('\n', position + 2);
+            if (end == std::string::npos) return glsl.size();
+            position = end + 1;
+            continue;
+        }
+        if (position + 1 < glsl.size() && glsl[position] == '/' && glsl[position + 1] == '*') {
+            const size_t end = glsl.find("*/", position + 2);
+            if (end == std::string::npos) return glsl.size();
+            position = end + 2;
+            continue;
+        }
+        break;
+    }
+    return position;
+}
+
+inline bool rename_texture_sampler_tokens(std::string& glsl) {
+    std::string rewritten;
+    rewritten.reserve(glsl.size() + 32);
+    std::vector<bool> brace_is_struct;
+    size_t struct_depth = 0;
+    bool awaiting_struct_body = false;
+    bool previous_token_was_dot = false;
+    bool renamed = false;
+
+    for (size_t i = 0; i < glsl.size();) {
+        if (i + 1 < glsl.size() && glsl[i] == '/' && glsl[i + 1] == '/') {
+            const size_t end = glsl.find('\n', i + 2);
+            const size_t length = end == std::string::npos ? glsl.size() - i : end + 1 - i;
+            rewritten.append(glsl, i, length);
+            i += length;
+            continue;
+        }
+        if (i + 1 < glsl.size() && glsl[i] == '/' && glsl[i + 1] == '*') {
+            const size_t end = glsl.find("*/", i + 2);
+            const size_t length = end == std::string::npos ? glsl.size() - i : end + 2 - i;
+            rewritten.append(glsl, i, length);
+            i += length;
+            continue;
+        }
+
+        const unsigned char current = static_cast<unsigned char>(glsl[i]);
+        if (std::isalpha(current) || glsl[i] == '_') {
+            size_t end = i + 1;
+            while (end < glsl.size()) {
+                const unsigned char ch = static_cast<unsigned char>(glsl[end]);
+                if (!std::isalnum(ch) && glsl[end] != '_') break;
+                ++end;
+            }
+            const bool is_texture = glsl.compare(i, end - i, "texture") == 0;
+            const size_t next = next_glsl_token_char(glsl, end);
+            const bool is_call = next < glsl.size() && glsl[next] == '(';
+            if (is_texture && struct_depth == 0 && !previous_token_was_dot && !is_call) {
+                rewritten += k_texture_sampler_alias;
+                renamed = true;
+            } else {
+                rewritten.append(glsl, i, end - i);
+            }
+            if (glsl.compare(i, end - i, "struct") == 0) awaiting_struct_body = true;
+            previous_token_was_dot = false;
+            i = end;
+            continue;
+        }
+
+        const char ch = glsl[i++];
+        rewritten.push_back(ch);
+        if (ch == '{') {
+            brace_is_struct.push_back(awaiting_struct_body);
+            if (awaiting_struct_body) ++struct_depth;
+            awaiting_struct_body = false;
+            previous_token_was_dot = false;
+        } else if (ch == '}') {
+            if (!brace_is_struct.empty()) {
+                if (brace_is_struct.back()) --struct_depth;
+                brace_is_struct.pop_back();
+            }
+            previous_token_was_dot = false;
+        } else if (ch == ';') {
+            awaiting_struct_body = false;
+            previous_token_was_dot = false;
+        } else if (ch == '.') {
+            previous_token_was_dot = true;
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            previous_token_was_dot = false;
+        }
+    }
+
+    if (renamed) glsl.swap(rewritten);
+    return renamed;
+}
+
 inline texture_call_rewrite_result rewrite_legacy_texture2d_calls(std::string& glsl) {
     static const std::regex texture_2d_call(R"(\btexture2D\s*\()", std::regex::ECMAScript);
     if (!std::regex_search(glsl, texture_2d_call)) return {};
@@ -347,9 +445,7 @@ inline texture_call_rewrite_result rewrite_legacy_texture2d_calls(std::string& g
     static const std::regex sampler_named_texture(R"(\b[ui]?sampler[A-Za-z0-9_]*\s+texture\b)",
                                                    std::regex::ECMAScript);
     if (std::regex_search(glsl, sampler_named_texture)) {
-        static const std::regex texture_identifier(R"(\btexture\b(?!\s*\())", std::regex::ECMAScript);
-        glsl = std::regex_replace(glsl, texture_identifier, k_texture_sampler_alias);
-        result.sampler_identifier_renamed = true;
+        result.sampler_identifier_renamed = rename_texture_sampler_tokens(glsl);
     }
 
     glsl = std::regex_replace(glsl, texture_2d_call, "texture(");

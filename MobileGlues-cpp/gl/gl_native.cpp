@@ -76,6 +76,33 @@ fixed_state_shadow_t* fixed_state_shadow() {
     return &g_fixed_state_shadow;
 }
 
+bool valid_compare_func(GLenum value) {
+    return value == GL_NEVER || value == GL_LESS || value == GL_EQUAL || value == GL_LEQUAL ||
+           value == GL_GREATER || value == GL_NOTEQUAL || value == GL_GEQUAL || value == GL_ALWAYS;
+}
+
+bool valid_blend_equation(GLenum value) {
+    return value == GL_FUNC_ADD || value == GL_FUNC_SUBTRACT || value == GL_FUNC_REVERSE_SUBTRACT ||
+           value == GL_MIN || value == GL_MAX;
+}
+
+bool valid_blend_source(GLenum value) {
+    return value == GL_ZERO || value == GL_ONE || value == GL_SRC_COLOR || value == GL_ONE_MINUS_SRC_COLOR ||
+           value == GL_DST_COLOR || value == GL_ONE_MINUS_DST_COLOR || value == GL_SRC_ALPHA ||
+           value == GL_ONE_MINUS_SRC_ALPHA || value == GL_DST_ALPHA || value == GL_ONE_MINUS_DST_ALPHA ||
+           value == GL_CONSTANT_COLOR || value == GL_ONE_MINUS_CONSTANT_COLOR || value == GL_CONSTANT_ALPHA ||
+           value == GL_ONE_MINUS_CONSTANT_ALPHA || value == GL_SRC_ALPHA_SATURATE;
+}
+
+bool valid_blend_destination(GLenum value) {
+    return valid_blend_source(value) && value != GL_SRC_ALPHA_SATURATE;
+}
+
+bool valid_stencil_op(GLenum value) {
+    return value == GL_KEEP || value == GL_ZERO || value == GL_REPLACE || value == GL_INCR ||
+           value == GL_INCR_WRAP || value == GL_DECR || value == GL_DECR_WRAP || value == GL_INVERT;
+}
+
 bool fixed_state_result(fixed_state_shadow_t& state, bool exact, const char* function) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     if (mg_pz_census_active) ++state.calls;
@@ -110,7 +137,7 @@ bool fixed_blend_color(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) 
 
 bool fixed_blend_equation(GLenum rgb, GLenum alpha, const char* function) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || !valid_blend_equation(rgb) || !valid_blend_equation(alpha)) return false;
     const bool exact = state->blend_equation_known && state->blend_equation_rgb == rgb &&
                        state->blend_equation_alpha == alpha;
     state->blend_equation_known = true;
@@ -121,7 +148,9 @@ bool fixed_blend_equation(GLenum rgb, GLenum alpha, const char* function) {
 
 bool fixed_blend_func(GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum dst_alpha, const char* function) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || !valid_blend_source(src_rgb) || !valid_blend_destination(dst_rgb) ||
+        !valid_blend_source(src_alpha) || !valid_blend_destination(dst_alpha))
+        return false;
     const bool exact = state->blend_func_known && state->blend_src_rgb == src_rgb && state->blend_dst_rgb == dst_rgb &&
                        state->blend_src_alpha == src_alpha && state->blend_dst_alpha == dst_alpha;
     state->blend_func_known = true;
@@ -147,7 +176,7 @@ bool fixed_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean 
 
 bool fixed_cull_face(GLenum value) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || (value != GL_FRONT && value != GL_BACK && value != GL_FRONT_AND_BACK)) return false;
     const bool exact = state->cull_face_known && state->cull_face == value;
     state->cull_face_known = true;
     state->cull_face = value;
@@ -156,7 +185,7 @@ bool fixed_cull_face(GLenum value) {
 
 bool fixed_depth_func(GLenum value) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || !valid_compare_func(value)) return false;
     const bool exact = state->depth_func_known && state->depth_func == value;
     state->depth_func_known = true;
     state->depth_func = value;
@@ -165,7 +194,7 @@ bool fixed_depth_func(GLenum value) {
 
 bool fixed_front_face(GLenum value) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || (value != GL_CW && value != GL_CCW)) return false;
     const bool exact = state->front_face_known && state->front_face == value;
     state->front_face_known = true;
     state->front_face = value;
@@ -187,7 +216,7 @@ bool stencil_face_selected(GLenum face, GLenum selected) {
 
 bool fixed_stencil_func(GLenum face, GLenum func, GLint reference, GLuint mask, const char* function) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || !valid_compare_func(func)) return false;
     const bool front_selected = stencil_face_selected(face, GL_FRONT);
     const bool back_selected = stencil_face_selected(face, GL_BACK);
     if (!front_selected && !back_selected) return fixed_state_result(*state, false, function);
@@ -231,7 +260,9 @@ bool fixed_stencil_mask(GLenum face, GLuint mask, const char* function) {
 
 bool fixed_stencil_op(GLenum face, GLenum stencil_fail, GLenum depth_fail, GLenum depth_pass, const char* function) {
     fixed_state_shadow_t* state = fixed_state_shadow();
-    if (!state) return false;
+    if (!state || !valid_stencil_op(stencil_fail) || !valid_stencil_op(depth_fail) ||
+        !valid_stencil_op(depth_pass))
+        return false;
     const bool front_selected = stencil_face_selected(face, GL_FRONT);
     const bool back_selected = stencil_face_selected(face, GL_BACK);
     if (!front_selected && !back_selected) return fixed_state_result(*state, false, function);
