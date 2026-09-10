@@ -369,7 +369,7 @@ void mg_pz_census_init(void) {
     if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
     if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
     if (mg_pz_quad_index_cache_active)
-        LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=whole_ebo_version+cpu_shadow")
+        LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
 #endif
 }
 

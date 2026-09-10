@@ -379,8 +379,16 @@ struct quad_cache_stats_t {
     unsigned long long mapped_sources = 0;
 };
 
+struct quad_direct_stats_t {
+    unsigned long long attempts = 0;
+    unsigned long long hits = 0;
+    unsigned long long restart_fallbacks = 0;
+    unsigned long long basevertex_fallbacks = 0;
+};
+
 thread_local UnorderedMap<GLuint, quad_cache_entry_t> g_quad_cache;
 thread_local quad_cache_stats_t g_quad_cache_stats;
+thread_local quad_direct_stats_t g_quad_direct_stats;
 #endif
 
 void quad_check_context() {
@@ -392,6 +400,7 @@ void quad_check_context() {
 #if defined(ZOMDROID_EXPERIMENTAL)
     g_quad_cache.clear();
     g_quad_cache_stats = {};
+    g_quad_direct_stats = {};
 #endif
     g_quad_owner_ctx_id = current;
 }
@@ -450,6 +459,56 @@ void quad_warn_once(const char* message) {
 }
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+void trace_quad_direct(GLuint source_ibo, GLenum type, GLint basevertex, GLsizei instancecount, const char* result) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const auto& stats = g_quad_direct_stats;
+    if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
+        write_log("ZOMDROID_PZ_QUAD_DIRECT attempt=%llu hits=%llu restart_fallback=%llu basevertex_fallback=%llu "
+                  "buffer=%u type=0x%x basevertex=%d instances=%d result=%s",
+                  stats.attempts, stats.hits, stats.restart_fallbacks, stats.basevertex_fallbacks, source_ibo, type,
+                  basevertex, instancecount, result);
+    }
+#else
+    (void)source_ibo;
+    (void)type;
+    (void)basevertex;
+    (void)instancecount;
+    (void)result;
+#endif
+}
+
+bool draw_single_quad_direct(GLenum type, const void* indices, GLint basevertex, GLsizei instancecount,
+                             GLuint source_ibo) {
+    if (!mg_pz_quad_index_cache_active || source_ibo == 0) return false;
+    quad_direct_stats_t& stats = g_quad_direct_stats;
+    ++stats.attempts;
+    if (mg_primitive_restart_enabled()) {
+        ++stats.restart_fallbacks;
+        trace_quad_direct(source_ibo, type, basevertex, instancecount, "primitive_restart");
+        return false;
+    }
+
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, source_ibo);
+    if (basevertex == 0) {
+        if (instancecount < 0)
+            GLES.glDrawElements(GL_TRIANGLE_FAN, 4, type, indices);
+        else
+            GLES.glDrawElementsInstanced(GL_TRIANGLE_FAN, 4, type, indices, instancecount);
+    } else if (instancecount < 0 && GLES.glDrawElementsBaseVertex) {
+        GLES.glDrawElementsBaseVertex(GL_TRIANGLE_FAN, 4, type, indices, basevertex);
+    } else if (instancecount >= 0 && GLES.glDrawElementsInstancedBaseVertex) {
+        GLES.glDrawElementsInstancedBaseVertex(GL_TRIANGLE_FAN, 4, type, indices, instancecount, basevertex);
+    } else {
+        ++stats.basevertex_fallbacks;
+        trace_quad_direct(source_ibo, type, basevertex, instancecount, "basevertex_unavailable");
+        return false;
+    }
+
+    ++stats.hits;
+    trace_quad_direct(source_ibo, type, basevertex, instancecount, "direct_fan");
+    return true;
+}
+
 void trace_quad_cache(const quad_cache_key_t& key, uintptr_t offset, GLsizei count, const char* result) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     const auto& stats = g_quad_cache_stats;
@@ -633,6 +692,10 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     quad_check_context();
     const GLuint previous_ibo = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    if (count == 4 && draw_single_quad_direct(type, indices, basevertex, instancecount, previous_ibo)) {
+        CHECK_GL_ERROR
+        return true;
+    }
     quad_cache_key_t cache_key;
     bool cacheable = false;
     GLsizei expansion_count = count;
