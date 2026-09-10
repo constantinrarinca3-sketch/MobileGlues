@@ -375,7 +375,7 @@ void mg_pz_census_init(void) {
     if (mg_pz_quad_index_cache_active)
         LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
     if (mg_pz_threaded_submission_active)
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_queue")
+        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
 #endif
 }
 

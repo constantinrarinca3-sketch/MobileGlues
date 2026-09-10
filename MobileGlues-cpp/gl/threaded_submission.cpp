@@ -19,14 +19,22 @@
 namespace mg_ts {
 namespace {
 
-constexpr uint64_t kQueueCapacity = 32768;
-constexpr uint64_t kQueueMask = kQueueCapacity - 1;
-static_assert((kQueueCapacity & kQueueMask) == 0);
+constexpr uint64_t kPacketCapacity = 1024;
+constexpr uint64_t kPacketMask = kPacketCapacity - 1;
+constexpr size_t kCommandsPerPacket = 32;
+constexpr size_t kPacketPayloadBytes = kCommandsPerPacket * kCommandPayloadBytes;
+static_assert((kPacketCapacity & kPacketMask) == 0);
 
-struct alignas(std::max_align_t) queue_slot {
+struct packet_entry {
     command_fn execute = nullptr;
     command_fn destroy = nullptr;
-    alignas(std::max_align_t) unsigned char payload[kCommandPayloadBytes];
+    uint32_t payload_offset = 0;
+};
+
+struct alignas(std::max_align_t) command_packet {
+    uint32_t count = 0;
+    std::array<packet_entry, kCommandsPerPacket> entries;
+    alignas(std::max_align_t) unsigned char payload[kPacketPayloadBytes];
 };
 
 struct context_binding {
@@ -45,39 +53,49 @@ class submission_state {
   public:
     bool isActive() const { return active_.load(std::memory_order_acquire); }
 
-    reservation reserveSlot(command_fn execute, command_fn destroy) {
-        uint64_t head = producer_head_;
-        const auto wait_started = std::chrono::steady_clock::now();
-        bool blocked = false;
-        uint64_t completed = tail_.load(std::memory_order_acquire);
-        while (head - completed >= kQueueCapacity) {
-            blocked = true;
-            tail_.wait(completed, std::memory_order_acquire);
-            completed = tail_.load(std::memory_order_acquire);
-        }
-        if (blocked) recordProducerWait(wait_started);
+    reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
+                               size_t payload_alignment) {
+        if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
+            payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
+            return {nullptr, 0};
 
-        const uint64_t depth = head - completed + 1;
-        uint64_t high = queue_highwater_.load(std::memory_order_relaxed);
-        while (depth > high && !queue_highwater_.compare_exchange_weak(high, depth, std::memory_order_relaxed)) {
+        size_t payload_offset = alignUp(pending_payload_bytes_, payload_alignment);
+        if (pending_count_ == kCommandsPerPacket || payload_offset + payload_size > kPacketPayloadBytes) {
+            flushProducerPacket();
+            payload_offset = 0;
         }
 
-        queue_slot& slot = queue_[head & kQueueMask];
-        slot.execute = execute;
-        slot.destroy = destroy;
-        return {slot.payload, head + 1};
+        waitForPacketSpace();
+        command_packet& packet = queue_[producer_head_ & kPacketMask];
+        packet_entry& entry = packet.entries[pending_count_];
+        entry.execute = execute;
+        entry.destroy = destroy;
+        entry.payload_offset = static_cast<uint32_t>(payload_offset);
+        reserved_payload_end_ = payload_offset + payload_size;
+        reservation_open_ = true;
+        return {packet.payload + payload_offset, producer_head_ + 1};
     }
 
-    void publishSlot(uint64_t sequence) {
-        producer_head_ = sequence;
-        submitted_.fetch_add(1, std::memory_order_relaxed);
-        head_.store(sequence, std::memory_order_release);
-        signalWorker();
+    void publishCommand(uint64_t sequence) {
+        if (!reservation_open_ || sequence != producer_head_ + 1) return;
+        reservation_open_ = false;
+        pending_payload_bytes_ = reserved_payload_end_;
+        ++pending_count_;
+
+        ++submitted_commands_;
+
+        if (pending_count_ == kCommandsPerPacket) flushProducerPacket();
+    }
+
+    void flushPending() {
+        if (ownsForCaller()) flushProducerPacket();
     }
 
     void waitFor(uint64_t sequence, bool record_wait = true) {
+        if (sequence == 0) return;
+        flushProducerPacket();
         uint64_t completed = tail_.load(std::memory_order_acquire);
-        if (sequence == 0 || completed >= sequence) return;
+        if (completed >= sequence) return;
         if (record_wait) synchronous_waits_.fetch_add(1, std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
         while (completed < sequence) {
@@ -128,15 +146,18 @@ class submission_state {
 
         owner_ = std::this_thread::get_id();
         active_.store(true, std::memory_order_release);
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 context=%p owner=%llu queue_slots=%llu frame_depth=1",
+        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 context=%p owner=%llu packet_slots=%llu "
+              "commands_per_packet=%llu frame_depth=1",
               binding.context,
               static_cast<unsigned long long>(std::hash<std::thread::id>{}(owner_)),
-              static_cast<unsigned long long>(kQueueCapacity))
+              static_cast<unsigned long long>(kPacketCapacity),
+              static_cast<unsigned long long>(kCommandsPerPacket))
         return true;
     }
 
     bool release() {
         if (!isActive()) return true;
+        flushProducerPacket();
         const uint64_t target = head_.load(std::memory_order_acquire);
         waitFor(target, false);
         active_.store(false, std::memory_order_release);
@@ -196,13 +217,17 @@ class submission_state {
         if (frames != 60 && frames % 300 != 0) return;
         const uint64_t sync_waits = synchronous_waits_.load(std::memory_order_relaxed);
         const uint64_t frame_wait_us = frame_wait_us_.load(std::memory_order_relaxed);
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION frames=%llu submitted=%llu executed=%llu sync_waits=%llu "
-              "sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu queue_wait_avg_ms=%.3f "
-              "queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f frame_wait_max_ms=%.3f "
-              "queue_highwater=%llu swap_done=%llu swap_fail=%llu",
+        const uint64_t packets = packets_submitted_;
+        const uint64_t submitted = submitted_commands_;
+        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION frames=%llu submitted=%llu executed=%llu packets=%llu "
+              "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
+              "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
+              "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu",
               static_cast<unsigned long long>(frames),
-              static_cast<unsigned long long>(submitted_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(packets),
+              packets == 0 ? 0.0 : static_cast<double>(submitted) / static_cast<double>(packets),
               static_cast<unsigned long long>(sync_waits),
               sync_waits == 0 ? 0.0
                               : static_cast<double>(synchronous_wait_us_.load(std::memory_order_relaxed)) /
@@ -216,12 +241,53 @@ class submission_state {
               static_cast<double>(producer_wait_max_us_.load(std::memory_order_relaxed)) / 1000.0,
               frames == 0 ? 0.0 : static_cast<double>(frame_wait_us) / (1000.0 * static_cast<double>(frames)),
               static_cast<double>(frame_wait_max_us_.load(std::memory_order_relaxed)) / 1000.0,
-              static_cast<unsigned long long>(queue_highwater_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(queue_highwater_),
+              static_cast<unsigned long long>(packet_highwater_),
               static_cast<unsigned long long>(swaps_completed_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(swap_failures_.load(std::memory_order_relaxed)))
     }
 
   private:
+    static size_t alignUp(size_t value, size_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
+
+    void waitForPacketSpace() {
+        if (pending_count_ != 0) return;
+        const uint64_t head = producer_head_;
+        const auto wait_started = std::chrono::steady_clock::now();
+        bool blocked = false;
+        uint64_t completed = tail_.load(std::memory_order_acquire);
+        while (head - completed >= kPacketCapacity) {
+            blocked = true;
+            tail_.wait(completed, std::memory_order_acquire);
+            completed = tail_.load(std::memory_order_acquire);
+        }
+        if (blocked) recordProducerWait(wait_started);
+    }
+
+    uint64_t flushProducerPacket() {
+        if (pending_count_ == 0) return producer_head_;
+        command_packet& packet = queue_[producer_head_ & kPacketMask];
+        packet.count = static_cast<uint32_t>(pending_count_);
+        const uint64_t sequence = ++producer_head_;
+        ++packets_submitted_;
+
+        const uint64_t completed_packets = tail_.load(std::memory_order_acquire);
+        const uint64_t packet_depth = sequence - completed_packets;
+        packet_highwater_ = std::max(packet_highwater_, packet_depth);
+        const uint64_t executed_commands = executed_.load(std::memory_order_relaxed);
+        const uint64_t command_depth = submitted_commands_ >= executed_commands
+                                           ? submitted_commands_ - executed_commands
+                                           : 0;
+        queue_highwater_ = std::max(queue_highwater_, command_depth);
+
+        head_.store(sequence, std::memory_order_release);
+        pending_count_ = 0;
+        pending_payload_bytes_ = 0;
+        reserved_payload_end_ = 0;
+        signalWorker();
+        return sequence;
+    }
+
     void signalWorker() {
         wake_counter_.fetch_add(1, std::memory_order_release);
         wake_counter_.notify_one();
@@ -232,7 +298,7 @@ class submission_state {
         if (disabled_) return false;
         if (worker_.joinable()) return true;
         try {
-            if (!queue_) queue_ = std::make_unique<queue_slot[]>(kQueueCapacity);
+            if (!queue_) queue_ = std::make_unique<command_packet[]>(kPacketCapacity);
             worker_ = std::thread(&submission_state::workerLoop, this);
             return true;
         } catch (...) {
@@ -251,11 +317,16 @@ class submission_state {
             const uint64_t wake_value = wake_counter_.load(std::memory_order_acquire);
             const uint64_t available = head_.load(std::memory_order_acquire);
             if (consumer_tail < available) {
-                queue_slot& slot = queue_[consumer_tail & kQueueMask];
-                slot.execute(slot.payload);
-                slot.destroy(slot.payload);
+                command_packet& packet = queue_[consumer_tail & kPacketMask];
+                const uint32_t count = packet.count;
+                for (uint32_t index = 0; index < count; ++index) {
+                    packet_entry& entry = packet.entries[index];
+                    void* payload = packet.payload + entry.payload_offset;
+                    entry.execute(payload);
+                    entry.destroy(payload);
+                }
                 ++consumer_tail;
-                executed_.fetch_add(1, std::memory_order_relaxed);
+                executed_.fetch_add(count, std::memory_order_relaxed);
                 tail_.store(consumer_tail, std::memory_order_release);
                 tail_.notify_all();
                 continue;
@@ -332,11 +403,15 @@ class submission_state {
 
     // Allocated only after the feature is enabled and a real context is adopted.
     // The normal renderer path does not pay the roughly 8.5 MiB queue cost.
-    std::unique_ptr<queue_slot[]> queue_;
+    std::unique_ptr<command_packet[]> queue_;
     std::atomic<uint64_t> head_{0};
     std::atomic<uint64_t> tail_{0};
     std::atomic<uint64_t> wake_counter_{0};
     uint64_t producer_head_ = 0;
+    size_t pending_count_ = 0;
+    size_t pending_payload_bytes_ = 0;
+    size_t reserved_payload_end_ = 0;
+    bool reservation_open_ = false;
     std::atomic<bool> active_{false};
     std::thread::id owner_;
 
@@ -350,8 +425,9 @@ class submission_state {
     bool disabled_ = false;
     uint64_t last_swap_sequence_ = 0;
 
-    std::atomic<uint64_t> submitted_{0};
+    uint64_t submitted_commands_ = 0;
     std::atomic<uint64_t> executed_{0};
+    uint64_t packets_submitted_ = 0;
     std::atomic<uint64_t> synchronous_waits_{0};
     std::atomic<uint64_t> synchronous_wait_us_{0};
     std::atomic<uint64_t> synchronous_wait_max_us_{0};
@@ -360,7 +436,8 @@ class submission_state {
     std::atomic<uint64_t> producer_wait_max_us_{0};
     std::atomic<uint64_t> frame_wait_us_{0};
     std::atomic<uint64_t> frame_wait_max_us_{0};
-    std::atomic<uint64_t> queue_highwater_{0};
+    uint64_t queue_highwater_ = 0;
+    uint64_t packet_highwater_ = 0;
     std::atomic<uint64_t> swaps_submitted_{0};
     std::atomic<uint64_t> swaps_completed_{0};
     std::atomic<uint64_t> swap_failures_{0};
@@ -401,9 +478,12 @@ struct swap_command {
 } // namespace
 
 bool active() { return state().ownsForCaller(); }
-reservation reserve(command_fn execute, command_fn destroy) { return state().reserveSlot(execute, destroy); }
-void publish(uint64_t sequence) { state().publishSlot(sequence); }
+reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment) {
+    return state().reserveCommand(execute, destroy, payload_size, payload_alignment);
+}
+void publish(uint64_t sequence) { state().publishCommand(sequence); }
 void wait(uint64_t sequence) { state().waitFor(sequence); }
+void flush_pending() { state().flushPending(); }
 
 bool adopt_context(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context,
                    egl_bind_api_fn bind_api, egl_make_current_fn make_current, egl_release_thread_fn release_thread) {
@@ -440,14 +520,15 @@ bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn ful
     }
 
     EGLBoolean synchronous_value = EGL_FALSE;
-    const reservation slot = state().reserveSlot(&swap_command::execute, &swap_command::destroy);
+    const reservation slot = state().reserveCommand(&swap_command::execute, &swap_command::destroy,
+                                                     sizeof(swap_command), alignof(swap_command));
     if (slot.storage == nullptr) {
         std::free(copied_rects);
         return false;
     }
     new (slot.storage) swap_command{display, surface, full_swap, damage_swap, copied_rects, rect_count,
                                     synchronous ? &synchronous_value : nullptr};
-    state().publishSlot(slot.sequence);
+    state().publishCommand(slot.sequence);
     state().setLastSwapSequence(slot.sequence);
     const uint64_t frame = state().nextSwapNumber();
     if (synchronous) state().waitFor(slot.sequence);

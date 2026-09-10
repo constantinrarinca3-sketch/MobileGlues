@@ -3,6 +3,7 @@
 #include "gl/threaded_submission.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -24,10 +25,12 @@ std::condition_variable entered_cv;
 std::condition_variable release_cv;
 bool blocker_entered = false;
 bool blocker_released = false;
+bool flush_executed = false;
 std::thread::id worker_id;
 std::vector<int> order;
 unsigned char uploaded[4] = {};
 GLfloat uniform[4] = {};
+std::atomic<uint64_t> counted{0};
 
 void expect(bool condition, const char* message) {
     if (condition) return;
@@ -52,6 +55,10 @@ void fakeBlock(GLint value) {
     release_cv.wait(lock, [] { return blocker_released; });
 }
 
+void fakeNoop(GLint) {}
+
+void fakeCount(GLint) { counted.fetch_add(1, std::memory_order_relaxed); }
+
 void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(2);
@@ -68,6 +75,14 @@ GLint fakeQuery() {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(4);
     return 77;
+}
+
+GLint fakeQuietQuery() { return 88; }
+
+void fakeFlush() {
+    std::lock_guard<std::mutex> lock(mutex);
+    flush_executed = true;
+    entered_cv.notify_one();
 }
 
 EGLBoolean fakeSwap(EGLDisplay, EGLSurface) {
@@ -100,15 +115,25 @@ int main() {
     expect(mg_ts::active(), "a second context thread must not steal the producer queue");
 
     mg_ts_dispatch_slot<void (*)(GLint)> block{"glClear"};
+    mg_ts_dispatch_slot<void (*)(GLint)> no_op{"glClear"};
+    mg_ts_dispatch_slot<void (*)(GLint)> count{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
+    mg_ts_dispatch_slot<GLint (*)()> quiet_query{"glGetError"};
+    mg_ts_dispatch_slot<void (*)()> flush{"glFlush"};
     block = fakeBlock;
+    no_op = fakeNoop;
+    count = fakeCount;
     buffer_data = fakeBufferData;
     uniform4fv = fakeUniform4fv;
     query = fakeQuery;
+    quiet_query = fakeQuietQuery;
+    flush = fakeFlush;
 
     block(1);
+    // Filling one packet must publish all 32 calls with a single queue wake.
+    for (int i = 1; i < 32; ++i) no_op(i);
     {
         std::unique_lock<std::mutex> lock(mutex);
         entered_cv.wait(lock, [] { return blocker_entered; });
@@ -132,6 +157,21 @@ int main() {
            "buffer bytes must be copied before returning to the caller");
     expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
            "uniform bytes must be copied before returning to the caller");
+
+    // Cross the packet-ring boundary and make a partial final packet visible
+    // through the following synchronous query.
+    constexpr uint64_t stress_commands = 40000;
+    for (uint64_t i = 0; i < stress_commands; ++i) count(static_cast<GLint>(i));
+    expect(quiet_query() == 88, "a synchronous query must flush a partial packet");
+    expect(counted.load(std::memory_order_relaxed) == stress_commands,
+           "packet queue must preserve every command across ring reuse");
+
+    flush();
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        expect(entered_cv.wait_for(lock, std::chrono::seconds(2), [] { return flush_executed; }),
+               "glFlush must publish a partial packet without waiting for a full packet");
+    }
 
     EGLBoolean swap_result = EGL_FALSE;
     expect(mg_ts::submit_swap(display, surface, fakeSwap, nullptr, nullptr, 0, true, &swap_result),

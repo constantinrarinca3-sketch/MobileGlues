@@ -156,12 +156,15 @@ MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission on the render thread (
 ```
 
 The application thread retains MobileGlues state translation and records ordered backend commands
-into a fixed SPSC queue. Commands with return values, output pointers or caller-owned input that
+into compact packets in a fixed SPSC queue. Each packet carries up to 32 calls and is published,
+woken and completed as one queue unit; synchronous calls and presentation flush a partial packet.
+Commands with return values, output pointers or caller-owned input that
 cannot safely outlive the call wait for the worker. Small uniform arrays and buffer uploads are
 copied before returning so those calls can remain asynchronous. Draws remain asynchronous only when
 the element and enabled vertex inputs are backed by GL buffers. Presentation drains the frame and
 returns the backend `eglSwapBuffers` result so surface loss is reported on the calling thread.
 
 This path changes EGL context ownership and is deliberately isolated from the frozen stable branch.
-Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows synchronous waits, queue-full waits, presentation
-wait time, maximum queue depth and swap failures. The report does not require the general census.
+Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
+synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
+The report does not require the general census.

@@ -34,9 +34,11 @@ struct reservation {
 // Weak because the small host tests link individual GL translation units. The
 // Android library supplies these from threaded_submission.cpp.
 bool active() __attribute__((weak));
-reservation reserve(command_fn execute, command_fn destroy) __attribute__((weak));
+reservation reserve(command_fn execute, command_fn destroy, size_t payload_size,
+                    size_t payload_alignment) __attribute__((weak));
 void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
+void flush_pending() __attribute__((weak));
 bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
@@ -62,7 +64,7 @@ inline bool availableAndActive() {
 template <typename Command, typename... Args> uint64_t enqueue(Args&&... args) {
     static_assert(sizeof(Command) <= kCommandPayloadBytes, "threaded command is too large");
     static_assert(alignof(Command) <= alignof(std::max_align_t), "threaded command alignment is too large");
-    const reservation slot = reserve(&Command::execute, &Command::destroy);
+    const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command));
     if (slot.storage == nullptr) return 0;
     new (slot.storage) Command(std::forward<Args>(args)...);
     publish(slot.sequence);
@@ -120,6 +122,7 @@ R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
 enum class slot_policy : uint8_t {
     automatic,
     synchronous,
+    packet_flush,
     pointer_offset,
     uniform_copy,
     buffer_copy,
@@ -138,6 +141,7 @@ inline bool isDrawCommand(const char* name) {
 
 inline slot_policy policyForName(const char* name) {
     if (nameEquals(name, "glFinish")) return slot_policy::synchronous;
+    if (nameEquals(name, "glFlush")) return slot_policy::packet_flush;
     if (nameEquals(name, "glBufferData") || nameEquals(name, "glBufferSubData") ||
         nameEquals(name, "glBufferStorageEXT"))
         return slot_policy::buffer_copy;
@@ -400,6 +404,8 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
                                       (policy_ != mg_ts::slot_policy::pointer_offset ||
                                        !mg_ts::pointerArgumentsLookLikeOffsets(args...)));
             mg_ts::dispatch_call(function_, synchronous, args...);
+            if (policy_ == mg_ts::slot_policy::packet_flush && mg_ts::flush_pending != nullptr)
+                mg_ts::flush_pending();
         } else {
             return mg_ts::dispatch_call(function_, true, args...);
         }
