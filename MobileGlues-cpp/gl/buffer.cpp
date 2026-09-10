@@ -953,18 +953,24 @@ bool get_known_buffer_data_size(GLuint buffer, GLsizeiptr* size) {
 }
 
 #if defined(ZOMDROID_EXPERIMENTAL)
-bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version) {
-    if (lifetime == nullptr || content_version == nullptr || buffer == 0 || !has_buffer(buffer) ||
+bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version,
+                                 GLsizeiptr* data_size) {
+    if (lifetime == nullptr || content_version == nullptr || data_size == nullptr || buffer == 0 ||
+        !has_buffer(buffer) ||
         buffer >= g_buffer_lifetimes.size() || buffer >= g_buffer_content_versions.size() ||
         buffer >= g_gpu_ring_safe.size() || buffer >= g_buffer_storage_kind.size() ||
+        buffer >= g_buffer_datasize.size() ||
         g_buffer_lifetimes[buffer] == 0 ||
         g_buffer_content_versions[buffer] == 0 || g_gpu_ring_safe[buffer] == 0 || staging_map_active(buffer))
         return false;
     // A persistently mapped coherent store may change without an unmap or
     // explicit flush. Mutable stores give us an observable write boundary.
     if (g_buffer_storage_kind[buffer] == buffer_storage_kind_t::immutable_store) return false;
+    const size_t tracked_size = g_buffer_datasize[buffer];
+    if (tracked_size == 0 || tracked_size > static_cast<size_t>(std::numeric_limits<GLsizeiptr>::max())) return false;
     *lifetime = g_buffer_lifetimes[buffer];
     *content_version = g_buffer_content_versions[buffer];
+    *data_size = static_cast<GLsizeiptr>(tracked_size);
     return true;
 }
 #endif

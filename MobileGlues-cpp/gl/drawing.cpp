@@ -338,56 +338,34 @@ namespace {
 // indexed draw cannot evict the hot array sequence used by the sprite batcher.
 thread_local GLuint g_quad_array_ibo = 0;
 thread_local GLuint g_quad_elements_ibo = 0;
-thread_local GLuint g_quad_cache_ibo = 0;
 thread_local unsigned long long g_quad_owner_ctx_id = 0;
 thread_local std::size_t g_quad_array_uploaded = 0;
 thread_local std::vector<GLuint> g_quad_array_indices;
 thread_local std::vector<GLuint> g_quad_element_indices;
 
 #if defined(ZOMDROID_EXPERIMENTAL)
-constexpr std::size_t kQuadCacheInitialBytes = 64 * 1024;
-constexpr std::size_t kQuadCacheMaxBytes = 8 * 1024 * 1024;
-constexpr std::size_t kQuadCacheMaxEntries = 65536;
+constexpr std::size_t kQuadCacheMaxSourceBytes = 8 * 1024 * 1024;
+constexpr std::size_t kQuadCacheMaxOutputBytes = kQuadCacheMaxSourceBytes * 6;
+constexpr std::size_t kQuadCacheMaxBuffers = 128;
 
 struct quad_cache_key_t {
     GLuint buffer = 0;
     uint64_t lifetime = 0;
     uint64_t content_version = 0;
-    uintptr_t offset = 0;
-    GLsizei count = 0;
+    GLsizeiptr source_bytes = 0;
     GLenum type = 0;
     GLint basevertex = 0;
-    GLuint restart_index = 0;
-    bool restart = false;
 
     bool operator==(const quad_cache_key_t& other) const {
         return buffer == other.buffer && lifetime == other.lifetime && content_version == other.content_version &&
-               offset == other.offset && count == other.count && type == other.type &&
-               basevertex == other.basevertex && restart_index == other.restart_index && restart == other.restart;
-    }
-};
-
-struct quad_cache_key_hash_t {
-    std::size_t operator()(const quad_cache_key_t& key) const {
-        std::size_t hash = static_cast<std::size_t>(key.buffer);
-        auto mix = [&](uint64_t value) {
-            hash ^= static_cast<std::size_t>(value) + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
-        };
-        mix(key.lifetime);
-        mix(key.content_version);
-        mix(key.offset);
-        mix(static_cast<uint32_t>(key.count));
-        mix(key.type);
-        mix(static_cast<uint32_t>(key.basevertex));
-        mix(key.restart_index);
-        mix(key.restart ? 1U : 0U);
-        return hash;
+               source_bytes == other.source_bytes && type == other.type && basevertex == other.basevertex;
     }
 };
 
 struct quad_cache_entry_t {
-    std::size_t byte_offset = 0;
-    GLsizei output_count = 0;
+    quad_cache_key_t key{};
+    GLuint driver_buffer = 0;
+    bool valid = false;
 };
 
 struct quad_cache_stats_t {
@@ -396,12 +374,10 @@ struct quad_cache_stats_t {
     unsigned long long misses = 0;
     unsigned long long unsafe = 0;
     unsigned long long resets = 0;
-    unsigned long long cached_bytes = 0;
+    unsigned long long uploaded_bytes = 0;
 };
 
-thread_local UnorderedMap<quad_cache_key_t, quad_cache_entry_t, quad_cache_key_hash_t> g_quad_cache;
-thread_local std::vector<GLuint> g_quad_cache_indices;
-thread_local std::size_t g_quad_cache_gpu_capacity = 0;
+thread_local UnorderedMap<GLuint, quad_cache_entry_t> g_quad_cache;
 thread_local quad_cache_stats_t g_quad_cache_stats;
 #endif
 
@@ -410,12 +386,9 @@ void quad_check_context() {
     if (current == g_quad_owner_ctx_id) return;
     g_quad_array_ibo = 0;
     g_quad_elements_ibo = 0;
-    g_quad_cache_ibo = 0;
     g_quad_array_uploaded = 0;
 #if defined(ZOMDROID_EXPERIMENTAL)
     g_quad_cache.clear();
-    g_quad_cache_indices.clear();
-    g_quad_cache_gpu_capacity = 0;
     g_quad_cache_stats = {};
 #endif
     g_quad_owner_ctx_id = current;
@@ -475,84 +448,72 @@ void quad_warn_once(const char* message) {
 }
 
 #if defined(ZOMDROID_EXPERIMENTAL)
-void trace_quad_cache(const quad_cache_key_t& key, const char* result) {
+void trace_quad_cache(const quad_cache_key_t& key, uintptr_t offset, GLsizei count, const char* result) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     const auto& stats = g_quad_cache_stats;
     if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
         write_log("ZOMDROID_PZ_QUAD_CACHE attempt=%llu hits=%llu misses=%llu unsafe=%llu resets=%llu entries=%zu "
-                  "bytes=%llu buffer=%u version=%llu offset=%llu count=%d result=%s",
+                  "bytes=%llu buffer=%u version=%llu source=%lld offset=%llu count=%d result=%s",
                   stats.attempts, stats.hits, stats.misses, stats.unsafe, stats.resets, g_quad_cache.size(),
-                  stats.cached_bytes, key.buffer, static_cast<unsigned long long>(key.content_version),
-                  static_cast<unsigned long long>(key.offset), key.count, result);
+                  stats.uploaded_bytes, key.buffer, static_cast<unsigned long long>(key.content_version),
+                  static_cast<long long>(key.source_bytes), static_cast<unsigned long long>(offset), count, result);
     }
 #else
     (void)key;
+    (void)offset;
+    (void)count;
     (void)result;
 #endif
 }
 
-void draw_quad_cache_entry(const quad_cache_entry_t& entry, GLsizei instancecount, GLuint previous_ibo) {
-    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_cache_ibo);
-    const void* offset = reinterpret_cast<const void*>(entry.byte_offset);
+void draw_quad_cache_entry(const quad_cache_entry_t& entry, uintptr_t source_offset, GLsizei output_count,
+                           GLsizei source_index_size, GLsizei instancecount, GLuint previous_ibo) {
+    const std::size_t source_quad = source_offset / (static_cast<std::size_t>(source_index_size) * 4U);
+    const std::size_t output_offset = source_quad * 6U * sizeof(GLuint);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, entry.driver_buffer);
+    const void* offset = reinterpret_cast<const void*>(output_offset);
     if (instancecount < 0)
-        GLES.glDrawElements(GL_TRIANGLES, entry.output_count, GL_UNSIGNED_INT, offset);
+        GLES.glDrawElements(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, offset);
     else
-        GLES.glDrawElementsInstanced(GL_TRIANGLES, entry.output_count, GL_UNSIGNED_INT, offset, instancecount);
+        GLES.glDrawElementsInstanced(GL_TRIANGLES, output_count, GL_UNSIGNED_INT, offset, instancecount);
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
 }
 
-bool store_quad_cache_entry(const quad_cache_key_t& key, const GLuint* indices, std::size_t output,
-                            quad_cache_entry_t* result) {
-    if (indices == nullptr || result == nullptr || output == 0 ||
-        output > kQuadCacheMaxBytes / sizeof(GLuint))
-        return false;
+quad_cache_entry_t* store_quad_cache_entry(const quad_cache_key_t& key, const GLuint* indices,
+                                           std::size_t output) {
+    if (indices == nullptr || output == 0 || output > kQuadCacheMaxOutputBytes / sizeof(GLuint))
+        return nullptr;
 
-    const std::size_t bytes = output * sizeof(GLuint);
-    if (g_quad_cache.size() >= kQuadCacheMaxEntries ||
-        g_quad_cache_indices.size() > (kQuadCacheMaxBytes / sizeof(GLuint)) - output) {
+    auto found = g_quad_cache.find(key.buffer);
+    if (found == g_quad_cache.end() && g_quad_cache.size() >= kQuadCacheMaxBuffers) {
+        for (const auto& cached : g_quad_cache) {
+            if (cached.second.driver_buffer) GLES.glDeleteBuffers(1, &cached.second.driver_buffer);
+        }
         g_quad_cache.clear();
-        g_quad_cache_indices.clear();
         ++g_quad_cache_stats.resets;
+        found = g_quad_cache.end();
     }
 
-    const std::size_t first = g_quad_cache_indices.size();
-    try {
-        g_quad_cache_indices.insert(g_quad_cache_indices.end(), indices, indices + output);
-    } catch (const std::bad_alloc&) {
-        return false;
+    if (found == g_quad_cache.end()) {
+        try {
+            found = g_quad_cache.emplace(key.buffer, quad_cache_entry_t{}).first;
+        } catch (const std::bad_alloc&) {
+            return nullptr;
+        }
     }
 
-    if (!g_quad_cache_ibo) GLES.glGenBuffers(1, &g_quad_cache_ibo);
-    if (!g_quad_cache_ibo) {
-        g_quad_cache_indices.resize(first);
-        return false;
-    }
-
-    const std::size_t used_bytes = g_quad_cache_indices.size() * sizeof(GLuint);
-    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_cache_ibo);
-    if (used_bytes > g_quad_cache_gpu_capacity) {
-        std::size_t capacity = g_quad_cache_gpu_capacity ? g_quad_cache_gpu_capacity : kQuadCacheInitialBytes;
-        while (capacity < used_bytes && capacity < kQuadCacheMaxBytes) capacity *= 2;
-        capacity = std::min(capacity, kQuadCacheMaxBytes);
-        GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(capacity), nullptr, GL_DYNAMIC_DRAW);
-        GLES.glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(used_bytes),
-                             g_quad_cache_indices.data());
-        g_quad_cache_gpu_capacity = capacity;
-    } else {
-        GLES.glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLintptr>(first * sizeof(GLuint)),
-                             static_cast<GLsizeiptr>(bytes), indices);
-    }
-
-    const quad_cache_entry_t entry{first * sizeof(GLuint), static_cast<GLsizei>(output)};
-    try {
-        g_quad_cache.emplace(key, entry);
-    } catch (const std::bad_alloc&) {
-        g_quad_cache_indices.resize(first);
-        return false;
-    }
-    g_quad_cache_stats.cached_bytes += bytes;
-    *result = entry;
-    return true;
+    quad_cache_entry_t& entry = found->second;
+    if (!entry.driver_buffer) GLES.glGenBuffers(1, &entry.driver_buffer);
+    if (!entry.driver_buffer) return nullptr;
+    const std::size_t bytes = output * sizeof(GLuint);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, entry.driver_buffer);
+    // One orphaning upload per source-buffer version. All draw ranges from
+    // that version then reuse this complete converted EBO.
+    GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(bytes), indices, GL_STREAM_DRAW);
+    entry.key = key;
+    entry.valid = true;
+    g_quad_cache_stats.uploaded_bytes += bytes;
+    return &entry;
 }
 #endif
 
@@ -670,34 +631,45 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 #if defined(ZOMDROID_EXPERIMENTAL)
     quad_cache_key_t cache_key;
     bool cacheable = false;
+    GLsizei expansion_count = count;
+    GLsizei expansion_capacity = capacity;
+    GLsizeiptr cache_source_bytes = 0;
+    const uintptr_t source_offset = reinterpret_cast<uintptr_t>(indices);
     if (mg_pz_quad_index_cache_active && previous_ibo != 0) {
         const GLuint frontend_ibo = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
         cache_key.buffer = frontend_ibo;
-        cache_key.offset = reinterpret_cast<uintptr_t>(indices);
-        cache_key.count = count;
         cache_key.type = type;
         cache_key.basevertex = basevertex;
-        cache_key.restart = mg_primitive_restart_enabled();
-        cache_key.restart_index = cache_key.restart ? mg_primitive_restart_index_for(type) : 0;
         ++g_quad_cache_stats.attempts;
         uint64_t lifetime = 0;
         uint64_t content_version = 0;
-        if (mg_pz_buffer_cache_identity(frontend_ibo, &lifetime, &content_version)) {
+        const std::size_t quad_bytes = static_cast<std::size_t>(size) * 4U;
+        if (mg_pz_buffer_cache_identity(frontend_ibo, &lifetime, &content_version, &cache_source_bytes) &&
+            !mg_primitive_restart_enabled() && cache_source_bytes > 0 &&
+            static_cast<std::size_t>(cache_source_bytes) <= kQuadCacheMaxSourceBytes &&
+            static_cast<std::size_t>(cache_source_bytes) % quad_bytes == 0 && source_offset % quad_bytes == 0 &&
+            count % 4 == 0 && source_offset <= static_cast<std::size_t>(cache_source_bytes) &&
+            static_cast<std::size_t>(count) * static_cast<std::size_t>(size) <=
+                static_cast<std::size_t>(cache_source_bytes) - source_offset &&
+            static_cast<std::size_t>(cache_source_bytes) / static_cast<std::size_t>(size) <=
+                static_cast<std::size_t>(std::numeric_limits<GLsizei>::max())) {
             cache_key.lifetime = lifetime;
             cache_key.content_version = content_version;
-            cacheable = true;
-            const auto cached = g_quad_cache.find(cache_key);
-            if (cached != g_quad_cache.end()) {
+            cache_key.source_bytes = cache_source_bytes;
+            expansion_count = static_cast<GLsizei>(cache_source_bytes / size);
+            cacheable = quad_output_count(expansion_count, &expansion_capacity);
+            const auto cached = g_quad_cache.find(frontend_ibo);
+            if (cacheable && cached != g_quad_cache.end() && cached->second.valid && cached->second.key == cache_key) {
                 ++g_quad_cache_stats.hits;
-                trace_quad_cache(cache_key, "hit");
-                draw_quad_cache_entry(cached->second, instancecount, previous_ibo);
+                trace_quad_cache(cache_key, source_offset, count, "whole_hit");
+                draw_quad_cache_entry(cached->second, source_offset, capacity, size, instancecount, previous_ibo);
                 CHECK_GL_ERROR
                 return true;
             }
-            ++g_quad_cache_stats.misses;
+            if (cacheable) ++g_quad_cache_stats.misses;
         } else {
             ++g_quad_cache_stats.unsafe;
-            trace_quad_cache(cache_key, "unsafe");
+            trace_quad_cache(cache_key, source_offset, count, "unsafe");
         }
     }
 #endif
@@ -709,9 +681,14 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
             draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
             return true;
         }
-        source = GLES.glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER,
-                                       static_cast<GLintptr>(reinterpret_cast<uintptr_t>(indices)),
-                                       static_cast<GLsizeiptr>(count) * size, GL_MAP_READ_BIT);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        const GLintptr map_offset = cacheable ? 0 : static_cast<GLintptr>(source_offset);
+        const GLsizeiptr map_length = cacheable ? cache_source_bytes : static_cast<GLsizeiptr>(count) * size;
+#else
+        const GLintptr map_offset = static_cast<GLintptr>(reinterpret_cast<uintptr_t>(indices));
+        const GLsizeiptr map_length = static_cast<GLsizeiptr>(count) * size;
+#endif
+        source = GLES.glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, map_offset, map_length, GL_MAP_READ_BIT);
         mapped = source != nullptr;
         if (!mapped) {
             draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
@@ -722,22 +699,33 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
         return true;
     }
 
-    g_quad_element_indices.resize(static_cast<std::size_t>(capacity));
+    g_quad_element_indices.resize(static_cast<std::size_t>(
+#if defined(ZOMDROID_EXPERIMENTAL)
+        expansion_capacity
+#else
+        capacity
+#endif
+        ));
     const bool restart = mg_primitive_restart_enabled();
     const GLuint restart_index = mg_primitive_restart_index_for(type);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const std::size_t source_count = static_cast<std::size_t>(expansion_count);
+#else
+    const std::size_t source_count = static_cast<std::size_t>(count);
+#endif
     std::size_t output = 0;
     switch (type) {
     case GL_UNSIGNED_BYTE:
         output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLubyte*>(source),
-                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+                                                 source_count, basevertex, restart, restart_index);
         break;
     case GL_UNSIGNED_SHORT:
         output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLushort*>(source),
-                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+                                                 source_count, basevertex, restart, restart_index);
         break;
     case GL_UNSIGNED_INT:
         output = mg_quad_detail::expand_elements(g_quad_element_indices.data(), static_cast<const GLuint*>(source),
-                                                 static_cast<std::size_t>(count), basevertex, restart, restart_index);
+                                                 source_count, basevertex, restart, restart_index);
         break;
     }
     if (mapped) GLES.glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
@@ -745,14 +733,14 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 
 #if defined(ZOMDROID_EXPERIMENTAL)
     if (cacheable) {
-        quad_cache_entry_t cached;
-        if (store_quad_cache_entry(cache_key, g_quad_element_indices.data(), output, &cached)) {
-            trace_quad_cache(cache_key, "miss_cached");
-            draw_quad_cache_entry(cached, instancecount, previous_ibo);
+        quad_cache_entry_t* cached = store_quad_cache_entry(cache_key, g_quad_element_indices.data(), output);
+        if (cached != nullptr) {
+            trace_quad_cache(cache_key, source_offset, count, "whole_miss_cached");
+            draw_quad_cache_entry(*cached, source_offset, capacity, size, instancecount, previous_ibo);
             CHECK_GL_ERROR
             return true;
         }
-        trace_quad_cache(cache_key, "miss_fallback");
+        trace_quad_cache(cache_key, source_offset, count, "whole_miss_fallback");
     }
 #endif
 
@@ -760,14 +748,24 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_elements_ibo);
     GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(output * sizeof(GLuint)),
                       g_quad_element_indices.data(), GL_STREAM_DRAW);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const std::size_t fallback_offset = cacheable
+                                            ? source_offset / (static_cast<std::size_t>(size) * 4U) *
+                                                  6U * sizeof(GLuint)
+                                            : 0;
+    const GLsizei fallback_count = cacheable ? capacity : static_cast<GLsizei>(output);
+    const void* fallback_indices = reinterpret_cast<const void*>(fallback_offset);
+#else
+    const GLsizei fallback_count = static_cast<GLsizei>(output);
+    const void* fallback_indices = nullptr;
+#endif
     if (instancecount < 0) {
-        GLES.glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(output), GL_UNSIGNED_INT, nullptr);
+        GLES.glDrawElements(GL_TRIANGLES, fallback_count, GL_UNSIGNED_INT, fallback_indices);
     } else {
-        GLES.glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(output), GL_UNSIGNED_INT, nullptr,
-                                     instancecount);
+        GLES.glDrawElementsInstanced(GL_TRIANGLES, fallback_count, GL_UNSIGNED_INT, fallback_indices, instancecount);
     }
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
-    trace_quad_rewrite("elements", count, static_cast<GLsizei>(output), type, previous_ibo);
+    trace_quad_rewrite("elements", count, fallback_count, type, previous_ibo);
     CHECK_GL_ERROR
     return true;
 }

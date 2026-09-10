@@ -80,7 +80,8 @@ extern "C"
     // A stable identity for caching CPU-derived data from a frontend buffer.
     // False means the buffer can be written by the GPU or is otherwise unsafe
     // to cache. The content version changes after every tracked CPU write.
-    bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version);
+    bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version,
+                                     GLsizeiptr* data_size);
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);
