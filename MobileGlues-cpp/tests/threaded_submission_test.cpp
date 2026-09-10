@@ -90,6 +90,15 @@ int main() {
     expect(mg_ts::active(), "submission must be active for the producer");
     expect(worker_id != producer, "backend context must live on a different thread");
 
+    bool second_adopted = true;
+    std::thread second_context([&] {
+        second_adopted = mg_ts::adopt_context(display, surface, surface, reinterpret_cast<EGLContext>(4),
+                                              fakeBindAPI, fakeMakeCurrent, fakeReleaseThread);
+    });
+    second_context.join();
+    expect(!second_adopted, "a second context thread must stay on direct submission");
+    expect(mg_ts::active(), "a second context thread must not steal the producer queue");
+
     mg_ts_dispatch_slot<void (*)(GLint)> block{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};

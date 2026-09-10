@@ -146,6 +146,18 @@ inline slot_policy policyForName(const char* name) {
     return slot_policy::automatic;
 }
 
+template <typename T> inline bool pointerArgumentLooksLikeOffset(T value) {
+    if constexpr (!std::is_pointer_v<std::decay_t<T>>) {
+        return true;
+    } else {
+        return value == nullptr || reinterpret_cast<uintptr_t>(value) <= std::numeric_limits<uint32_t>::max();
+    }
+}
+
+template <typename... Args> inline bool pointerArgumentsLookLikeOffsets(Args... args) {
+    return (pointerArgumentLooksLikeOffset(args) && ... && true);
+}
+
 inline unsigned uniformElementsForName(const char* name) {
     const char* uniform = std::strstr(name, "Uniform");
     if (uniform == nullptr) return 0;
@@ -374,7 +386,9 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
 
             constexpr bool has_pointer = (std::is_pointer_v<std::decay_t<Args>> || ... || false);
             const bool synchronous = policy_ == mg_ts::slot_policy::synchronous ||
-                                     (has_pointer && policy_ != mg_ts::slot_policy::pointer_offset);
+                                     (has_pointer &&
+                                      (policy_ != mg_ts::slot_policy::pointer_offset ||
+                                       !mg_ts::pointerArgumentsLookLikeOffsets(args...)));
             mg_ts::dispatch_call(function_, synchronous, args...);
         } else {
             return mg_ts::dispatch_call(function_, true, args...);

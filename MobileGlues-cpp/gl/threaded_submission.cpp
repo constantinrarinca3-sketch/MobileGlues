@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -97,7 +98,17 @@ class submission_state {
             binding.make_current == nullptr) {
             return false;
         }
-        if (isActive() && !release()) return false;
+        if (isActive()) {
+            // A second EGL thread may own a different shared context while the
+            // render thread is active. It must keep submitting directly on its
+            // own context; stealing this single-producer queue would unbind the
+            // first thread's context and strand it in the next synchronous call.
+            if (owner_ != std::this_thread::get_id()) {
+                LOG_W_FORCE("ZOMDROID_PZ_THREADED_SUBMISSION bypass reason=second_context_thread")
+                return false;
+            }
+            if (!release()) return false;
+        }
         if (!ensureWorker()) return false;
 
         if (binding.make_current(binding.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
@@ -123,7 +134,9 @@ class submission_state {
 
         owner_ = std::this_thread::get_id();
         active_.store(true, std::memory_order_release);
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 queue_slots=%llu frame_depth=1",
+        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 context=%p owner=%llu queue_slots=%llu frame_depth=1",
+              binding.context,
+              static_cast<unsigned long long>(std::hash<std::thread::id>{}(owner_)),
               static_cast<unsigned long long>(kQueueCapacity))
         return true;
     }
