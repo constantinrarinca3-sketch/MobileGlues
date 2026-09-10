@@ -15,6 +15,7 @@
 #include "mg.h"
 #include <GL/gl.h>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #ifdef __cplusplus
@@ -76,6 +77,10 @@ extern "C"
     GLint mg_client_attrib_stack_depth();
     // Record persistent-stream backings referenced by the current vertex input.
     void mg_pz_persistent_buffer_note_draw();
+    // A stable identity for caching CPU-derived data from a frontend buffer.
+    // False means the buffer can be written by the GPU or is otherwise unsafe
+    // to cache. The content version changes after every tracked CPU write.
+    bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version);
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);

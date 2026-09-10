@@ -338,17 +338,86 @@ namespace {
 // indexed draw cannot evict the hot array sequence used by the sprite batcher.
 thread_local GLuint g_quad_array_ibo = 0;
 thread_local GLuint g_quad_elements_ibo = 0;
+thread_local GLuint g_quad_cache_ibo = 0;
 thread_local unsigned long long g_quad_owner_ctx_id = 0;
 thread_local std::size_t g_quad_array_uploaded = 0;
 thread_local std::vector<GLuint> g_quad_array_indices;
 thread_local std::vector<GLuint> g_quad_element_indices;
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+constexpr std::size_t kQuadCacheInitialBytes = 64 * 1024;
+constexpr std::size_t kQuadCacheMaxBytes = 8 * 1024 * 1024;
+constexpr std::size_t kQuadCacheMaxEntries = 65536;
+
+struct quad_cache_key_t {
+    GLuint buffer = 0;
+    uint64_t lifetime = 0;
+    uint64_t content_version = 0;
+    uintptr_t offset = 0;
+    GLsizei count = 0;
+    GLenum type = 0;
+    GLint basevertex = 0;
+    GLuint restart_index = 0;
+    bool restart = false;
+
+    bool operator==(const quad_cache_key_t& other) const {
+        return buffer == other.buffer && lifetime == other.lifetime && content_version == other.content_version &&
+               offset == other.offset && count == other.count && type == other.type &&
+               basevertex == other.basevertex && restart_index == other.restart_index && restart == other.restart;
+    }
+};
+
+struct quad_cache_key_hash_t {
+    std::size_t operator()(const quad_cache_key_t& key) const {
+        std::size_t hash = static_cast<std::size_t>(key.buffer);
+        auto mix = [&](uint64_t value) {
+            hash ^= static_cast<std::size_t>(value) + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+        };
+        mix(key.lifetime);
+        mix(key.content_version);
+        mix(key.offset);
+        mix(static_cast<uint32_t>(key.count));
+        mix(key.type);
+        mix(static_cast<uint32_t>(key.basevertex));
+        mix(key.restart_index);
+        mix(key.restart ? 1U : 0U);
+        return hash;
+    }
+};
+
+struct quad_cache_entry_t {
+    std::size_t byte_offset = 0;
+    GLsizei output_count = 0;
+};
+
+struct quad_cache_stats_t {
+    unsigned long long attempts = 0;
+    unsigned long long hits = 0;
+    unsigned long long misses = 0;
+    unsigned long long unsafe = 0;
+    unsigned long long resets = 0;
+    unsigned long long cached_bytes = 0;
+};
+
+thread_local UnorderedMap<quad_cache_key_t, quad_cache_entry_t, quad_cache_key_hash_t> g_quad_cache;
+thread_local std::vector<GLuint> g_quad_cache_indices;
+thread_local std::size_t g_quad_cache_gpu_capacity = 0;
+thread_local quad_cache_stats_t g_quad_cache_stats;
+#endif
 
 void quad_check_context() {
     const unsigned long long current = g_current_ctx ? g_current_ctx->id : 0;
     if (current == g_quad_owner_ctx_id) return;
     g_quad_array_ibo = 0;
     g_quad_elements_ibo = 0;
+    g_quad_cache_ibo = 0;
     g_quad_array_uploaded = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    g_quad_cache.clear();
+    g_quad_cache_indices.clear();
+    g_quad_cache_gpu_capacity = 0;
+    g_quad_cache_stats = {};
+#endif
     g_quad_owner_ctx_id = current;
 }
 
@@ -404,6 +473,88 @@ void quad_warn_once(const char* message) {
     warned = true;
     LOG_W_FORCE("%s", message)
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+void trace_quad_cache(const quad_cache_key_t& key, const char* result) {
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    const auto& stats = g_quad_cache_stats;
+    if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
+        write_log("ZOMDROID_PZ_QUAD_CACHE attempt=%llu hits=%llu misses=%llu unsafe=%llu resets=%llu entries=%zu "
+                  "bytes=%llu buffer=%u version=%llu offset=%llu count=%d result=%s",
+                  stats.attempts, stats.hits, stats.misses, stats.unsafe, stats.resets, g_quad_cache.size(),
+                  stats.cached_bytes, key.buffer, static_cast<unsigned long long>(key.content_version),
+                  static_cast<unsigned long long>(key.offset), key.count, result);
+    }
+#else
+    (void)key;
+    (void)result;
+#endif
+}
+
+void draw_quad_cache_entry(const quad_cache_entry_t& entry, GLsizei instancecount, GLuint previous_ibo) {
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_cache_ibo);
+    const void* offset = reinterpret_cast<const void*>(entry.byte_offset);
+    if (instancecount < 0)
+        GLES.glDrawElements(GL_TRIANGLES, entry.output_count, GL_UNSIGNED_INT, offset);
+    else
+        GLES.glDrawElementsInstanced(GL_TRIANGLES, entry.output_count, GL_UNSIGNED_INT, offset, instancecount);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
+}
+
+bool store_quad_cache_entry(const quad_cache_key_t& key, const GLuint* indices, std::size_t output,
+                            quad_cache_entry_t* result) {
+    if (indices == nullptr || result == nullptr || output == 0 ||
+        output > kQuadCacheMaxBytes / sizeof(GLuint))
+        return false;
+
+    const std::size_t bytes = output * sizeof(GLuint);
+    if (g_quad_cache.size() >= kQuadCacheMaxEntries ||
+        g_quad_cache_indices.size() > (kQuadCacheMaxBytes / sizeof(GLuint)) - output) {
+        g_quad_cache.clear();
+        g_quad_cache_indices.clear();
+        ++g_quad_cache_stats.resets;
+    }
+
+    const std::size_t first = g_quad_cache_indices.size();
+    try {
+        g_quad_cache_indices.insert(g_quad_cache_indices.end(), indices, indices + output);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+
+    if (!g_quad_cache_ibo) GLES.glGenBuffers(1, &g_quad_cache_ibo);
+    if (!g_quad_cache_ibo) {
+        g_quad_cache_indices.resize(first);
+        return false;
+    }
+
+    const std::size_t used_bytes = g_quad_cache_indices.size() * sizeof(GLuint);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_cache_ibo);
+    if (used_bytes > g_quad_cache_gpu_capacity) {
+        std::size_t capacity = g_quad_cache_gpu_capacity ? g_quad_cache_gpu_capacity : kQuadCacheInitialBytes;
+        while (capacity < used_bytes && capacity < kQuadCacheMaxBytes) capacity *= 2;
+        capacity = std::min(capacity, kQuadCacheMaxBytes);
+        GLES.glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(capacity), nullptr, GL_DYNAMIC_DRAW);
+        GLES.glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(used_bytes),
+                             g_quad_cache_indices.data());
+        g_quad_cache_gpu_capacity = capacity;
+    } else {
+        GLES.glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLintptr>(first * sizeof(GLuint)),
+                             static_cast<GLsizeiptr>(bytes), indices);
+    }
+
+    const quad_cache_entry_t entry{first * sizeof(GLuint), static_cast<GLsizei>(output)};
+    try {
+        g_quad_cache.emplace(key, entry);
+    } catch (const std::bad_alloc&) {
+        g_quad_cache_indices.resize(first);
+        return false;
+    }
+    g_quad_cache_stats.cached_bytes += bytes;
+    *result = entry;
+    return true;
+}
+#endif
 
 bool draw_arrays_as_triangles(GLint first, GLsizei count, GLsizei instancecount) {
     if (first < 0 || instancecount < -1) {
@@ -516,6 +667,40 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 
     quad_check_context();
     const GLuint previous_ibo = mg_driver_bound_buffer(GL_ELEMENT_ARRAY_BUFFER);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    quad_cache_key_t cache_key;
+    bool cacheable = false;
+    if (mg_pz_quad_index_cache_active && previous_ibo != 0) {
+        const GLuint frontend_ibo = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
+        cache_key.buffer = frontend_ibo;
+        cache_key.offset = reinterpret_cast<uintptr_t>(indices);
+        cache_key.count = count;
+        cache_key.type = type;
+        cache_key.basevertex = basevertex;
+        cache_key.restart = mg_primitive_restart_enabled();
+        cache_key.restart_index = cache_key.restart ? mg_primitive_restart_index_for(type) : 0;
+        ++g_quad_cache_stats.attempts;
+        uint64_t lifetime = 0;
+        uint64_t content_version = 0;
+        if (mg_pz_buffer_cache_identity(frontend_ibo, &lifetime, &content_version)) {
+            cache_key.lifetime = lifetime;
+            cache_key.content_version = content_version;
+            cacheable = true;
+            const auto cached = g_quad_cache.find(cache_key);
+            if (cached != g_quad_cache.end()) {
+                ++g_quad_cache_stats.hits;
+                trace_quad_cache(cache_key, "hit");
+                draw_quad_cache_entry(cached->second, instancecount, previous_ibo);
+                CHECK_GL_ERROR
+                return true;
+            }
+            ++g_quad_cache_stats.misses;
+        } else {
+            ++g_quad_cache_stats.unsafe;
+            trace_quad_cache(cache_key, "unsafe");
+        }
+    }
+#endif
     const void* source = indices;
     bool mapped = false;
     if (previous_ibo != 0) {
@@ -557,6 +742,19 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     }
     if (mapped) GLES.glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
     if (output == 0) return true;
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (cacheable) {
+        quad_cache_entry_t cached;
+        if (store_quad_cache_entry(cache_key, g_quad_element_indices.data(), output, &cached)) {
+            trace_quad_cache(cache_key, "miss_cached");
+            draw_quad_cache_entry(cached, instancecount, previous_ibo);
+            CHECK_GL_ERROR
+            return true;
+        }
+        trace_quad_cache(cache_key, "miss_fallback");
+    }
+#endif
 
     if (!g_quad_elements_ibo) GLES.glGenBuffers(1, &g_quad_elements_ibo);
     GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_quad_elements_ibo);

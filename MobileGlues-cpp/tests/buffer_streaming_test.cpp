@@ -13,6 +13,7 @@ bool mg_pz_buffer_streaming_active = true;
 bool mg_pz_buffer_discard_coalesce_active = true;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
+bool mg_pz_quad_index_cache_active = false;
 struct gles_func_t g_gles_func{};
 struct gles_caps_t g_gles_caps{};
 
@@ -44,18 +45,35 @@ int main() {
     const GLuint buffer = gen_buffer();
     mg_test_record_buffer_storage(buffer, 4096, GL_STREAM_DRAW, false);
 
+    uint64_t lifetime = 0;
+    uint64_t first_version = 0;
+    expect(mg_pz_buffer_cache_identity(buffer, &lifetime, &first_version),
+           "a CPU-authored element buffer has a cache identity");
+    expect(lifetime != 0 && first_version != 0, "cache identity components are nonzero");
+    mg_test_record_buffer_storage(buffer, 4096, GL_STREAM_DRAW, false);
+    uint64_t second_lifetime = 0;
+    uint64_t second_version = 0;
+    expect(mg_pz_buffer_cache_identity(buffer, &second_lifetime, &second_version),
+           "rewritten buffer keeps a cache identity");
+    expect(second_lifetime == lifetime && second_version != first_version,
+           "rewriting storage invalidates cached index data without changing lifetime");
+
     bool handled = false;
     const GLbitfield write_discard =
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_UNSYNCHRONIZED_BIT;
     void* pointer = mg_test_try_staging_map(buffer, 0, 4096, write_discard, &handled);
     expect(handled && pointer != nullptr, "complete write-discard map uses CPU staging");
     expect((reinterpret_cast<uintptr_t>(pointer) & 63U) == 0, "staging pointer is 64-byte aligned");
+    expect(!mg_pz_buffer_cache_identity(buffer, &lifetime, &first_version),
+           "mapped buffers cannot supply reusable cached data");
 
     handled = false;
     pointer = mg_test_try_staging_map(buffer, 0, 4096, write_discard, &handled);
     expect(handled && pointer == nullptr, "a second map of the same buffer is rejected");
     expect(last_error == GL_INVALID_OPERATION, "double map reports GL_INVALID_OPERATION");
     mg_test_cancel_staging_map(buffer);
+    expect(mg_pz_buffer_cache_identity(buffer, &lifetime, &first_version),
+           "cancelling a staged map restores cache eligibility");
 
     const GLbitfield write_full_range =
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT;
@@ -93,6 +111,8 @@ int main() {
     expect(!handled && pointer == nullptr, "read maps stay on the driver path");
 
     mg_test_record_buffer_storage(buffer, 4096, GL_STATIC_DRAW, true);
+    expect(!mg_pz_buffer_cache_identity(buffer, &lifetime, &first_version),
+           "immutable storage is excluded because coherent writes have no observable boundary");
     handled = true;
     pointer = mg_test_try_staging_map(buffer, 0, 4096, write_discard, &handled);
     expect(!handled && pointer == nullptr, "immutable storage stays on the driver path");

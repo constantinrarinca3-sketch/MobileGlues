@@ -6,6 +6,7 @@ on:
     branches:
       - zomdroid-experimental
       - zomdroid-optimization
+      - zomdroid-threaded-submission-experimental
 
 permissions:
   contents: read

@@ -4,6 +4,7 @@ on:
     branches-ignore:
       - zomdroid-experimental
       - zomdroid-optimization
+      - zomdroid-threaded-submission-experimental
   workflow_dispatch:
 jobs:
   build-ios:
