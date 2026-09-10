@@ -204,9 +204,10 @@ constexpr unsigned int k_zomdroid_buffer_trace_limit = 256;
 
 void trace_zomdroid_buffer_call(const char* phase, GLenum target, GLintptr offset, GLsizeiptr length,
                                 GLbitfield access, const void* result) {
+    if (!mg_pz_census_active) return;
     const unsigned int seq = g_zomdroid_buffer_trace_seq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq > k_zomdroid_buffer_trace_limit) return;
-    write_log("ZOMDROID_GL_BUFFER %u %s target=0x%x offset=%lld length=%lld access=0x%x result=%p", seq, phase,
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_GL_BUFFER %u %s target=0x%x offset=%lld length=%lld access=0x%x result=%p", seq, phase,
               target, static_cast<long long>(offset), static_cast<long long>(length), access, result);
 }
 #else
@@ -656,9 +657,10 @@ static bool gpu_ring_trace_milestone(unsigned long long attempts) {
 
 static void trace_gpu_ring(const char* result, GLuint buffer, GLuint driver_buffer) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     const gpu_buffer_ring_stats_t& stats = g_bc->gpu_buffer_ring_stats;
     if (gpu_ring_trace_milestone(stats.attempts)) {
-        write_log("ZOMDROID_PZ_PERSISTENT_BUFFER_STREAM attempt=%llu promoted=%llu direct=%llu bytes=%llu "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_PERSISTENT_BUFFER_STREAM attempt=%llu promoted=%llu direct=%llu bytes=%llu "
                   "rotations=%llu allocations=%llu reuse=%llu retired=%llu waits=%llu unsupported=%llu "
                   "shared=%llu fences=%llu signaled=%llu pending=%llu fence_fail=%llu buffer=%u backing=%u "
                   "generation=%llu result=%s",
@@ -1020,13 +1022,16 @@ GLuint get_ibo_by_vao(GLuint vao) {
     if (alive && current == binding.lifetime) return binding.name;
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    ++g_bc->ebo_lifetime_guard_hits;
-    const unsigned long long hit = g_bc->ebo_lifetime_guard_hits;
-    if (hit == 1 || hit == 1024 || hit == 65536) {
-        write_log("ZOMDROID_EBO_LIFETIME_GUARD vao=%u stale_name=%u saved_lifetime=%llu current_lifetime=%llu "
-                  "alive=%d semantic_applied=1 hit=%llu",
-                  vao, binding.name, static_cast<unsigned long long>(binding.lifetime),
-                  static_cast<unsigned long long>(current), alive ? 1 : 0, hit);
+    if (mg_pz_census_active) {
+        ++g_bc->ebo_lifetime_guard_hits;
+        const unsigned long long hit = g_bc->ebo_lifetime_guard_hits;
+        if (hit == 1 || hit == 1024 || hit == 65536) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_EBO_LIFETIME_GUARD vao=%u stale_name=%u saved_lifetime=%llu current_lifetime=%llu "
+                "alive=%d semantic_applied=1 hit=%llu",
+                vao, binding.name, static_cast<unsigned long long>(binding.lifetime),
+                static_cast<unsigned long long>(current), alive ? 1 : 0, hit);
+        }
     }
 #endif
     return 0;
@@ -1118,8 +1123,9 @@ static void trace_buffer_streaming_pattern(const buffer_streaming_stats_t& stats
                                            GLsizeiptr length, GLsizeiptr tracked_size, GLbitfield access,
                                            const char* result) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
-        write_log("ZOMDROID_PZ_BUFFER_STREAMING_PATTERN attempt=%llu hits=%llu miss_access=%llu miss_size=%llu "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_BUFFER_STREAMING_PATTERN attempt=%llu hits=%llu miss_access=%llu miss_size=%llu "
                   "miss_storage=%llu miss_busy=%llu alloc_fail=%llu buffer=%u offset=%lld length=%lld tracked=%lld "
                   "access=0x%x result=%s",
                   stats.attempts, stats.hits, stats.miss_access, stats.miss_size, stats.miss_storage, stats.miss_busy,
@@ -1226,11 +1232,14 @@ static void* try_staging_map(GLenum target, GLuint buffer, GLintptr offset, GLsi
         trace_buffer_streaming_pattern(stats, buffer, offset, length, tracked_size, access, "hit");
         MG_PZ_CENSUS(mg_pz_census_buffer_map(length));
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        ++g_bc->buffer_streaming_map_hits;
-        const unsigned long long hit = g_bc->buffer_streaming_map_hits;
-        if (hit == 1 || hit == 1024 || hit == 65536) {
-            write_log("ZOMDROID_PZ_BUFFER_STREAMING_MAP buffer=%u bytes=%lld cpu_staging=1 hit=%llu", buffer,
-                      static_cast<long long>(length), hit);
+        if (mg_pz_census_active) {
+            ++g_bc->buffer_streaming_map_hits;
+            const unsigned long long hit = g_bc->buffer_streaming_map_hits;
+            if (hit == 1 || hit == 1024 || hit == 65536) {
+                ZOMDROID_DIAGNOSTIC_LOG(
+                    "ZOMDROID_PZ_BUFFER_STREAMING_MAP buffer=%u bytes=%lld cpu_staging=1 hit=%llu", buffer,
+                    static_cast<long long>(length), hit);
+            }
         }
 #endif
         return staging.pointer;
@@ -1245,9 +1254,10 @@ static void* try_staging_map(GLenum target, GLuint buffer, GLintptr offset, GLsi
 static void trace_discard_coalesce(GLuint buffer, GLsizeiptr size, const char* result,
                                    unsigned long long event_count) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     const buffer_discard_coalesce_stats_t& stats = g_bc->buffer_discard_coalesce_stats;
     if (event_count == 1 || event_count == 1024 || event_count == 65536) {
-        write_log("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE elided=%llu paired=%llu fallback=%llu "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE elided=%llu paired=%llu fallback=%llu "
                   "superseded=%llu bytes=%llu buffer=%u size=%lld result=%s",
                   stats.elided, stats.paired, stats.fallbacks, stats.superseded, stats.bytes, buffer,
                   static_cast<long long>(size), result);
@@ -2453,11 +2463,14 @@ void* glMapBuffer(GLenum target, GLenum access) {
         buffer_size = queried_size;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     } else {
-        ++g_bc->map_size_fastpath_hits;
-        const unsigned long long hit = g_bc->map_size_fastpath_hits;
-        if (hit == 1 || hit == 1024 || hit == 65536) {
-            write_log("ZOMDROID_BUFFER_MAP_SIZE_FASTPATH buffer=%u bytes=%lld driver_query_skipped=1 hit=%llu",
-                      frontend_buffer, static_cast<long long>(buffer_size), hit);
+        if (mg_pz_census_active) {
+            ++g_bc->map_size_fastpath_hits;
+            const unsigned long long hit = g_bc->map_size_fastpath_hits;
+            if (hit == 1 || hit == 1024 || hit == 65536) {
+                ZOMDROID_DIAGNOSTIC_LOG(
+                    "ZOMDROID_BUFFER_MAP_SIZE_FASTPATH buffer=%u bytes=%lld driver_query_skipped=1 hit=%llu",
+                    frontend_buffer, static_cast<long long>(buffer_size), hit);
+            }
         }
 #endif
     }
@@ -2930,13 +2943,15 @@ void restore_client_vertex_array(const client_attrib_snapshot_t& snapshot) {
     }
     active.driver_element_buffer = driver_buffer_name(snapshot.element_array_buffer);
 
-    ++g_bc->client_attrib_pop_hits;
     if (changed) {
-        ++g_bc->client_attrib_restore_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        if (client_attrib_trace_milestone(g_bc->client_attrib_restore_hits)) {
-            write_log("ZOMDROID_P15_CLIENT_ATTRIB_RESTORE vao=%u changed_attr_mask=0x%x semantic_applied=1 hit=%llu",
-                      snapshot.vertex_array, changed_attrib_mask, g_bc->client_attrib_restore_hits);
+        if (mg_pz_census_active) {
+            ++g_bc->client_attrib_restore_hits;
+            if (client_attrib_trace_milestone(g_bc->client_attrib_restore_hits)) {
+                ZOMDROID_DIAGNOSTIC_LOG(
+                    "ZOMDROID_P15_CLIENT_ATTRIB_RESTORE vao=%u changed_attr_mask=0x%x semantic_applied=1 hit=%llu",
+                    snapshot.vertex_array, changed_attrib_mask, g_bc->client_attrib_restore_hits);
+            }
         }
 #endif
     }
@@ -2958,11 +2973,14 @@ extern "C" GLAPI GLAPIENTRY void glPushClientAttrib(GLbitfield mask) {
         snapshot.array_buffer = find_bound_buffer_by_target(GL_ARRAY_BUFFER);
         snapshot.element_array_buffer = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
         snapshot.vertex_state = current_vertex_array_state();
-        ++g_bc->client_attrib_push_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        if (client_attrib_trace_milestone(g_bc->client_attrib_push_hits)) {
-            write_log("ZOMDROID_P15_CLIENT_ATTRIB_CENSUS mask=0x%x vao=%u semantic_applied=0 hit=%llu", mask,
-                      snapshot.vertex_array, g_bc->client_attrib_push_hits);
+        if (mg_pz_census_active) {
+            ++g_bc->client_attrib_push_hits;
+            if (client_attrib_trace_milestone(g_bc->client_attrib_push_hits)) {
+                ZOMDROID_DIAGNOSTIC_LOG(
+                    "ZOMDROID_P15_CLIENT_ATTRIB_CENSUS mask=0x%x vao=%u semantic_applied=0 hit=%llu", mask,
+                    snapshot.vertex_array, g_bc->client_attrib_push_hits);
+            }
         }
 #endif
     }

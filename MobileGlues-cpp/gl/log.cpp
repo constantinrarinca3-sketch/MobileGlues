@@ -1107,6 +1107,7 @@ const char* glEnumToString(GLenum e) {
 #include <ska/flat_hash_map.hpp>
 
 void log_unique_function(const char* func_name) {
+    if (!mg_pz_census_active) return;
     if (!func_name || strlen(func_name) < 2 || strncmp(func_name, "gl", 2) != 0) {
         return;
     }
@@ -1130,12 +1131,13 @@ void log_unique_function(const char* func_name) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     // Keep the trace in latest.log as well: ZomDroid's bug-report exporter already collects that
     // file. First-use-only logging stays bounded and avoids perturbing every hot draw call.
-    write_log("ZOMDROID_GL_FIRST %zu %s", logged_functions.size(), func_name);
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_GL_FIRST %zu %s", logged_functions.size(), func_name);
 #endif
 }
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 void trace_zomdroid_gl_after_unmap(const char* func_name) {
+    if (!mg_pz_census_active) return;
     if (!func_name || strlen(func_name) < 2 || strncmp(func_name, "gl", 2) != 0) {
         return;
     }
@@ -1158,7 +1160,7 @@ void trace_zomdroid_gl_after_unmap(const char* func_name) {
     if (sequence >= kTraceLimit) return;
 
     ++sequence;
-    write_log("ZOMDROID_GL_AFTER_UNMAP %u ENTER %s", sequence, func_name);
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_GL_AFTER_UNMAP %u ENTER %s", sequence, func_name);
 }
 #else
 void trace_zomdroid_gl_after_unmap(const char*) {}

@@ -45,6 +45,10 @@ All associated
 comparison/cache work remains inside `MOBILEGLUES_PZ_CENSUS=1`; disabling or omitting the variable
 removes that work from the rendering path.
 
+All bounded `ZOMDROID_*` optimization breadcrumbs and the threaded-submission report follow the
+same switch. With Census disabled, shader/texture diagnostic queries, breadcrumb counters and
+threaded queue telemetry stay off. Actual renderer failures remain logged.
+
 The same census line also measures uncompressed texture traffic without another switch.
 `tex_upload=image+subimage/data/bytes/largest`, `tex_src=RGBA/BGRA/other`, and
 `tex_convert=calls/bytes` show whether CPU pixel conversion is a meaningful target. `tex_pbo`
@@ -104,7 +108,7 @@ mapping. Later writes go directly into a four-slot GPU ring and fences prevent r
 still in flight, removing the staging-to-driver copy. Reads, partial maps, immutable storage and
 unknown buffer names keep the normal driver path. While enabled, the first map attempts emit
 `ZOMDROID_PZ_BUFFER_STREAMING_PATTERN`; persistent milestones use
-`ZOMDROID_PZ_PERSISTENT_BUFFER_STREAM`.
+`ZOMDROID_PZ_PERSISTENT_BUFFER_STREAM` when Census is enabled.
 
 Repeated discard-then-map cycles can additionally be coalesced:
 
@@ -167,4 +171,4 @@ returns the backend `eglSwapBuffers` result so surface loss is reported on the c
 This path changes EGL context ownership and is deliberately isolated from the frozen stable branch.
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
-The report does not require the general census.
+The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.

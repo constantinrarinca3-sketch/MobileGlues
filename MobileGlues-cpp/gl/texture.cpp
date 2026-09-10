@@ -532,13 +532,13 @@ bool runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
     texture->runtime_mipmap_generated = true;
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (first_generation)
-        write_log("ZOMDROID_RUNTIME_MIPMAP texture=%u target=0x%x size=%dx%d format=0x%x", texture->texture,
+    if (mg_pz_census_active && first_generation)
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_RUNTIME_MIPMAP texture=%u target=0x%x size=%dx%d format=0x%x", texture->texture,
                   target, texture->width, texture->height, texture->internal_format);
-    if (!submit) {
+    if (mg_pz_census_active && !submit) {
         const unsigned long long skipped = g_runtime_mipmap_skips.fetch_add(1, std::memory_order_relaxed) + 1;
         if (skipped == 1 || skipped == 1024 || skipped == 65536)
-            write_log("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP texture=%u size=%dx%d skipped=%llu", texture->texture,
+            ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP texture=%u size=%dx%d skipped=%llu", texture->texture,
                       texture->width, texture->height, skipped);
     }
 #else
@@ -560,9 +560,9 @@ GLint runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pn
     const GLint applied =
         (param == GL_LINEAR_MIPMAP_NEAREST || param == GL_LINEAR_MIPMAP_LINEAR) ? GL_LINEAR : GL_NEAREST;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (!texture->runtime_mipmap_fallback_logged) {
+    if (mg_pz_census_active && !texture->runtime_mipmap_fallback_logged) {
         texture->runtime_mipmap_fallback_logged = true;
-        write_log("ZOMDROID_RUNTIME_MIP_FALLBACK texture=%u size=%dx%d requested=0x%x applied=0x%x",
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_RUNTIME_MIP_FALLBACK texture=%u size=%dx%d requested=0x%x applied=0x%x",
                   texture->texture, texture->width, texture->height, param, applied);
     }
 #endif

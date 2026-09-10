@@ -108,11 +108,14 @@ extern "C" GLAPI GLAPIENTRY void glPushAttrib(GLbitfield mask) {
     if ((mask & (GL_ENABLE_BIT | GL_SCISSOR_BIT | GL_COLOR_BUFFER_BIT)) != 0)
         snapshot.enable = *mg_enable_state();
 
-    ++state.push_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (trace_milestone(state.push_hits)) {
-        write_log("ZOMDROID_SERVER_ATTRIB_CENSUS mask=0x%x depth=%zu semantic_applied=1 hit=%llu", mask,
-                  state.depth, state.push_hits);
+    if (mg_pz_census_active) {
+        ++state.push_hits;
+        if (trace_milestone(state.push_hits)) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_SERVER_ATTRIB_CENSUS mask=0x%x depth=%zu semantic_applied=1 hit=%llu", mask,
+                state.depth, state.push_hits);
+        }
     }
 #endif
 }
@@ -169,12 +172,15 @@ extern "C" GLAPI GLAPIENTRY void glPopAttrib(void) {
         if (alpha_changes != 0) changed |= GL_COLOR_BUFFER_BIT;
     }
 
-    ++state.pop_hits;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (trace_milestone(state.pop_hits)) {
-        write_log("ZOMDROID_SERVER_ATTRIB_RESTORE mask=0x%x changed=0x%x enable_changes=%u depth=%zu "
-                  "semantic_applied=1 hit=%llu",
-                  snapshot.mask, changed, enable_changes, state.depth, state.pop_hits);
+    if (mg_pz_census_active) {
+        ++state.pop_hits;
+        if (trace_milestone(state.pop_hits)) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_SERVER_ATTRIB_RESTORE mask=0x%x changed=0x%x enable_changes=%u depth=%zu "
+                "semantic_applied=1 hit=%llu",
+                snapshot.mask, changed, enable_changes, state.depth, state.pop_hits);
+        }
     }
 #endif
 }

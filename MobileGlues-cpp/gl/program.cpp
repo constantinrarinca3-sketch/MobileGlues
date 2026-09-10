@@ -152,7 +152,7 @@ void apply_uniform_defaults(GLuint program) {
             ++applied;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
             if (value.name == "useTexture") {
-                write_log("ZOMDROID_UNIFORM_DEFAULT program=%u name=useTexture value=%d location=%d", program,
+                ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_UNIFORM_DEFAULT program=%u name=useTexture value=%d location=%d", program,
                           static_cast<int>(value.values[0]), location);
             }
 #endif
@@ -162,7 +162,7 @@ void apply_uniform_defaults(GLuint program) {
     if (!direct && static_cast<GLuint>(previous_program) != program)
         GLES.glUseProgram(static_cast<GLuint>(previous_program));
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (applied != 0) write_log("ZOMDROID_UNIFORM_DEFAULTS program=%u applied=%u", program, applied);
+    if (applied != 0) ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_UNIFORM_DEFAULTS program=%u applied=%u", program, applied);
 #endif
 }
 
@@ -194,12 +194,15 @@ void configure_pz_alpha_program(GLuint program) {
     program_map_pz_alpha_state[program] = state;
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    static std::atomic<unsigned int> links{0};
-    const unsigned int hit = links.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (hit <= 8) {
-        write_log("ZOMDROID_ALPHA_PROGRAM program=%u family=%s locations=%d,%d,%d semantic_ready=1 hit=%u",
-                  program, mg_glsl_compat::pz_alpha_shader_kind_name(kind), state.enabled_location,
-                  state.function_location, state.reference_location, hit);
+    if (mg_pz_census_active) {
+        static std::atomic<unsigned int> links{0};
+        const unsigned int hit = links.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (hit <= 8) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_ALPHA_PROGRAM program=%u family=%s locations=%d,%d,%d semantic_ready=1 hit=%u",
+                program, mg_glsl_compat::pz_alpha_shader_kind_name(kind), state.enabled_location,
+                state.function_location, state.reference_location, hit);
+        }
     }
 #endif
 }
@@ -241,14 +244,17 @@ void mg_prepare_pz_alpha_test(GLuint program) {
     }
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    static std::atomic<unsigned long long> family_hits[5]{};
-    const size_t family = static_cast<size_t>(target.kind);
-    const unsigned long long hit = family_hits[family].fetch_add(1, std::memory_order_relaxed) + 1;
-    if (hit == 1 || hit == 1024 || hit == 65536) {
-        write_log("ZOMDROID_ALPHA_DRAW program=%u family=%s enabled=%d func=0x%x ref=%.9g uniforms_uploaded=%d "
-                  "semantic_applied=1 hit=%llu",
-                  program, mg_glsl_compat::pz_alpha_shader_kind_name(target.kind), enabled ? 1 : 0, function,
-                  static_cast<double>(reference), upload ? 1 : 0, hit);
+    if (mg_pz_census_active) {
+        static std::atomic<unsigned long long> family_hits[5]{};
+        const size_t family = static_cast<size_t>(target.kind);
+        const unsigned long long hit = family_hits[family].fetch_add(1, std::memory_order_relaxed) + 1;
+        if (hit == 1 || hit == 1024 || hit == 65536) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_ALPHA_DRAW program=%u family=%s enabled=%d func=0x%x ref=%.9g uniforms_uploaded=%d "
+                "semantic_applied=1 hit=%llu",
+                program, mg_glsl_compat::pz_alpha_shader_kind_name(target.kind), enabled ? 1 : 0, function,
+                static_cast<double>(reference), upload ? 1 : 0, hit);
+        }
     }
 #endif
 }
@@ -454,9 +460,11 @@ void glAttachShader(GLuint program, GLuint shader) {
 
     GLES.glAttachShader(program, shader);
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    const auto tile_it = zomdroid_tile_depth_shader.find(shader);
-    if (tile_it != zomdroid_tile_depth_shader.end() && tile_it->second) {
-        LOG_I("ZOMDROID_TILEDEPTH_ATTACH program=%u shader=%u type=0x%x", program, shader, type)
+    if (mg_pz_census_active) {
+        const auto tile_it = zomdroid_tile_depth_shader.find(shader);
+        if (tile_it != zomdroid_tile_depth_shader.end() && tile_it->second) {
+            LOG_I("ZOMDROID_TILEDEPTH_ATTACH program=%u shader=%u type=0x%x", program, shader, type)
+        }
     }
 #endif
     CHECK_GL_ERROR

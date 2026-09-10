@@ -44,6 +44,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active, "0 must disable the census");
+    expect(last_file_log.empty(), "disabled census must not emit startup telemetry");
     expect(!mg_pz_vao_fastpath_active, "0 must disable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "0 must disable the attribute fast path");
     expect(!mg_pz_uniform_fastpath_active, "0 must disable the uniform fast path");
@@ -56,6 +57,7 @@ int main() {
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
     mg_pz_census_init();
+    expect(last_file_log.empty(), "optimization startup telemetry must follow the census switch");
     expect(!mg_pz_census_active, "only the exact value 1 may enable the census");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "true", 1);

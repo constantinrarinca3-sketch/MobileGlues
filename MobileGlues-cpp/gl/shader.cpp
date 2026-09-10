@@ -85,22 +85,24 @@ std::string shader_preview(const std::string& source) {
 void trace_zomdroid_shader_source(GLuint shader, GLint shader_type, GLsizei fragment_count, size_t input_length,
                                   const char* route, int conversion_result, bool version_normalized,
                                   const std::string& input, const std::string& output) {
+    if (!mg_pz_census_active) return;
     const unsigned int seq = g_zomdroid_shader_source_seq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq > k_zomdroid_shader_trace_limit) return;
     const std::string input_head = shader_preview(input);
     const std::string output_head = shader_preview(output);
-    write_log("ZOMDROID_SHADER_SOURCE %u shader=%u type=0x%x fragments=%d input_len=%zu output_len=%zu route=%s "
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_SOURCE %u shader=%u type=0x%x fragments=%d input_len=%zu output_len=%zu route=%s "
               "convert=%d version_normalized=%d input_head=[%s] output_head=[%s]",
               seq, shader, shader_type, fragment_count, input_length, output.size(), route, conversion_result,
               version_normalized ? 1 : 0, input_head.c_str(), output_head.c_str());
 }
 
 void trace_zomdroid_shader_status(GLuint shader, GLint status) {
+    if (!mg_pz_census_active) return;
     const unsigned int seq = g_zomdroid_shader_status_seq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq > k_zomdroid_shader_trace_limit) return;
 
     if (status == GL_TRUE) {
-        write_log("ZOMDROID_SHADER_STATUS %u shader=%u compile=PASS", seq, shader);
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_STATUS %u shader=%u compile=PASS", seq, shader);
         return;
     }
 
@@ -112,7 +114,7 @@ void trace_zomdroid_shader_status(GLuint shader, GLint status) {
     GLES.glGetShaderInfoLog(shader, capacity, &written, info.data());
     const size_t safe_length = static_cast<size_t>(std::max(0, std::min(written, capacity - 1)));
     const std::string info_head = shader_preview(std::string(info.data(), safe_length));
-    write_log("ZOMDROID_SHADER_STATUS %u shader=%u compile=FAIL driver=[%s]", seq, shader, info_head.c_str());
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_STATUS %u shader=%u compile=FAIL driver=[%s]", seq, shader, info_head.c_str());
 }
 #else
 void trace_zomdroid_shader_source(GLuint, GLint, GLsizei, size_t, const char*, int, bool, const std::string&,
@@ -224,10 +226,13 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     }
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    const bool is_tile_depth_source =
-        glsl_src.find("zDepthBlendToZ") != std::string::npos &&
-        (glsl_src.find("DEPTH") != std::string::npos || glsl_src.find("depth") != std::string::npos);
-    zomdroid_tile_depth_shader[shader] = is_tile_depth_source;
+    bool is_tile_depth_source = false;
+    if (mg_pz_census_active) {
+        is_tile_depth_source =
+            glsl_src.find("zDepthBlendToZ") != std::string::npos &&
+            (glsl_src.find("DEPTH") != std::string::npos || glsl_src.find("depth") != std::string::npos);
+        zomdroid_tile_depth_shader[shader] = is_tile_depth_source;
+    }
 #endif
 
     bool is_sampler_buffer_emulated = hardware->emulate_texture_buffer && check_if_sampler_buffer_used(glsl_src);
@@ -241,15 +246,18 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         if (alpha_rewrite.rewritten) {
             shader_map_pz_alpha_kind[shader] = alpha_rewrite.kind;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-            write_log("ZOMDROID_ALPHA_SHADER_REWRITE shader=%u family=%s semantic_applied=1", shader,
-                      mg_glsl_compat::pz_alpha_shader_kind_name(alpha_rewrite.kind));
+            ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_ALPHA_SHADER_REWRITE shader=%u family=%s semantic_applied=1", shader,
+                                    mg_glsl_compat::pz_alpha_shader_kind_name(alpha_rewrite.kind));
 #endif
         } else if (alpha_rewrite.candidate) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-            const unsigned int hit = g_zomdroid_alpha_nearmiss_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (hit <= 12) {
-                write_log("ZOMDROID_ALPHA_SHADER_NEARMISS shader=%u contract_matched=%d semantic_applied=0 hit=%u",
-                          shader, alpha_rewrite.contract_matched ? 1 : 0, hit);
+            if (mg_pz_census_active) {
+                const unsigned int hit = g_zomdroid_alpha_nearmiss_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (hit <= 12) {
+                    ZOMDROID_DIAGNOSTIC_LOG(
+                        "ZOMDROID_ALPHA_SHADER_NEARMISS shader=%u contract_matched=%d semantic_applied=0 hit=%u",
+                        shader, alpha_rewrite.contract_matched ? 1 : 0, hit);
+                }
             }
 #endif
         }
@@ -287,7 +295,7 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
         trace_zomdroid_shader_source(shader, shader_type, count, l, shader_route, conversion_result,
                                      version_normalized, glsl_src, essl_src);
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        if (is_tile_depth_source) {
+        if (mg_pz_census_active && is_tile_depth_source) {
             LOG_I("ZOMDROID_TILEDEPTH_SOURCE shader=%u type=0x%x route=%s convert=%d", shader, shader_type,
                   shader_route, conversion_result)
         }

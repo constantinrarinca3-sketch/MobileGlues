@@ -82,7 +82,7 @@ class submission_state {
         pending_payload_bytes_ = reserved_payload_end_;
         ++pending_count_;
 
-        ++submitted_commands_;
+        if (mg_pz_census_active) ++submitted_commands_;
 
         if (pending_count_ == kCommandsPerPacket) flushProducerPacket();
     }
@@ -96,13 +96,15 @@ class submission_state {
         flushProducerPacket();
         uint64_t completed = tail_.load(std::memory_order_acquire);
         if (completed >= sequence) return;
-        if (record_wait) synchronous_waits_.fetch_add(1, std::memory_order_relaxed);
-        const auto started = std::chrono::steady_clock::now();
+        const bool record_telemetry = record_wait && mg_pz_census_active;
+        if (record_telemetry) synchronous_waits_.fetch_add(1, std::memory_order_relaxed);
+        const auto started = record_telemetry ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
         while (completed < sequence) {
             tail_.wait(completed, std::memory_order_acquire);
             completed = tail_.load(std::memory_order_acquire);
         }
-        if (record_wait) recordSynchronousWait(started);
+        if (record_telemetry) recordSynchronousWait(started);
     }
 
     bool adopt(const context_binding& binding) {
@@ -116,7 +118,8 @@ class submission_state {
             // own context; stealing this single-producer queue would unbind the
             // first thread's context and strand it in the next synchronous call.
             if (owner_ != std::this_thread::get_id()) {
-                LOG_W_FORCE("ZOMDROID_PZ_THREADED_SUBMISSION bypass reason=second_context_thread")
+                if (mg_pz_census_active)
+                    LOG_W_FORCE("ZOMDROID_PZ_THREADED_SUBMISSION bypass reason=second_context_thread")
                 return false;
             }
             if (!release()) return false;
@@ -146,12 +149,14 @@ class submission_state {
 
         owner_ = std::this_thread::get_id();
         active_.store(true, std::memory_order_release);
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 context=%p owner=%llu packet_slots=%llu "
-              "commands_per_packet=%llu frame_depth=1",
-              binding.context,
-              static_cast<unsigned long long>(std::hash<std::thread::id>{}(owner_)),
-              static_cast<unsigned long long>(kPacketCapacity),
-              static_cast<unsigned long long>(kCommandsPerPacket))
+        if (mg_pz_census_active) {
+            LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION active=1 context=%p owner=%llu packet_slots=%llu "
+                  "commands_per_packet=%llu frame_depth=1",
+                  binding.context,
+                  static_cast<unsigned long long>(std::hash<std::thread::id>{}(owner_)),
+                  static_cast<unsigned long long>(kPacketCapacity),
+                  static_cast<unsigned long long>(kCommandsPerPacket))
+        }
         return true;
     }
 
@@ -197,6 +202,7 @@ class submission_state {
     void setLastSwapSequence(uint64_t sequence) { last_swap_sequence_ = sequence; }
 
     void recordFrameThrottle(const std::chrono::steady_clock::time_point& started) {
+        if (!mg_pz_census_active) return;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         frame_wait_us_.fetch_add(static_cast<uint64_t>(ms * 1000.0), std::memory_order_relaxed);
         uint64_t maximum = frame_wait_max_us_.load(std::memory_order_relaxed);
@@ -207,13 +213,17 @@ class submission_state {
     }
 
     void recordSwap(bool succeeded) {
+        if (!mg_pz_census_active) return;
         swaps_completed_.fetch_add(1, std::memory_order_relaxed);
         if (!succeeded) swap_failures_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    uint64_t nextSwapNumber() { return swaps_submitted_.fetch_add(1, std::memory_order_relaxed) + 1; }
+    uint64_t nextSwapNumber() {
+        return mg_pz_census_active ? swaps_submitted_.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    }
 
     void report(uint64_t frames) {
+        if (!mg_pz_census_active) return;
         if (frames != 60 && frames % 300 != 0) return;
         const uint64_t sync_waits = synchronous_waits_.load(std::memory_order_relaxed);
         const uint64_t frame_wait_us = frame_wait_us_.load(std::memory_order_relaxed);
@@ -253,15 +263,18 @@ class submission_state {
     void waitForPacketSpace() {
         if (pending_count_ != 0) return;
         const uint64_t head = producer_head_;
-        const auto wait_started = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point wait_started{};
         bool blocked = false;
         uint64_t completed = tail_.load(std::memory_order_acquire);
         while (head - completed >= kPacketCapacity) {
-            blocked = true;
+            if (!blocked) {
+                blocked = true;
+                if (mg_pz_census_active) wait_started = std::chrono::steady_clock::now();
+            }
             tail_.wait(completed, std::memory_order_acquire);
             completed = tail_.load(std::memory_order_acquire);
         }
-        if (blocked) recordProducerWait(wait_started);
+        if (blocked && mg_pz_census_active) recordProducerWait(wait_started);
     }
 
     uint64_t flushProducerPacket() {
@@ -269,16 +282,17 @@ class submission_state {
         command_packet& packet = queue_[producer_head_ & kPacketMask];
         packet.count = static_cast<uint32_t>(pending_count_);
         const uint64_t sequence = ++producer_head_;
-        ++packets_submitted_;
-
-        const uint64_t completed_packets = tail_.load(std::memory_order_acquire);
-        const uint64_t packet_depth = sequence - completed_packets;
-        packet_highwater_ = std::max(packet_highwater_, packet_depth);
-        const uint64_t executed_commands = executed_.load(std::memory_order_relaxed);
-        const uint64_t command_depth = submitted_commands_ >= executed_commands
-                                           ? submitted_commands_ - executed_commands
-                                           : 0;
-        queue_highwater_ = std::max(queue_highwater_, command_depth);
+        if (mg_pz_census_active) {
+            ++packets_submitted_;
+            const uint64_t completed_packets = tail_.load(std::memory_order_acquire);
+            const uint64_t packet_depth = sequence - completed_packets;
+            packet_highwater_ = std::max(packet_highwater_, packet_depth);
+            const uint64_t executed_commands = executed_.load(std::memory_order_relaxed);
+            const uint64_t command_depth = submitted_commands_ >= executed_commands
+                                               ? submitted_commands_ - executed_commands
+                                               : 0;
+            queue_highwater_ = std::max(queue_highwater_, command_depth);
+        }
 
         head_.store(sequence, std::memory_order_release);
         pending_count_ = 0;
@@ -326,7 +340,7 @@ class submission_state {
                     entry.destroy(payload);
                 }
                 ++consumer_tail;
-                executed_.fetch_add(count, std::memory_order_relaxed);
+                if (mg_pz_census_active) executed_.fetch_add(count, std::memory_order_relaxed);
                 tail_.store(consumer_tail, std::memory_order_release);
                 tail_.notify_all();
                 continue;
@@ -504,9 +518,11 @@ bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn ful
 
     const uint64_t previous = state().previousSwapSequence();
     if (previous != 0) {
-        const auto started = std::chrono::steady_clock::now();
+        const bool record_telemetry = mg_pz_census_active;
+        const auto started = record_telemetry ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
         state().waitFor(previous, false);
-        state().recordFrameThrottle(started);
+        if (record_telemetry) state().recordFrameThrottle(started);
     }
 
     EGLint* copied_rects = nullptr;

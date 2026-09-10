@@ -151,6 +151,20 @@ void trace_zomdroid_gl_after_unmap(const char* func_name);
         write_log(__VA_ARGS__);                                                                                        \
     }
 
+// Keep the bounded ZomDroid breadcrumbs compiled into diagnostic-capable
+// builds, but make their runtime cost and output follow the census switch.
+// Expensive breadcrumb helpers still return before doing any driver queries.
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+#define ZOMDROID_DIAGNOSTIC_LOG(...)                                                                                   \
+    do {                                                                                                               \
+        if (mg_pz_census_active) write_log(__VA_ARGS__);                                                              \
+    } while (0)
+#else
+#define ZOMDROID_DIAGNOSTIC_LOG(...)                                                                                   \
+    do {                                                                                                               \
+    } while (0)
+#endif
+
 #define MOBILEGLUES_LOG_H
 
 #endif // MOBILEGLUES_LOG_H

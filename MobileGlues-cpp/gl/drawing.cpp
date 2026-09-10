@@ -78,7 +78,7 @@ bool sampler_binding_for_type(GLenum type, GLenum& target, GLenum& binding) {
 }
 
 void trace_texture_state_before_draw(GLuint program) {
-    if (program == 0 || g_texture_trace_lines >= k_texture_trace_line_limit) return;
+    if (!mg_pz_census_active || program == 0 || g_texture_trace_lines >= k_texture_trace_line_limit) return;
     unsigned int& sampled_draws = g_texture_trace_program_draws[program];
     if (sampled_draws >= k_texture_trace_draws_per_program) return;
     ++sampled_draws;
@@ -135,7 +135,7 @@ void trace_texture_state_before_draw(GLuint program) {
         g_texture_trace_seen[state_key] = true;
 
         ++g_texture_trace_lines;
-        write_log("ZOMDROID_TEXTURE_STATE seq=%u program=%u sampler=%s loc=%d unit=%d useTexture=%d "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_TEXTURE_STATE seq=%u program=%u sampler=%s loc=%d unit=%d useTexture=%d "
                   "target=0x%x app_active=%u shadow_active=%d driver_active=%d shadow_valid=%d shadow_tex=%u "
                   "driver_tex=%d tracked=%d size=%dx%d format=0x%x",
                   g_texture_trace_lines, program, name, location, unit, use_texture_value, target,
@@ -435,11 +435,12 @@ bool quad_output_count(GLsizei source_count, GLsizei* output_count) {
 void trace_quad_rewrite(const char* route, GLsizei source_count, GLsizei output_count, GLenum type,
                         GLuint source_ibo) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     static thread_local unsigned int arrays_seen = 0;
     static thread_local unsigned int elements_seen = 0;
     unsigned int& seen = type == 0 ? arrays_seen : elements_seen;
     if (seen++ < 8) {
-        write_log("ZOMDROID_QUADS_REWRITE route=%s source=%d triangles_indices=%d type=0x%x source_ibo=%u", route,
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_QUADS_REWRITE route=%s source=%d triangles_indices=%d type=0x%x source_ibo=%u", route,
                   source_count, output_count, type, source_ibo);
     }
 #else
@@ -461,9 +462,10 @@ void quad_warn_once(const char* message) {
 #if defined(ZOMDROID_EXPERIMENTAL)
 void trace_quad_direct(GLuint source_ibo, GLenum type, GLint basevertex, GLsizei instancecount, const char* result) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     const auto& stats = g_quad_direct_stats;
     if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
-        write_log("ZOMDROID_PZ_QUAD_DIRECT attempt=%llu hits=%llu restart_fallback=%llu basevertex_fallback=%llu "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_QUAD_DIRECT attempt=%llu hits=%llu restart_fallback=%llu basevertex_fallback=%llu "
                   "buffer=%u type=0x%x basevertex=%d instances=%d result=%s",
                   stats.attempts, stats.hits, stats.restart_fallbacks, stats.basevertex_fallbacks, source_ibo, type,
                   basevertex, instancecount, result);
@@ -511,9 +513,10 @@ bool draw_single_quad_direct(GLenum type, const void* indices, GLint basevertex,
 
 void trace_quad_cache(const quad_cache_key_t& key, uintptr_t offset, GLsizei count, const char* result) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (!mg_pz_census_active) return;
     const auto& stats = g_quad_cache_stats;
     if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
-        write_log("ZOMDROID_PZ_QUAD_CACHE attempt=%llu hits=%llu misses=%llu unsafe=%llu resets=%llu entries=%zu "
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_QUAD_CACHE attempt=%llu hits=%llu misses=%llu unsafe=%llu resets=%llu entries=%zu "
                   "bytes=%llu shadow=%llu mapped=%llu buffer=%u version=%llu source=%lld offset=%llu count=%d "
                   "result=%s",
                   stats.attempts, stats.hits, stats.misses, stats.unsafe, stats.resets, g_quad_cache.size(),

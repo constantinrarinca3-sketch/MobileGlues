@@ -77,14 +77,20 @@ fixed_state_shadow_t* fixed_state_shadow() {
 }
 
 bool fixed_state_result(fixed_state_shadow_t& state, bool exact, const char* function) {
-    ++state.calls;
-    if (!exact) return false;
-    ++state.skipped;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (state.skipped == 1 || state.skipped == 1024 || state.skipped == 65536) {
-        write_log("ZOMDROID_PZ_STATE_SHADOW_SKIP function=%s skipped=%llu calls=%llu", function, state.skipped,
-                  state.calls);
+    if (mg_pz_census_active) ++state.calls;
+#endif
+    if (!exact) return false;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (mg_pz_census_active) {
+        ++state.skipped;
+        if (state.skipped == 1 || state.skipped == 1024 || state.skipped == 65536) {
+            ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_PZ_STATE_SHADOW_SKIP function=%s skipped=%llu calls=%llu", function,
+                                    state.skipped, state.calls);
+        }
     }
+#else
+    (void)function;
 #endif
     return true;
 }
@@ -488,7 +494,7 @@ NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar* 
 
     const GLint location = GLES.glGetUniformLocation(program, driver_name);
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    write_log("ZOMDROID_UNIFORM_ALIAS program=%u requested=%s driver=%s location=%d", program, name, driver_name,
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_UNIFORM_ALIAS program=%u requested=%s driver=%s location=%d", program, name, driver_name,
               location);
 #endif
     CHECK_GL_ERROR

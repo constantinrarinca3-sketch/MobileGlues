@@ -361,21 +361,21 @@ void mg_pz_census_init(void) {
     g_batch = {};
     if (mg_pz_census_active) {
         LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=5 interval_frames=%u", kReportFrames)
+        if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
+        if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
+        if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
+        if (mg_pz_buffer_streaming_active)
+            LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging+auto_persistent")
+        if (mg_pz_buffer_discard_coalesce_active)
+            LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
+        if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
+        if (mg_pz_runtime_mipmap_skip_active)
+            LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
+        if (mg_pz_quad_index_cache_active)
+            LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
+        if (mg_pz_threaded_submission_active)
+            LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
     }
-    if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
-    if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
-    if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
-    if (mg_pz_buffer_streaming_active)
-        LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging+auto_persistent")
-    if (mg_pz_buffer_discard_coalesce_active) {
-        LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
-    }
-    if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
-    if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
-    if (mg_pz_quad_index_cache_active)
-        LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
-    if (mg_pz_threaded_submission_active)
-        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
 #endif
 }
 

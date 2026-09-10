@@ -535,8 +535,8 @@ static void upgrade_legacy_texture_calls(std::string& glsl) {
     const auto rewrite = mg_glsl_compat::rewrite_legacy_texture2d_calls(glsl);
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     if (rewrite.sampler_identifier_renamed)
-        write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture_sampler_identifier");
-    if (rewrite.calls_rewritten) write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture2D_to_texture");
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture_sampler_identifier");
+    if (rewrite.calls_rewritten) ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_COMPAT_REWRITE rule=texture2D_to_texture");
 #endif
 }
 
@@ -615,7 +615,7 @@ static bool upgrade_legacy_desktop_shader(std::string& glsl, GLenum shader_type)
                               std::regex_constants::format_first_only);
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=legacy_%d_to_330 type=0x%x", version, shader_type);
+    ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_COMPAT_REWRITE rule=legacy_%d_to_330 type=0x%x", version, shader_type);
 #endif
     return true;
 }
@@ -666,7 +666,7 @@ static bool normalize_desktop_core_tokens(std::string& glsl, GLenum shader_type)
     }
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-    if (changed) write_log("ZOMDROID_SHADER_COMPAT_REWRITE rule=desktop_core_tokens type=0x%x", shader_type);
+    if (changed) ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_COMPAT_REWRITE rule=desktop_core_tokens type=0x%x", shader_type);
 #endif
     return changed;
 }
@@ -913,7 +913,7 @@ std::vector<unsigned int> glsl_to_spirv(GLenum shader_type, int glsl_version, co
     // actual backend.
     if (!shader.parse(&TBuiltInResource_resources, glsl_version, false, EShMsgDefault)) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
-        write_log("ZOMDROID_SHADER_TRANSLATE_FAIL version=%d type=0x%x driver=[%.768s]", glsl_version, shader_type,
+        ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_SHADER_TRANSLATE_FAIL version=%d type=0x%x driver=[%.768s]", glsl_version, shader_type,
                   shader.getInfoLog());
 #endif
         LOG_D("GLSL Compiling ERROR: \n%s", shader.getInfoLog())

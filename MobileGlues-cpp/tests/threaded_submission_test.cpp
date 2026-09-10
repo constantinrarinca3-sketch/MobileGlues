@@ -12,6 +12,7 @@
 #include <vector>
 
 bool mg_pz_threaded_submission_active = true;
+bool mg_pz_census_active = false;
 
 extern "C" void write_log(const char*, ...) {}
 extern "C" void write_log_n(const char*, ...) {}
