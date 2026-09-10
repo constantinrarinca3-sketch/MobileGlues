@@ -82,6 +82,10 @@ extern "C"
     // to cache. The content version changes after every tracked CPU write.
     bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* content_version,
                                      GLsizeiptr* data_size);
+    // CPU-authored bytes for the exact identity above, or null when the
+    // converter must read the driver buffer.
+    const void* mg_pz_buffer_cache_source(GLuint buffer, uint64_t lifetime, uint64_t content_version,
+                                          GLsizeiptr data_size);
 #endif
 
     GLAPI GLAPIENTRY void glGenBuffers(GLsizei n, GLuint* buffers);

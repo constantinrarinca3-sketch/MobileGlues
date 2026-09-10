@@ -125,6 +125,18 @@ struct buffer_staging_map_t {
     GLenum discard_usage = GL_STATIC_DRAW;
 };
 
+// Keep CPU-authored element data available to the GL_QUADS converter. A
+// driver read map can otherwise serialize the CPU with the GPU for one quad.
+struct buffer_index_shadow_t {
+    std::vector<unsigned char> bytes;
+    uint64_t lifetime = 0;
+    uint64_t content_version = 0;
+};
+
+constexpr size_t kIndexShadowMaxBufferBytes = 8 * 1024 * 1024;
+constexpr size_t kIndexShadowMaxTotalBytes = 16 * 1024 * 1024;
+constexpr size_t kIndexShadowMaxBuffers = 256;
+
 struct buffer_streaming_stats_t {
     unsigned long long attempts = 0;
     unsigned long long hits = 0;
@@ -217,6 +229,9 @@ struct buffer_group_state_t { // shared across a share group
     std::vector<uint64_t> buffer_content_versions;
     ska::flat_hash_map<GLuint, buffer_staging_map_t> buffer_staging_maps;
     ska::flat_hash_map<GLuint, gpu_buffer_ring_t> gpu_buffer_rings;
+    ska::flat_hash_map<GLuint, buffer_index_shadow_t> buffer_index_shadows;
+    std::vector<char> buffer_index_shadow_watched;
+    size_t buffer_index_shadow_bytes = 0;
     bool multiple_contexts_seen = false;
 #endif
 };
@@ -343,6 +358,9 @@ void mg_driver_vertex_array_unknown() {
 #define g_buffer_content_versions (g_bg->buffer_content_versions)
 #define g_buffer_staging_maps (g_bg->buffer_staging_maps)
 #define g_gpu_buffer_rings (g_bg->gpu_buffer_rings)
+#define g_buffer_index_shadows (g_bg->buffer_index_shadows)
+#define g_buffer_index_shadow_watched (g_bg->buffer_index_shadow_watched)
+#define g_buffer_index_shadow_bytes (g_bg->buffer_index_shadow_bytes)
 #endif
 #define g_gen_arrays (g_bc->gen_arrays)
 #define g_gen_array_exists (g_bc->gen_array_exists)
@@ -407,6 +425,90 @@ static void note_buffer_content_write(GLuint buffer) {
     uint64_t& version = g_buffer_content_versions[buffer];
     ++version;
     if (version == 0) ++version;
+}
+
+static void erase_buffer_index_shadow(GLuint buffer) {
+    const auto found = g_buffer_index_shadows.find(buffer);
+    if (found == g_buffer_index_shadows.end()) return;
+    g_buffer_index_shadow_bytes -= found->second.bytes.size();
+    g_buffer_index_shadows.erase(found);
+}
+
+static void replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size) {
+    if (!mg_pz_quad_index_cache_active || target != GL_ELEMENT_ARRAY_BUFFER || buffer == 0 || !has_buffer(buffer) ||
+        data == nullptr || size <= 0 || static_cast<size_t>(size) > kIndexShadowMaxBufferBytes ||
+        g_bg->multiple_contexts_seen || buffer >= g_buffer_lifetimes.size() ||
+        buffer >= g_buffer_content_versions.size() || buffer >= g_buffer_index_shadow_watched.size() ||
+        g_buffer_index_shadow_watched[buffer] == 0 || g_buffer_lifetimes[buffer] == 0 ||
+        g_buffer_content_versions[buffer] == 0) {
+        erase_buffer_index_shadow(buffer);
+        return;
+    }
+
+    const size_t bytes = static_cast<size_t>(size);
+    auto found = g_buffer_index_shadows.find(buffer);
+    const size_t old_bytes = found == g_buffer_index_shadows.end() ? 0 : found->second.bytes.size();
+    const size_t bytes_without_current = g_buffer_index_shadow_bytes - old_bytes;
+    if ((found == g_buffer_index_shadows.end() && g_buffer_index_shadows.size() >= kIndexShadowMaxBuffers) ||
+        bytes_without_current > kIndexShadowMaxTotalBytes - bytes) {
+        g_buffer_index_shadows.clear();
+        g_buffer_index_shadow_bytes = 0;
+        found = g_buffer_index_shadows.end();
+    }
+
+    try {
+        const auto* source = static_cast<const unsigned char*>(data);
+        if (found != g_buffer_index_shadows.end()) {
+            buffer_index_shadow_t& shadow = found->second;
+            shadow.bytes.assign(source, source + bytes);
+            shadow.lifetime = g_buffer_lifetimes[buffer];
+            shadow.content_version = g_buffer_content_versions[buffer];
+            g_buffer_index_shadow_bytes = bytes_without_current + bytes;
+        } else {
+            buffer_index_shadow_t shadow;
+            shadow.bytes.assign(source, source + bytes);
+            shadow.lifetime = g_buffer_lifetimes[buffer];
+            shadow.content_version = g_buffer_content_versions[buffer];
+            g_buffer_index_shadows.emplace(buffer, std::move(shadow));
+            g_buffer_index_shadow_bytes += bytes;
+        }
+    } catch (const std::bad_alloc&) {
+        // This copy is optional. The converter retains its driver-map fallback.
+        erase_buffer_index_shadow(buffer);
+    }
+}
+
+static void patch_buffer_index_shadow(GLenum target, GLuint buffer, GLintptr offset, GLsizeiptr size,
+                                      const void* data) {
+    if (!mg_pz_quad_index_cache_active || target != GL_ELEMENT_ARRAY_BUFFER || buffer == 0 || !has_buffer(buffer) ||
+        offset < 0 || size < 0 || (size > 0 && data == nullptr)) {
+        erase_buffer_index_shadow(buffer);
+        return;
+    }
+
+    const size_t tracked_size = buffer < g_buffer_datasize.size() ? g_buffer_datasize[buffer] : 0;
+    const size_t write_offset = static_cast<size_t>(offset);
+    const size_t write_size = static_cast<size_t>(size);
+    if (write_offset > tracked_size || write_size > tracked_size - write_offset) {
+        erase_buffer_index_shadow(buffer);
+        return;
+    }
+
+    auto found = g_buffer_index_shadows.find(buffer);
+    if (found == g_buffer_index_shadows.end()) {
+        if (write_offset == 0 && write_size == tracked_size)
+            replace_buffer_index_shadow(target, buffer, data, size);
+        return;
+    }
+
+    buffer_index_shadow_t& shadow = found->second;
+    if (buffer >= g_buffer_lifetimes.size() || buffer >= g_buffer_content_versions.size() ||
+        shadow.lifetime != g_buffer_lifetimes[buffer] || shadow.bytes.size() != tracked_size) {
+        erase_buffer_index_shadow(buffer);
+        return;
+    }
+    if (write_size != 0) std::memcpy(shadow.bytes.data() + write_offset, data, write_size);
+    shadow.content_version = g_buffer_content_versions[buffer];
 }
 
 static bool frontend_buffer_identity_alive(GLuint buffer, uint64_t lifetime) {
@@ -580,7 +682,11 @@ static bool gpu_ring_target(GLenum target) {
 static void mark_gpu_ring_role(GLuint buffer, GLenum target) {
     if (buffer == 0 || !has_buffer(buffer)) return;
     ensure_buffer_capacity(buffer);
-    if (!gpu_ring_target(target)) g_gpu_ring_safe[buffer] = 0;
+    if (!gpu_ring_target(target)) {
+        g_gpu_ring_safe[buffer] = 0;
+        g_buffer_index_shadow_watched[buffer] = 0;
+        erase_buffer_index_shadow(buffer);
+    }
 }
 
 static bool persistent_stream_capable(GLenum target, GLuint buffer, GLsizeiptr size) {
@@ -800,6 +906,7 @@ static inline int ensure_buffer_capacity(GLuint id) {
             g_buffer_storage_kind.resize(id + 1, buffer_storage_kind_t::none);
         if (g_gpu_ring_safe.size() <= (size_t)id) g_gpu_ring_safe.resize(id + 1, 1);
         if (g_buffer_content_versions.size() <= (size_t)id) g_buffer_content_versions.resize(id + 1, 0);
+        if (g_buffer_index_shadow_watched.size() <= (size_t)id) g_buffer_index_shadow_watched.resize(id + 1, 0);
 #endif
     }
     return 0;
@@ -838,8 +945,10 @@ GLuint gen_buffer() {
         g_buffer_storage_kind[id] = buffer_storage_kind_t::none;
         g_gpu_ring_safe[id] = 1;
         g_buffer_content_versions[id] = 0;
+        g_buffer_index_shadow_watched[id] = 0;
         g_buffer_staging_maps.erase(id);
         g_gpu_buffer_rings.erase(id);
+        erase_buffer_index_shadow(id);
 #endif
         begin_buffer_lifetime(id);
         if (id > (GLuint)maxBufferId) maxBufferId = id;
@@ -880,8 +989,10 @@ void remove_buffer(GLuint key) {
         if (key < g_buffer_storage_kind.size()) g_buffer_storage_kind[key] = buffer_storage_kind_t::none;
         if (key < g_gpu_ring_safe.size()) g_gpu_ring_safe[key] = 1;
         if (key < g_buffer_content_versions.size()) g_buffer_content_versions[key] = 0;
+        if (key < g_buffer_index_shadow_watched.size()) g_buffer_index_shadow_watched[key] = 0;
         g_buffer_staging_maps.erase(key);
         g_gpu_buffer_rings.erase(key);
+        erase_buffer_index_shadow(key);
 #endif
         g_free_buffer_ids.push_back(key);
     }
@@ -971,7 +1082,20 @@ bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* co
     *lifetime = g_buffer_lifetimes[buffer];
     *content_version = g_buffer_content_versions[buffer];
     *data_size = static_cast<GLsizeiptr>(tracked_size);
+    if (mg_pz_quad_index_cache_active && !g_bg->multiple_contexts_seen) g_buffer_index_shadow_watched[buffer] = 1;
     return true;
+}
+
+const void* mg_pz_buffer_cache_source(GLuint buffer, uint64_t lifetime, uint64_t content_version,
+                                      GLsizeiptr data_size) {
+    if (!mg_pz_quad_index_cache_active || data_size <= 0 || g_bg->multiple_contexts_seen) return nullptr;
+    const auto found = g_buffer_index_shadows.find(buffer);
+    if (found == g_buffer_index_shadows.end()) return nullptr;
+    const buffer_index_shadow_t& shadow = found->second;
+    if (shadow.lifetime != lifetime || shadow.content_version != content_version ||
+        shadow.bytes.size() != static_cast<size_t>(data_size))
+        return nullptr;
+    return shadow.bytes.data();
 }
 #endif
 
@@ -1176,6 +1300,16 @@ static void flush_elided_discard(GLenum target, GLuint buffer) {
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable) {
     record_buffer_storage(buffer, size, usage,
                           immutable ? buffer_storage_kind_t::immutable_store : buffer_storage_kind_t::mutable_store);
+}
+
+void mg_test_replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size) {
+    replace_buffer_index_shadow(target, buffer, data, size);
+}
+
+void mg_test_patch_buffer_index_shadow(GLenum target, GLuint buffer, GLintptr offset, GLsizeiptr size,
+                                       const void* data) {
+    note_buffer_content_write(buffer);
+    patch_buffer_index_shadow(target, buffer, offset, size, data);
 }
 
 void* mg_test_try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled) {
@@ -1465,6 +1599,8 @@ void InitBufferMap(size_t expectedSize) {
     g_buffer_content_versions.reserve(expectedSize + 2);
     g_buffer_staging_maps.reserve(expectedSize + 2);
     g_gpu_buffer_rings.reserve(expectedSize + 2);
+    g_buffer_index_shadows.reserve(expectedSize + 2);
+    g_buffer_index_shadow_watched.reserve(expectedSize + 2);
 #endif
     g_gen_buffers.resize(1, 0);
     g_gen_buffer_exists.resize(1, 0);
@@ -1475,6 +1611,7 @@ void InitBufferMap(size_t expectedSize) {
     g_buffer_storage_kind.resize(1, buffer_storage_kind_t::none);
     g_gpu_ring_safe.resize(1, 1);
     g_buffer_content_versions.resize(1, 0);
+    g_buffer_index_shadow_watched.resize(1, 0);
 #endif
 }
 
@@ -2104,6 +2241,7 @@ static bool replace_persistent_with_mutable(GLenum target, GLuint buffer, GLsize
     refresh_bound_vao_backings();
     delete_gpu_ring_backings(buffer);
     record_buffer_storage(buffer, size, usage, buffer_storage_kind_t::mutable_store);
+    replace_buffer_index_shadow(target, buffer, data, size);
     auto staged = g_buffer_staging_maps.find(buffer);
     if (staged != g_buffer_staging_maps.end()) {
         staged->second.mapped = false;
@@ -2142,6 +2280,7 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
     const bool immutable_storage = storage_kind == buffer_storage_kind_t::immutable_store;
     if (!immutable_storage && try_elide_buffer_discard(target, frontend_buffer, size, data, usage)) {
         record_buffer_storage(frontend_buffer, size, usage, storage_kind);
+        replace_buffer_index_shadow(target, frontend_buffer, data, size);
         return;
     }
     const auto staged = g_buffer_staging_maps.find(frontend_buffer);
@@ -2163,8 +2302,10 @@ void glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage
 #if defined(ZOMDROID_EXPERIMENTAL)
     // glBufferData is rejected by GLES for immutable storage, so retain the
     // existing immutable record instead of making a later map eligible.
-    if (!immutable_storage)
+    if (!immutable_storage) {
         record_buffer_storage(frontend_buffer, size, usage, buffer_storage_kind_t::mutable_store);
+        replace_buffer_index_shadow(target, frontend_buffer, data, size);
+    }
 #else
     set_buffer_data_size(frontend_buffer, size);
 #endif
@@ -2191,6 +2332,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void
     GLES.glBufferSubData(t.target, offset, size, data);
 #if defined(ZOMDROID_EXPERIMENTAL)
     note_buffer_content_write(frontend_buffer);
+    patch_buffer_index_shadow(target, frontend_buffer, offset, size, data);
 #endif
     CHECK_GL_ERROR
 }
@@ -2391,11 +2533,12 @@ GLboolean glUnmapBuffer(GLenum target) {
                 trace_discard_coalesce(frontend_buffer, staged_size, "paired_persistent_write",
                                        g_bc->buffer_discard_coalesce_stats.paired);
             }
+            note_buffer_content_write(frontend_buffer);
+            replace_buffer_index_shadow(target, frontend_buffer, staged->second.pointer, staged_size);
             staged->second.completed_upload = true;
             staged->second.mapped = false;
             staged->second.persistent_direct = false;
             staged->second.pointer = nullptr;
-            note_buffer_content_write(frontend_buffer);
             trace_zomdroid_buffer_call("UNMAP_PERSISTENT_DIRECT", target, 0, staged_size, staged_access, nullptr);
             return GL_TRUE;
         }
@@ -2415,12 +2558,13 @@ GLboolean glUnmapBuffer(GLenum target) {
                                    promote ? "paired_persistent_promotion" : "paired_upload",
                                    g_bc->buffer_discard_coalesce_stats.paired);
         }
+        note_buffer_content_write(frontend_buffer);
+        replace_buffer_index_shadow(target, frontend_buffer, staged->second.pointer, staged_size);
         if (promote) std::vector<unsigned char>().swap(staged->second.storage);
         staged->second.completed_upload = true;
         staged->second.mapped = false;
         staged->second.persistent_direct = false;
         staged->second.pointer = nullptr;
-        note_buffer_content_write(frontend_buffer);
         trace_zomdroid_buffer_call(promote ? "UNMAP_PERSISTENT_PROMOTE" : "UNMAP_STAGING_UPLOAD", target, 0,
                                    staged_size, staged_access, nullptr);
         CHECK_GL_ERROR
@@ -2431,6 +2575,12 @@ GLboolean glUnmapBuffer(GLenum target) {
     GLboolean result = GL_FALSE;
     if (!GLES.glMapBufferRange && g_gles_caps.GL_OES_mapbuffer && GLES.glUnmapBufferOES) {
         result = GLES.glUnmapBufferOES(t.target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (result == GL_TRUE) {
+            note_buffer_content_write(frontend_buffer);
+            erase_buffer_index_shadow(frontend_buffer);
+        }
+#endif
         trace_zomdroid_buffer_call(result ? "UNMAP_OES_EXIT_TRUE" : "UNMAP_OES_EXIT_FALSE", target, 0, 0, 0,
                                    nullptr);
         return result;
@@ -2442,7 +2592,10 @@ GLboolean glUnmapBuffer(GLenum target) {
     }
     result = GLES.glUnmapBuffer(t.target);
 #if defined(ZOMDROID_EXPERIMENTAL)
-    if (result == GL_TRUE) note_buffer_content_write(frontend_buffer);
+    if (result == GL_TRUE) {
+        note_buffer_content_write(frontend_buffer);
+        erase_buffer_index_shadow(frontend_buffer);
+    }
 #endif
     trace_zomdroid_buffer_call(result ? "UNMAP_CORE_EXIT_TRUE" : "UNMAP_CORE_EXIT_FALSE", target, 0, 0, 0,
                                nullptr);
@@ -2489,6 +2642,7 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
             delete_gpu_ring_backings(frontend_buffer);
             record_buffer_storage(frontend_buffer, size, GL_STATIC_DRAW,
                                   buffer_storage_kind_t::immutable_store);
+            erase_buffer_index_shadow(frontend_buffer);
             MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
             CHECK_GL_ERROR
             return;
@@ -2498,8 +2652,10 @@ void glBufferStorage(GLenum target, GLsizeiptr size, const void* data, GLbitfiel
         MG_PZ_CENSUS(mg_pz_census_buffer_data(size, false));
         // Allocates storage just as glBufferData does, so it owes the same record.
 #if defined(ZOMDROID_EXPERIMENTAL)
-        if (!already_immutable)
+        if (!already_immutable) {
             record_buffer_storage(frontend_buffer, size, GL_STATIC_DRAW, buffer_storage_kind_t::immutable_store);
+            erase_buffer_index_shadow(frontend_buffer);
+        }
 #else
         set_buffer_data_size(frontend_buffer, size);
 #endif
@@ -2516,7 +2672,9 @@ void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length)
         borrowed_target_t t(target);
         GLES.glFlushMappedBufferRange(t.target, offset, length);
 #if defined(ZOMDROID_EXPERIMENTAL)
-        note_buffer_content_write(find_bound_buffer_by_target(target));
+        const GLuint frontend_buffer = find_bound_buffer_by_target(target);
+        note_buffer_content_write(frontend_buffer);
+        erase_buffer_index_shadow(frontend_buffer);
 #endif
     }
 }

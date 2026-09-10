@@ -3,6 +3,7 @@
 #include "gl/pz_census.h"
 
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 
 bool mg_pz_census_active = false;
@@ -27,6 +28,9 @@ extern "C" void mg_set_gl_error(GLenum error) {
 void mg_pz_census_buffer_map(GLsizeiptr) {}
 
 void mg_test_record_buffer_storage(GLuint buffer, GLsizeiptr size, GLenum usage, bool immutable);
+void mg_test_replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size);
+void mg_test_patch_buffer_index_shadow(GLenum target, GLuint buffer, GLintptr offset, GLsizeiptr size,
+                                       const void* data);
 void* mg_test_try_staging_map(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access, bool* handled);
 void mg_test_cancel_staging_map(GLuint buffer);
 void mg_test_complete_staging_upload(GLuint buffer);
@@ -59,6 +63,30 @@ int main() {
            "rewritten buffer keeps a cache identity");
     expect(second_lifetime == lifetime && second_version != first_version,
            "rewriting storage invalidates cached index data without changing lifetime");
+
+    const GLuint shadow_buffer = gen_buffer();
+    const uint16_t initial_indices[] = {1, 2, 3, 4};
+    mg_pz_quad_index_cache_active = true;
+    mg_test_record_buffer_storage(shadow_buffer, sizeof(initial_indices), GL_STREAM_DRAW, false);
+    expect(mg_pz_buffer_cache_identity(shadow_buffer, &lifetime, &first_version, &cache_size),
+           "shadowed element buffer has a cache identity");
+    mg_test_replace_buffer_index_shadow(GL_ELEMENT_ARRAY_BUFFER, shadow_buffer, initial_indices,
+                                        sizeof(initial_indices));
+    const void* shadow = mg_pz_buffer_cache_source(shadow_buffer, lifetime, first_version, cache_size);
+    expect(shadow != nullptr && std::memcmp(shadow, initial_indices, sizeof(initial_indices)) == 0,
+           "cache identity exposes the exact CPU-authored element bytes");
+    const uint16_t replacement = 9;
+    mg_test_patch_buffer_index_shadow(GL_ELEMENT_ARRAY_BUFFER, shadow_buffer, sizeof(uint16_t),
+                                      sizeof(replacement), &replacement);
+    expect(mg_pz_buffer_cache_identity(shadow_buffer, &lifetime, &second_version, &cache_size),
+           "subdata update advances the shadow identity");
+    shadow = mg_pz_buffer_cache_source(shadow_buffer, lifetime, second_version, cache_size);
+    const uint16_t expected_indices[] = {1, 9, 3, 4};
+    expect(shadow != nullptr && std::memcmp(shadow, expected_indices, sizeof(expected_indices)) == 0,
+           "partial element updates patch the CPU shadow");
+    expect(mg_pz_buffer_cache_source(shadow_buffer, lifetime, first_version, cache_size) == nullptr,
+           "an old content version cannot read a newer CPU shadow");
+    mg_pz_quad_index_cache_active = false;
 
     bool handled = false;
     const GLbitfield write_discard =

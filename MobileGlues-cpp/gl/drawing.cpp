@@ -375,6 +375,8 @@ struct quad_cache_stats_t {
     unsigned long long unsafe = 0;
     unsigned long long resets = 0;
     unsigned long long uploaded_bytes = 0;
+    unsigned long long shadow_sources = 0;
+    unsigned long long mapped_sources = 0;
 };
 
 thread_local UnorderedMap<GLuint, quad_cache_entry_t> g_quad_cache;
@@ -453,9 +455,11 @@ void trace_quad_cache(const quad_cache_key_t& key, uintptr_t offset, GLsizei cou
     const auto& stats = g_quad_cache_stats;
     if (stats.attempts <= 8 || stats.attempts == 1024 || stats.attempts == 65536) {
         write_log("ZOMDROID_PZ_QUAD_CACHE attempt=%llu hits=%llu misses=%llu unsafe=%llu resets=%llu entries=%zu "
-                  "bytes=%llu buffer=%u version=%llu source=%lld offset=%llu count=%d result=%s",
+                  "bytes=%llu shadow=%llu mapped=%llu buffer=%u version=%llu source=%lld offset=%llu count=%d "
+                  "result=%s",
                   stats.attempts, stats.hits, stats.misses, stats.unsafe, stats.resets, g_quad_cache.size(),
-                  stats.uploaded_bytes, key.buffer, static_cast<unsigned long long>(key.content_version),
+                  stats.uploaded_bytes, stats.shadow_sources, stats.mapped_sources, key.buffer,
+                  static_cast<unsigned long long>(key.content_version),
                   static_cast<long long>(key.source_bytes), static_cast<unsigned long long>(offset), count, result);
     }
 #else
@@ -634,6 +638,7 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     GLsizei expansion_count = count;
     GLsizei expansion_capacity = capacity;
     GLsizeiptr cache_source_bytes = 0;
+    const void* cache_cpu_source = nullptr;
     const uintptr_t source_offset = reinterpret_cast<uintptr_t>(indices);
     if (mg_pz_quad_index_cache_active && previous_ibo != 0) {
         const GLuint frontend_ibo = find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER);
@@ -666,7 +671,11 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
                 CHECK_GL_ERROR
                 return true;
             }
-            if (cacheable) ++g_quad_cache_stats.misses;
+            if (cacheable) {
+                ++g_quad_cache_stats.misses;
+                cache_cpu_source =
+                    mg_pz_buffer_cache_source(frontend_ibo, lifetime, content_version, cache_source_bytes);
+            }
         } else {
             ++g_quad_cache_stats.unsafe;
             trace_quad_cache(cache_key, source_offset, count, "unsafe");
@@ -675,7 +684,15 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 #endif
     const void* source = indices;
     bool mapped = false;
-    if (previous_ibo != 0) {
+    bool source_from_shadow = false;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (cacheable && cache_cpu_source != nullptr) {
+        source = cache_cpu_source;
+        source_from_shadow = true;
+        ++g_quad_cache_stats.shadow_sources;
+    }
+#endif
+    if (previous_ibo != 0 && !source_from_shadow) {
         GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, previous_ibo);
         if (!GLES.glMapBufferRange) {
             draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
@@ -690,6 +707,9 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
 #endif
         source = GLES.glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, map_offset, map_length, GL_MAP_READ_BIT);
         mapped = source != nullptr;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (cacheable && mapped) ++g_quad_cache_stats.mapped_sources;
+#endif
         if (!mapped) {
             draw_unreadable_quad_elements(count, type, indices, basevertex, instancecount, previous_ibo);
             return true;
@@ -735,7 +755,8 @@ bool draw_elements_as_triangles(GLsizei count, GLenum type, const void* indices,
     if (cacheable) {
         quad_cache_entry_t* cached = store_quad_cache_entry(cache_key, g_quad_element_indices.data(), output);
         if (cached != nullptr) {
-            trace_quad_cache(cache_key, source_offset, count, "whole_miss_cached");
+            trace_quad_cache(cache_key, source_offset, count,
+                             source_from_shadow ? "whole_miss_shadow" : "whole_miss_mapped");
             draw_quad_cache_entry(*cached, source_offset, capacity, size, instancecount, previous_ibo);
             CHECK_GL_ERROR
             return true;
