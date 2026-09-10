@@ -105,8 +105,8 @@ void mg_fsr1_bind_context(unsigned long long ctx_id);
 // away, i.e. after the last thread has stopped using it, so the entry being
 // erased is guaranteed not to be the one any thread_local pointer refers to.
 //
-// The share group is deliberately not torn down here: sibling contexts may still
-// be using it, and the group record is small. Only per-context state is dropped.
+// Buffer and texture bookkeeping counts the contexts in each share group and
+// releases the shared object tables when the last context record is dropped.
 void mg_buffer_forget_context(unsigned long long ctx_id);
 void mg_texture_forget_context(unsigned long long ctx_id);
 void mg_framebuffer_forget_context(unsigned long long ctx_id);

@@ -229,6 +229,11 @@ namespace {
 
 struct texture_group_state_t {
     std::vector<TextureObject*> objects;
+    unsigned int context_count = 0;
+
+    ~texture_group_state_t() {
+        for (TextureObject* object : objects) delete object;
+    }
 };
 struct texture_ctx_state_t {
     std::array<TextureUnit, MAX_TEXTURE_IMAGE_UNITS> units;
@@ -276,10 +281,13 @@ void mg_texture_bind_context(unsigned long long ctx_id, unsigned long long group
     std::unique_ptr<texture_group_state_t>& group = g_tex_groups[group_id];
     if (!group) group = std::make_unique<texture_group_state_t>();
     std::unique_ptr<texture_ctx_state_t>& ctx = g_tex_ctxs[ctx_id];
-    if (!ctx) ctx = std::make_unique<texture_ctx_state_t>();
+    if (!ctx) {
+        ctx = std::make_unique<texture_ctx_state_t>();
+        ctx->group = group_id;
+        ++group->context_count;
+    }
     g_tg = group.get();
     g_tc = ctx.get();
-    g_tc->group = group_id;
 }
 
 void mg_texture_forget_context(unsigned long long ctx_id) {
@@ -287,11 +295,15 @@ void mg_texture_forget_context(unsigned long long ctx_id) {
     std::lock_guard<std::mutex> lock(g_tex_mutex);
     const auto it = g_tex_ctxs.find(ctx_id);
     if (it == g_tex_ctxs.end()) return;
-    if (g_tc == it->second.get()) g_tc = &g_tex_ctx_default;
+    texture_ctx_state_t* ctx = it->second.get();
+    const auto group_it = g_tex_groups.find(ctx->group);
+    texture_group_state_t* group = group_it != g_tex_groups.end() ? group_it->second.get() : nullptr;
+    if (group != nullptr && group->context_count != 0) --group->context_count;
+    const bool last_group_context = group != nullptr && group->context_count == 0;
+    if (g_tc == ctx) g_tc = &g_tex_ctx_default;
+    if (last_group_context && g_tg == group) g_tg = &g_tex_group_default;
     g_tex_ctxs.erase(it);
-    // The object table is not dropped: it belongs to the share group, whose other
-    // contexts may still be alive, and the objects in it are owned by GL names the
-    // application is still entitled to delete.
+    if (last_group_context) g_tex_groups.erase(group_it);
 }
 
 #define BufferObjectsVec (g_tg->objects)

@@ -6,6 +6,9 @@
 
 #include "gl/buffer.h"
 
+void mg_buffer_bind_context(unsigned long long ctx_id, unsigned long long group_id);
+void mg_buffer_forget_context(unsigned long long ctx_id);
+
 GLuint get_ibo_by_vao(GLuint vao);
 void update_vao_ibo_binding(GLuint vao, GLuint ibo);
 void set_buffer_data_size(GLuint buffer, size_t size);
@@ -48,6 +51,25 @@ int main() {
 
     update_vao_ibo_binding(vao, replacement);
     expect("an explicit rebind accepts the replacement lifetime", get_ibo_by_vao(vao), replacement);
+
+    // A reused internal group id must not inherit the object table of a context
+    // that has already been destroyed.
+    mg_buffer_bind_context(101, 201);
+    InitBufferMap(8);
+    const GLuint context_buffer = gen_buffer();
+    set_buffer_data_size(context_buffer, 8192);
+    expect("context group owns its live buffer", has_buffer(context_buffer), GL_TRUE);
+    mg_buffer_bind_context(102, 201);
+    mg_buffer_bind_context(0, 0);
+    mg_buffer_forget_context(101);
+    mg_buffer_bind_context(102, 201);
+    expect("shared buffer table survives a sibling context", has_buffer(context_buffer), GL_TRUE);
+    mg_buffer_bind_context(0, 0);
+    mg_buffer_forget_context(102);
+    mg_buffer_bind_context(103, 201);
+    expect("last context teardown releases the shared buffer table", has_buffer(context_buffer), GL_FALSE);
+    mg_buffer_bind_context(0, 0);
+    mg_buffer_forget_context(103);
 
     std::printf("%s (%d failures)\n", fails ? "FAILED" : "buffer lifetime checks passed", fails);
     return fails != 0;

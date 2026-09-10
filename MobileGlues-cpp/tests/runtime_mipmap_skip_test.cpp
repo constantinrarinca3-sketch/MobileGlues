@@ -20,6 +20,9 @@ extern "C" void write_log_n(const char*, ...) {}
 
 bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target);
 GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param);
+TextureObject* GetOrCreateTextureObject(GLuint index);
+void mg_texture_bind_context(unsigned long long ctx_id, unsigned long long group_id);
+void mg_texture_forget_context(unsigned long long ctx_id);
 
 static void expect(bool condition, const char* message) {
     if (condition) return;
@@ -63,6 +66,23 @@ int main() {
     mg_pz_runtime_mipmap_skip_active = true;
     expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_CUBE_MAP),
            "non-2D texture targets must keep the driver path");
+
+    mg_texture_bind_context(101, 201);
+    InitTextureMap(8);
+    GetOrCreateTextureObject(7)->width = 777;
+    expect(mgGetTexObjectByID(7) != nullptr, "context group owns its live texture object");
+    mg_texture_bind_context(102, 201);
+    mg_texture_bind_context(0, 0);
+    mg_texture_forget_context(101);
+    mg_texture_bind_context(102, 201);
+    expect(mgGetTexObjectByID(7) != nullptr, "shared texture table survives a sibling context");
+    mg_texture_bind_context(0, 0);
+    mg_texture_forget_context(102);
+    mg_texture_bind_context(103, 201);
+    expect(mgGetTexObjectByID(7) == nullptr,
+           "last context teardown releases the shared texture object table");
+    mg_texture_bind_context(0, 0);
+    mg_texture_forget_context(103);
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "runtime mipmap checks passed", failures);
     return failures != 0;

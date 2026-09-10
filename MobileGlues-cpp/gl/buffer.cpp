@@ -207,13 +207,15 @@ struct buffer_group_state_t { // shared across a share group
     std::vector<GLuint> free_buffer_ids;
     std::vector<size_t> buffer_datasize;
     std::vector<uint64_t> buffer_lifetimes;
+    // Count the context records using this share group so the potentially large
+    // object tables can be released with the last context.
+    unsigned int context_count = 0;
 #if defined(ZOMDROID_EXPERIMENTAL)
     std::vector<GLenum> buffer_usage;
     std::vector<buffer_storage_kind_t> buffer_storage_kind;
     std::vector<char> gpu_ring_safe;
     ska::flat_hash_map<GLuint, buffer_staging_map_t> buffer_staging_maps;
     ska::flat_hash_map<GLuint, gpu_buffer_ring_t> gpu_buffer_rings;
-    unsigned int context_count = 0;
     bool multiple_contexts_seen = false;
 #endif
 };
@@ -227,8 +229,9 @@ struct buffer_ctx_state_t { // private to one context
     GLuint bound_array = 0;
     GLuint driver_bound_array = 0;
     bool driver_bound_array_known = false;
-#if defined(ZOMDROID_EXPERIMENTAL)
     buffer_group_state_t* group = nullptr;
+    unsigned long long group_id = 0;
+#if defined(ZOMDROID_EXPERIMENTAL)
     unsigned long long context_id = 0;
     uint64_t gpu_use_generation = 1;
     uint64_t gpu_completed_generation = 0;
@@ -281,10 +284,11 @@ void mg_buffer_bind_context(unsigned long long ctx_id, unsigned long long group_
     std::unique_ptr<buffer_ctx_state_t>& ctx = g_buf_ctxs[ctx_id];
     if (!ctx) {
         ctx = std::make_unique<buffer_ctx_state_t>();
-#if defined(ZOMDROID_EXPERIMENTAL)
         ctx->group = group.get();
-        ctx->context_id = ctx_id;
+        ctx->group_id = group_id;
         ++group->context_count;
+#if defined(ZOMDROID_EXPERIMENTAL)
+        ctx->context_id = ctx_id;
         if (group->context_count > 1) group->multiple_contexts_seen = true;
 #endif
     }
@@ -297,16 +301,24 @@ void mg_buffer_forget_context(unsigned long long ctx_id) {
     std::lock_guard<std::mutex> lock(g_buf_mutex);
     const auto it = g_buf_ctxs.find(ctx_id);
     if (it == g_buf_ctxs.end()) return;
+    buffer_ctx_state_t* ctx = it->second.get();
+    buffer_group_state_t* group = ctx->group;
+    const unsigned long long group_id = ctx->group_id;
 #if defined(ZOMDROID_EXPERIMENTAL)
-    if (g_bc == it->second.get() && GLES.glDeleteSync) {
-        for (const gpu_buffer_fence_t& fence : it->second->gpu_fences)
+    if (g_bc == ctx && GLES.glDeleteSync) {
+        for (const gpu_buffer_fence_t& fence : ctx->gpu_fences)
             if (fence.sync) GLES.glDeleteSync(fence.sync);
     }
-    if (it->second->group != nullptr && it->second->group->context_count != 0)
-        --it->second->group->context_count;
 #endif
-    if (g_bc == it->second.get()) g_bc = &g_buf_ctx_default;
+    if (group != nullptr && group->context_count != 0) --group->context_count;
+    const bool last_group_context = group != nullptr && group->context_count == 0;
+    if (g_bc == ctx) g_bc = &g_buf_ctx_default;
+    if (last_group_context && g_bg == group) g_bg = &g_buf_group_default;
     g_buf_ctxs.erase(it);
+    if (last_group_context) {
+        const auto group_it = g_buf_groups.find(group_id);
+        if (group_it != g_buf_groups.end() && group_it->second.get() == group) g_buf_groups.erase(group_it);
+    }
 }
 
 void mg_driver_vertex_array_bound(GLuint driver_array) {
