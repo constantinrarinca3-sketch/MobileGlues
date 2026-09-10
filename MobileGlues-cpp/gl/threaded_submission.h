@@ -26,6 +26,21 @@ constexpr size_t kInlineCopyBytes = 192;
 
 using command_fn = void (*)(void*);
 
+// Semantic metadata for the PZ renderer compiler.  The worker still executes
+// every command in FIFO order; this only marks the boundaries that a later
+// coalescer must never cross.
+enum class command_kind : uint8_t {
+    state,
+    uniform,
+    resource_write,
+    draw,
+    barrier,
+};
+
+inline bool endsRendererSegment(command_kind kind) {
+    return kind == command_kind::resource_write || kind == command_kind::draw || kind == command_kind::barrier;
+}
+
 struct reservation {
     void* storage;
     uint64_t sequence;
@@ -35,7 +50,7 @@ struct reservation {
 // Android library supplies these from threaded_submission.cpp.
 bool active() __attribute__((weak));
 reservation reserve(command_fn execute, command_fn destroy, size_t payload_size,
-                    size_t payload_alignment) __attribute__((weak));
+                    size_t payload_alignment, command_kind kind) __attribute__((weak));
 void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
 void flush_pending() __attribute__((weak));
@@ -61,14 +76,18 @@ inline bool availableAndActive() {
     return active != nullptr && reserve != nullptr && publish != nullptr && wait != nullptr && active();
 }
 
-template <typename Command, typename... Args> uint64_t enqueue(Args&&... args) {
+template <typename Command, typename... Args> uint64_t enqueueAs(command_kind kind, Args&&... args) {
     static_assert(sizeof(Command) <= kCommandPayloadBytes, "threaded command is too large");
     static_assert(alignof(Command) <= alignof(std::max_align_t), "threaded command alignment is too large");
-    const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command));
+    const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command), kind);
     if (slot.storage == nullptr) return 0;
     new (slot.storage) Command(std::forward<Args>(args)...);
     publish(slot.sequence);
     return slot.sequence;
+}
+
+template <typename Command, typename... Args> uint64_t enqueue(Args&&... args) {
+    return enqueueAs<Command>(command_kind::barrier, std::forward<Args>(args)...);
 }
 
 template <typename Fn, typename R, typename... Args> struct call_command {
@@ -99,11 +118,11 @@ template <typename Fn, typename... Args> struct call_command<Fn, void, Args...> 
 };
 
 template <typename R, typename... Args>
-R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
+R dispatch_call_as(command_kind kind, R (*function)(Args...), bool synchronous, Args... args) {
     if (!availableAndActive()) return function(args...);
     if constexpr (std::is_void_v<R>) {
         using command = call_command<decltype(function), void, Args...>;
-        const uint64_t sequence = enqueue<command>(function, args...);
+        const uint64_t sequence = enqueueAs<command>(kind, function, args...);
         if (sequence == 0) {
             function(args...);
             return;
@@ -112,11 +131,15 @@ R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
     } else {
         R result{};
         using command = call_command<decltype(function), R, Args...>;
-        const uint64_t sequence = enqueue<command>(function, &result, args...);
+        const uint64_t sequence = enqueueAs<command>(kind, function, &result, args...);
         if (sequence == 0) return function(args...);
         wait(sequence);
         return result;
     }
+}
+
+template <typename R, typename... Args> R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
+    return dispatch_call_as(command_kind::barrier, function, synchronous, args...);
 }
 
 enum class slot_policy : uint8_t {
@@ -137,6 +160,30 @@ inline bool nameStartsWith(const char* value, const char* prefix) {
 inline bool isDrawCommand(const char* name) {
     return nameStartsWith(name, "glDrawArrays") || nameStartsWith(name, "glDrawElements") ||
            nameStartsWith(name, "glDrawRangeElements") || nameStartsWith(name, "glMultiDraw");
+}
+
+inline command_kind classifyCommand(const char* name) {
+    if (isDrawCommand(name)) return command_kind::draw;
+    if (nameStartsWith(name, "glUniform") || nameStartsWith(name, "glProgramUniform"))
+        return command_kind::uniform;
+    if (nameStartsWith(name, "glTexImage") || nameStartsWith(name, "glTexSubImage") ||
+        nameStartsWith(name, "glCompressedTex") || nameStartsWith(name, "glCopyTex") ||
+        nameStartsWith(name, "glBufferData") || nameStartsWith(name, "glBufferSubData") ||
+        nameStartsWith(name, "glBufferStorage") || nameEquals(name, "glGenerateMipmap"))
+        return command_kind::resource_write;
+    if (nameStartsWith(name, "glBind") || nameStartsWith(name, "glUseProgram") ||
+        nameStartsWith(name, "glActiveTexture") || nameStartsWith(name, "glEnable") ||
+        nameStartsWith(name, "glDisable") || nameStartsWith(name, "glBlend") ||
+        nameStartsWith(name, "glColorMask") || nameStartsWith(name, "glCullFace") ||
+        nameStartsWith(name, "glDepth") || nameStartsWith(name, "glFrontFace") ||
+        nameStartsWith(name, "glLineWidth") || nameStartsWith(name, "glPixelStore") ||
+        nameStartsWith(name, "glPolygonOffset") || nameStartsWith(name, "glScissor") ||
+        nameStartsWith(name, "glStencil") || nameStartsWith(name, "glVertexAttrib") ||
+        nameStartsWith(name, "glVertexBinding") || nameStartsWith(name, "glViewport") ||
+        nameStartsWith(name, "glClearColor") || nameStartsWith(name, "glClearDepth") ||
+        nameStartsWith(name, "glClearStencil"))
+        return command_kind::state;
+    return command_kind::barrier;
 }
 
 inline slot_policy policyForName(const char* name) {
@@ -279,7 +326,7 @@ bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned element
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, location, count, value, bytes) != 0;
+    return enqueueAs<command>(command_kind::uniform, function, location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
@@ -288,7 +335,7 @@ inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLf
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, location, count, transpose, value, bytes) != 0;
+    return enqueueAs<command>(command_kind::uniform, function, location, count, transpose, value, bytes) != 0;
 }
 
 template <typename T>
@@ -297,7 +344,7 @@ bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = program_uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, program, location, count, value, bytes) != 0;
+    return enqueueAs<command>(command_kind::uniform, function, program, location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
@@ -306,7 +353,7 @@ inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, c
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = program_uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, program, location, count, transpose, value, bytes) != 0;
+    return enqueueAs<command>(command_kind::uniform, function, program, location, count, transpose, value, bytes) != 0;
 }
 
 template <typename Fn, typename... Args> bool tryUniformCopy(Fn, unsigned, Args...) { return false; }
@@ -341,7 +388,8 @@ bool tryBufferCopy(void (*function)(GLenum, GLsizeiptr, const void*, Last), GLen
         std::memcpy(copy, data, static_cast<size_t>(size));
     }
     using command = owned_pointer_command<decltype(function), GLenum, GLsizeiptr, const void*, Last>;
-    const uint64_t sequence = enqueue<command>(function, copy, target, size, copy, last);
+    const uint64_t sequence =
+        enqueueAs<command>(command_kind::resource_write, function, copy, target, size, copy, last);
     if (sequence == 0) std::free(copy);
     return sequence != 0;
 }
@@ -356,7 +404,8 @@ inline bool tryBufferCopy(void (*function)(GLenum, GLintptr, GLsizeiptr, const v
         std::memcpy(copy, data, static_cast<size_t>(size));
     }
     using command = owned_pointer_command<decltype(function), GLenum, GLintptr, GLsizeiptr, const void*>;
-    const uint64_t sequence = enqueue<command>(function, copy, target, offset, size, copy);
+    const uint64_t sequence =
+        enqueueAs<command>(command_kind::resource_write, function, copy, target, offset, size, copy);
     if (sequence == 0) std::free(copy);
     return sequence != 0;
 }
@@ -372,11 +421,13 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     using function_type = R (*)(Args...);
 
     constexpr explicit mg_ts_dispatch_slot(const char* name = "")
-        : function_(nullptr), name_(name), policy_(mg_ts::slot_policy::automatic), uniform_elements_(0) {}
+        : function_(nullptr), name_(name), policy_(mg_ts::slot_policy::automatic),
+          kind_(mg_ts::command_kind::barrier), uniform_elements_(0) {}
 
     mg_ts_dispatch_slot& operator=(function_type function) {
         function_ = function;
         policy_ = mg_ts::policyForName(name_);
+        kind_ = mg_ts::classifyCommand(name_);
         uniform_elements_ = policy_ == mg_ts::slot_policy::uniform_copy ? mg_ts::uniformElementsForName(name_) : 0;
         return *this;
     }
@@ -403,7 +454,8 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
                                      (has_pointer &&
                                       (policy_ != mg_ts::slot_policy::pointer_offset ||
                                        !mg_ts::pointerArgumentsLookLikeOffsets(args...)));
-            mg_ts::dispatch_call(function_, synchronous, args...);
+            mg_ts::dispatch_call_as(synchronous ? mg_ts::command_kind::barrier : kind_, function_, synchronous,
+                                    args...);
             if (policy_ == mg_ts::slot_policy::packet_flush && mg_ts::flush_pending != nullptr)
                 mg_ts::flush_pending();
         } else {
@@ -415,6 +467,7 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     function_type function_;
     const char* name_;
     mg_ts::slot_policy policy_;
+    mg_ts::command_kind kind_;
     unsigned uniform_elements_;
 };
 

@@ -172,3 +172,9 @@ This path changes EGL context ownership and is deliberately isolated from the fr
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.
+
+The separate `zomdroid-pz-renderer-experimental` branch also classifies each queued command as
+state, uniform, resource write, draw or barrier. Draws, resource writes and barriers close a safe
+renderer segment. Execution remains strictly FIFO at this stage; the metadata prepares later
+coalescing without changing rendered output. With the census enabled, the threaded report appends
+`renderer=segments/state/uniform/resource/draw/barrier` totals.

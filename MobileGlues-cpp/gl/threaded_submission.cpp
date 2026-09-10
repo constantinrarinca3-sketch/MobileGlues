@@ -29,10 +29,13 @@ struct packet_entry {
     command_fn execute = nullptr;
     command_fn destroy = nullptr;
     uint32_t payload_offset = 0;
+    command_kind kind = command_kind::barrier;
+    uint8_t segment = 0;
 };
 
 struct alignas(std::max_align_t) command_packet {
     uint32_t count = 0;
+    uint8_t segment_count = 0;
     std::array<packet_entry, kCommandsPerPacket> entries;
     alignas(std::max_align_t) unsigned char payload[kPacketPayloadBytes];
 };
@@ -54,7 +57,7 @@ class submission_state {
     bool isActive() const { return active_.load(std::memory_order_acquire); }
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
-                               size_t payload_alignment) {
+                               size_t payload_alignment, command_kind kind) {
         if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
@@ -71,6 +74,9 @@ class submission_state {
         entry.execute = execute;
         entry.destroy = destroy;
         entry.payload_offset = static_cast<uint32_t>(payload_offset);
+        entry.kind = kind;
+        entry.segment = pending_segment_;
+        reserved_kind_ = kind;
         reserved_payload_end_ = payload_offset + payload_size;
         reservation_open_ = true;
         return {packet.payload + payload_offset, producer_head_ + 1};
@@ -81,6 +87,7 @@ class submission_state {
         reservation_open_ = false;
         pending_payload_bytes_ = reserved_payload_end_;
         ++pending_count_;
+        if (endsRendererSegment(reserved_kind_)) ++pending_segment_;
 
         if (mg_pz_census_active) ++submitted_commands_;
 
@@ -232,7 +239,8 @@ class submission_state {
         LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION frames=%llu submitted=%llu executed=%llu packets=%llu "
               "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
               "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
-              "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu",
+              "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu "
+              "renderer=segments:%llu/state:%llu/uniform:%llu/resource:%llu/draw:%llu/barrier:%llu",
               static_cast<unsigned long long>(frames),
               static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
@@ -254,7 +262,13 @@ class submission_state {
               static_cast<unsigned long long>(queue_highwater_),
               static_cast<unsigned long long>(packet_highwater_),
               static_cast<unsigned long long>(swaps_completed_.load(std::memory_order_relaxed)),
-              static_cast<unsigned long long>(swap_failures_.load(std::memory_order_relaxed)))
+              static_cast<unsigned long long>(swap_failures_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_segments_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_state_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_uniform_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_resource_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_draw_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(renderer_barrier_.load(std::memory_order_relaxed)))
     }
 
   private:
@@ -281,6 +295,7 @@ class submission_state {
         if (pending_count_ == 0) return producer_head_;
         command_packet& packet = queue_[producer_head_ & kPacketMask];
         packet.count = static_cast<uint32_t>(pending_count_);
+        packet.segment_count = packet.entries[pending_count_ - 1].segment + 1;
         const uint64_t sequence = ++producer_head_;
         if (mg_pz_census_active) {
             ++packets_submitted_;
@@ -298,6 +313,7 @@ class submission_state {
         pending_count_ = 0;
         pending_payload_bytes_ = 0;
         reserved_payload_end_ = 0;
+        pending_segment_ = 0;
         signalWorker();
         return sequence;
     }
@@ -333,6 +349,28 @@ class submission_state {
             if (consumer_tail < available) {
                 command_packet& packet = queue_[consumer_tail & kPacketMask];
                 const uint32_t count = packet.count;
+                if (mg_pz_census_active) {
+                    renderer_segments_.fetch_add(packet.segment_count, std::memory_order_relaxed);
+                    for (uint32_t index = 0; index < count; ++index) {
+                        switch (packet.entries[index].kind) {
+                        case command_kind::state:
+                            renderer_state_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        case command_kind::uniform:
+                            renderer_uniform_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        case command_kind::resource_write:
+                            renderer_resource_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        case command_kind::draw:
+                            renderer_draw_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        case command_kind::barrier:
+                            renderer_barrier_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
+                    }
+                }
                 for (uint32_t index = 0; index < count; ++index) {
                     packet_entry& entry = packet.entries[index];
                     void* payload = packet.payload + entry.payload_offset;
@@ -425,6 +463,8 @@ class submission_state {
     size_t pending_count_ = 0;
     size_t pending_payload_bytes_ = 0;
     size_t reserved_payload_end_ = 0;
+    uint8_t pending_segment_ = 0;
+    command_kind reserved_kind_ = command_kind::barrier;
     bool reservation_open_ = false;
     std::atomic<bool> active_{false};
     std::thread::id owner_;
@@ -455,6 +495,12 @@ class submission_state {
     std::atomic<uint64_t> swaps_submitted_{0};
     std::atomic<uint64_t> swaps_completed_{0};
     std::atomic<uint64_t> swap_failures_{0};
+    std::atomic<uint64_t> renderer_segments_{0};
+    std::atomic<uint64_t> renderer_state_{0};
+    std::atomic<uint64_t> renderer_uniform_{0};
+    std::atomic<uint64_t> renderer_resource_{0};
+    std::atomic<uint64_t> renderer_draw_{0};
+    std::atomic<uint64_t> renderer_barrier_{0};
 };
 
 submission_state& state() {
@@ -492,8 +538,9 @@ struct swap_command {
 } // namespace
 
 bool active() { return state().ownsForCaller(); }
-reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment) {
-    return state().reserveCommand(execute, destroy, payload_size, payload_alignment);
+reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment,
+                    command_kind kind) {
+    return state().reserveCommand(execute, destroy, payload_size, payload_alignment, kind);
 }
 void publish(uint64_t sequence) { state().publishCommand(sequence); }
 void wait(uint64_t sequence) { state().waitFor(sequence); }
@@ -537,7 +584,8 @@ bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn ful
 
     EGLBoolean synchronous_value = EGL_FALSE;
     const reservation slot = state().reserveCommand(&swap_command::execute, &swap_command::destroy,
-                                                     sizeof(swap_command), alignof(swap_command));
+                                                     sizeof(swap_command), alignof(swap_command),
+                                                     command_kind::barrier);
     if (slot.storage == nullptr) {
         std::free(copied_rects);
         return false;

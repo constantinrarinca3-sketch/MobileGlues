@@ -95,6 +95,20 @@ EGLBoolean fakeSwap(EGLDisplay, EGLSurface) {
 } // namespace
 
 int main() {
+    expect(mg_ts::classifyCommand("glUseProgram") == mg_ts::command_kind::state,
+           "program changes are renderer state");
+    expect(mg_ts::classifyCommand("glUniform4fv") == mg_ts::command_kind::uniform,
+           "uniform writes stay inside a renderer segment");
+    expect(mg_ts::classifyCommand("glBufferSubData") == mg_ts::command_kind::resource_write,
+           "resource writes terminate renderer segments");
+    expect(mg_ts::classifyCommand("glDrawElements") == mg_ts::command_kind::draw,
+           "draws terminate renderer segments");
+    expect(mg_ts::classifyCommand("glReadPixels") == mg_ts::command_kind::barrier,
+           "unknown and synchronous operations are barriers");
+    expect(!mg_ts::endsRendererSegment(mg_ts::command_kind::state) &&
+               mg_ts::endsRendererSegment(mg_ts::command_kind::draw),
+           "only consumers and barriers close a renderer segment");
+
     const std::thread::id producer = std::this_thread::get_id();
     const EGLDisplay display = reinterpret_cast<EGLDisplay>(1);
     const EGLSurface surface = reinterpret_cast<EGLSurface>(2);
