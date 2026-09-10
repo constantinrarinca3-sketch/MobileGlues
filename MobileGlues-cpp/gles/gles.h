@@ -6,6 +6,7 @@
 // End of Source File Header
 
 #include <GL/gl.h>
+#include "../gl/threaded_submission.h"
 
 #ifndef MOBILEGLUES_GLES_H
 #define MOBILEGLUES_GLES_H
@@ -480,7 +481,11 @@ extern "C"
     GL_FUNC_TYPEDEF(void, glMultiDrawElementsBaseVertexEXT, GLenum mode, const GLsizei* count, GLenum type,
                     const void* const* indices, GLsizei drawcount, const GLint* basevertex)
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define GL_FUNC_DECL(name) mg_ts_dispatch_slot<name##_PTR> name{#name};
+#else
 #define GL_FUNC_DECL(name) name##_PTR name;
+#endif
 
     struct gles_func_t {
         GL_FUNC_DECL(glActiveTexture)

@@ -236,7 +236,9 @@ bool mg_multi_draw_elements_basevertex_ext_available() {
                     (g_gles_caps.GL_EXT_draw_elements_base_vertex || g_gles_caps.GL_OES_draw_elements_base_vertex) &&
                     mg_gles_has_extension("GL_EXT_multi_draw_arrays");
         LOG_D("multidraw: multibasevertex available=%d (ptr=%p bv_ext=%d/%d)", (int)available,
-              (void*)GLES.glMultiDrawElementsBaseVertexEXT, g_gles_caps.GL_EXT_draw_elements_base_vertex,
+              reinterpret_cast<void*>(static_cast<glMultiDrawElementsBaseVertexEXT_PTR>(
+                  GLES.glMultiDrawElementsBaseVertexEXT)),
+              g_gles_caps.GL_EXT_draw_elements_base_vertex,
               g_gles_caps.GL_OES_draw_elements_base_vertex)
     }
     return available;
@@ -1188,7 +1190,11 @@ void mg_glMultiDrawElements_multiarrays(GLenum mode, const GLsizei* count, GLenu
     const bool probing = (g_mda_state == md_probe_state_t::Unprobed);
     if (probing) mg_md_drain();
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_ts::dispatch_call(g_mde_ext, true, mode, count, type, indices, primcount);
+#else
     g_mde_ext(mode, count, type, indices, primcount);
+#endif
 
     if (probing) {
         const GLenum err = mg_md_check();
@@ -1752,7 +1758,11 @@ void mg_glMultiDrawArrays_multiarrays(GLenum mode, const GLint* first, const GLs
     const bool probing = (g_arrays_mda_state == md_probe_state_t::Unprobed);
     if (probing) mg_md_drain();
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_ts::dispatch_call(g_mda_ext, true, mode, first, count, drawcount);
+#else
     g_mda_ext(mode, first, count, drawcount);
+#endif
 
     if (probing) {
         const GLenum err = mg_md_check();

@@ -144,3 +144,24 @@ requests a mipmapped minification filter and MobileGlues applies its existing le
 fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling remains on level 0.
 Other sizes, texture targets and textures that have not taken the fallback remain on the normal
 driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.
+
+## Dedicated GL submission thread (high-risk experiment)
+
+The separate `zomdroid-threaded-submission-experimental` branch can move backend GL submission to
+a worker thread:
+
+```text
+MOBILEGLUES_PZ_THREADED_SUBMISSION=1  # worker owns the EGL context and submits GL
+MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission on the render thread (default)
+```
+
+The application thread retains MobileGlues state translation and records ordered backend commands
+into a fixed SPSC queue. Commands with return values, output pointers or caller-owned input that
+cannot safely outlive the call wait for the worker. Small uniform arrays and buffer uploads are
+copied before returning so those calls can remain asynchronous. Presentation permits at most one
+submitted frame in flight, preventing unbounded latency while allowing CPU translation for the next
+frame to overlap driver submission for the current one.
+
+This path changes EGL context ownership and is deliberately isolated from the frozen stable branch.
+Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows synchronous waits, queue-full waits, presentation
+wait time, maximum queue depth and swap failures. The report does not require the general census.

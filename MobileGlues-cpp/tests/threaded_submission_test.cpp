@@ -1,0 +1,139 @@
+// Host-side ordering and lifetime checks for experimental GL command submission.
+#include "gl/pz_census.h"
+#include "gl/threaded_submission.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+bool mg_pz_threaded_submission_active = true;
+
+extern "C" void write_log(const char*, ...) {}
+extern "C" void write_log_n(const char*, ...) {}
+int __android_log_print(int, const char*, const char*, ...) { return 0; }
+
+namespace {
+
+int failures = 0;
+std::mutex mutex;
+std::condition_variable entered_cv;
+std::condition_variable release_cv;
+bool blocker_entered = false;
+bool blocker_released = false;
+std::thread::id worker_id;
+std::vector<int> order;
+unsigned char uploaded[4] = {};
+GLfloat uniform[4] = {};
+
+void expect(bool condition, const char* message) {
+    if (condition) return;
+    std::printf("FAIL %s\n", message);
+    ++failures;
+}
+
+EGLBoolean fakeBindAPI(EGLenum api) { return api == EGL_OPENGL_ES_API ? EGL_TRUE : EGL_FALSE; }
+
+EGLBoolean fakeMakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext context) {
+    if (context != EGL_NO_CONTEXT) worker_id = std::this_thread::get_id();
+    return EGL_TRUE;
+}
+
+EGLBoolean fakeReleaseThread() { return EGL_TRUE; }
+
+void fakeBlock(GLint value) {
+    std::unique_lock<std::mutex> lock(mutex);
+    order.push_back(value);
+    blocker_entered = true;
+    entered_cv.notify_one();
+    release_cv.wait(lock, [] { return blocker_released; });
+}
+
+void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(2);
+    if (size == 4 && data != nullptr) std::memcpy(uploaded, data, 4);
+}
+
+void fakeUniform4fv(GLint, GLsizei count, const GLfloat* value) {
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(3);
+    if (count == 1 && value != nullptr) std::memcpy(uniform, value, sizeof(uniform));
+}
+
+GLint fakeQuery() {
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(4);
+    return 77;
+}
+
+EGLBoolean fakeSwap(EGLDisplay, EGLSurface) {
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(5);
+    return EGL_TRUE;
+}
+
+} // namespace
+
+int main() {
+    const std::thread::id producer = std::this_thread::get_id();
+    const EGLDisplay display = reinterpret_cast<EGLDisplay>(1);
+    const EGLSurface surface = reinterpret_cast<EGLSurface>(2);
+    const EGLContext context = reinterpret_cast<EGLContext>(3);
+
+    expect(mg_ts::adopt_context(display, surface, surface, context, fakeBindAPI, fakeMakeCurrent,
+                                fakeReleaseThread),
+           "worker must adopt the context");
+    expect(mg_ts::active(), "submission must be active for the producer");
+    expect(worker_id != producer, "backend context must live on a different thread");
+
+    mg_ts_dispatch_slot<void (*)(GLint)> block{"glClear"};
+    mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
+    mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
+    mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
+    block = fakeBlock;
+    buffer_data = fakeBufferData;
+    uniform4fv = fakeUniform4fv;
+    query = fakeQuery;
+
+    block(1);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered_cv.wait(lock, [] { return blocker_entered; });
+    }
+
+    unsigned char source[4] = {1, 2, 3, 4};
+    GLfloat source_uniform[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    buffer_data(GL_ARRAY_BUFFER, 4, source, GL_STREAM_DRAW);
+    uniform4fv(9, 1, source_uniform);
+    std::memset(source, 9, sizeof(source));
+    for (float& value : source_uniform) value = 9.0f;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        blocker_released = true;
+    }
+    release_cv.notify_one();
+
+    expect(query() == 77, "a value-returning command must wait for preceding work");
+    expect(uploaded[0] == 1 && uploaded[1] == 2 && uploaded[2] == 3 && uploaded[3] == 4,
+           "buffer bytes must be copied before returning to the caller");
+    expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
+           "uniform bytes must be copied before returning to the caller");
+
+    EGLBoolean swap_result = EGL_FALSE;
+    expect(mg_ts::submit_swap(display, surface, fakeSwap, nullptr, nullptr, 0, false, &swap_result),
+           "swap must enter the worker queue");
+    expect(swap_result == EGL_TRUE, "an asynchronous swap must acknowledge queueing");
+    expect(mg_ts::release_context(), "release must drain work and unbind the worker context");
+    mg_ts::shutdown();
+
+    expect(order == std::vector<int>({1, 2, 3, 4, 5}), "backend calls must preserve producer order");
+    expect(!mg_ts::active(), "submission must be inactive after release");
+
+    std::printf("%s (%d failures)\n", failures ? "FAILED" : "threaded submission checks passed", failures);
+    return failures != 0;
+}

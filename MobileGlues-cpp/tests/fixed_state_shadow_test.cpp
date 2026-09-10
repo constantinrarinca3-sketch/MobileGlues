@@ -23,6 +23,7 @@ bool mg_pz_buffer_discard_coalesce_active = false;
 bool mg_pz_state_shadow_active = true;
 bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
+bool mg_pz_threaded_submission_active = false;
 void mg_pz_census_gl_call(const char*) {}
 
 static int failures = 0;

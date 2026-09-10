@@ -12,6 +12,7 @@
 #include "../gl/log.h"
 #include "../gl/mg.h"
 #include "../gl/pz_census.h"
+#include "../gl/threaded_submission.h"
 #include "../gles/loader.h"
 #include "../glx/lookup.h"
 #include "loader.h"
@@ -408,12 +409,26 @@ namespace {
     // and every path that presents a frame has to go through here.
     EGLBoolean presentSurface(EGLDisplay dpy, EGLSurface surface) {
         LOAD_EGL(eglSwapBuffers)
-        if (global_settings.fsr1_setting == FSR1_Quality_Preset::Disabled) {
-            return egl_eglSwapBuffers(dpy, surface);
+        const bool fsr_on = global_settings.fsr1_setting != FSR1_Quality_Preset::Disabled;
+        if (fsr_on) ApplyFSR();
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::availableAndActive() && mg_ts::submit_swap != nullptr) {
+            EGLBoolean result = EGL_FALSE;
+            if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, nullptr, nullptr, 0, fsr_on, &result)) {
+                if (fsr_on) CheckResolutionChange(dpy, surface);
+                return result;
+            }
+            // A failed custom reservation must still execute on the thread that
+            // owns the context. This is synchronous and only an allocation/error fallback.
+            const EGLBoolean result_fallback = mg_ts::dispatch_call(egl_eglSwapBuffers, true, dpy, surface);
+            if (fsr_on) CheckResolutionChange(dpy, surface);
+            return result_fallback;
         }
-        ApplyFSR();
+#endif
+
         const EGLBoolean result = egl_eglSwapBuffers(dpy, surface);
-        CheckResolutionChange(dpy, surface);
+        if (fsr_on) CheckResolutionChange(dpy, surface);
         return result;
     }
 
@@ -428,6 +443,16 @@ namespace {
                                         SwapWithDamageFn backend) {
         const bool fsr_on = global_settings.fsr1_setting != FSR1_Quality_Preset::Disabled;
         if (backend != nullptr && !fsr_on) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+            if (mg_ts::availableAndActive() && mg_ts::submit_swap != nullptr) {
+                EGLBoolean result = EGL_FALSE;
+                LOAD_EGL(eglSwapBuffers)
+                if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, backend, rects, n_rects, false, &result)) {
+                    return result;
+                }
+                return mg_ts::dispatch_call(backend, true, dpy, surface, rects, n_rects);
+            }
+#endif
             return backend(dpy, surface, rects, n_rects);
         }
         // Once, not once a frame: a damage swap runs every frame the host presents
@@ -501,16 +526,22 @@ extern "C"
         LOG_D("eglGetError");
         LOAD_EGL(eglGetError)
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+        const auto backend_error = [&]() { return mg_ts::dispatch_call(egl_eglGetError, true); };
+#else
+        const auto backend_error = [&]() { return egl_eglGetError(); };
+#endif
+
         if (frontend_error != EGL_SUCCESS) {
             const EGLint error = frontend_error;
             frontend_error = EGL_SUCCESS;
             // A virtual failure replaces, rather than queues behind, a stale backend error.
-            const EGLint discarded = egl_eglGetError();
+            const EGLint discarded = backend_error();
             ETRACE("eglGetError -> %s (virtual; backend had %s)", mg_egl_error_name(error),
                    mg_egl_error_name(discarded));
             return error;
         }
-        const EGLint error = egl_eglGetError();
+        const EGLint error = backend_error();
         if (error != EGL_SUCCESS) ETRACE("eglGetError -> %s", mg_egl_error_name(error));
         return error;
     }
@@ -552,8 +583,17 @@ extern "C"
             return EGL_TRUE;
         }
         ETRACE("eglTerminate(%p): last holder, terminating for real", dpy);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::owns_context_for_caller != nullptr && mg_ts::owns_context_for_caller() &&
+            g_current_ctx != nullptr && g_current_ctx->display == dpy) {
+            mg_ts::release_context();
+        }
+#endif
         const EGLBoolean result = egl_eglTerminate(dpy);
         if (result == EGL_TRUE) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+            if (mg_ts::shutdown != nullptr) mg_ts::shutdown();
+#endif
             mg_context_forget_display(dpy);
             // EGL's contract is that the extension string lives as long as the
             // display, so the cache entry outlives every caller's pointer -- but
@@ -662,12 +702,21 @@ extern "C"
     EGL_API EGLBoolean eglWaitClient(void) {
         LOG_D("eglWaitClient");
         LOAD_EGL(eglWaitClient)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglWaitClient, true);
+#else
         return egl_eglWaitClient();
+#endif
     }
 
     EGL_API EGLBoolean eglReleaseThread(void) {
         LOG_D("eglReleaseThread");
         LOAD_EGL(eglReleaseThread)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::owns_context_for_caller != nullptr && mg_ts::owns_context_for_caller()) {
+            mg_ts::release_context();
+        }
+#endif
         const EGLBoolean result = egl_eglReleaseThread();
         ETRACE("eglReleaseThread -> %s", result == EGL_TRUE ? "ok" : "FAILED");
         if (result == EGL_TRUE) {
@@ -701,19 +750,31 @@ extern "C"
     EGL_API EGLBoolean eglBindTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
         LOG_D("eglBindTexImage, dpy: %p, surface: %p, buffer: %d", dpy, surface, buffer);
         LOAD_EGL(eglBindTexImage)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglBindTexImage, true, dpy, surface, buffer);
+#else
         return egl_eglBindTexImage(dpy, surface, buffer);
+#endif
     }
 
     EGL_API EGLBoolean eglReleaseTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
         LOG_D("eglReleaseTexImage, dpy: %p, surface: %p, buffer: %d", dpy, surface, buffer);
         LOAD_EGL(eglReleaseTexImage)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglReleaseTexImage, true, dpy, surface, buffer);
+#else
         return egl_eglReleaseTexImage(dpy, surface, buffer);
+#endif
     }
 
     EGL_API EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
         LOG_D("eglSwapInterval, dpy: %p, interval: %d", dpy, interval);
         LOAD_EGL(eglSwapInterval)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglSwapInterval, true, dpy, interval);
+#else
         return egl_eglSwapInterval(dpy, interval);
+#endif
     }
 
     EGL_API EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share_context,
@@ -792,29 +853,83 @@ extern "C"
         LOG_D("eglMakeCurrent, dpy: %p, draw: %p, read: %p, ctx: %p", dpy, draw, read, ctx);
         LOAD_EGL(eglMakeCurrent)
         MGContext* before = mg_context_find(ctx);
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+        const bool threaded_current = mg_ts::owns_context_for_caller != nullptr &&
+                                      mg_ts::owns_context_for_caller();
+        if (threaded_current && g_current_ctx != nullptr && g_current_ctx->display == dpy &&
+            g_current_ctx->handle == ctx && g_current_ctx->draw == draw && g_current_ctx->read == read) {
+            return EGL_TRUE;
+        }
+
+        MGContext* previous = threaded_current ? g_current_ctx : nullptr;
+        if (threaded_current && !mg_ts::release_context()) return EGL_FALSE;
+#endif
+
         const EGLBoolean result = egl_eglMakeCurrent(dpy, draw, read, ctx);
         ETRACE("eglMakeCurrent(dpy=%p, draw=%p, read=%p, ctx=%p, MGContext=%llu) -> %s", dpy, draw, read, ctx,
                before ? before->id : 0ULL, result == EGL_TRUE ? "ok" : "FAILED");
         // Only on success: a failed make-current leaves the previous context
         // current, so re-pointing the record would describe the wrong one.
-        if (result == EGL_TRUE) mg_context_make_current(dpy, draw, read, ctx);
+        if (result == EGL_TRUE) {
+            mg_context_make_current(dpy, draw, read, ctx);
+#if defined(ZOMDROID_EXPERIMENTAL)
+            if (ctx != EGL_NO_CONTEXT && mg_pz_threaded_submission_active && mg_ts::adopt_context != nullptr) {
+                LOAD_EGL(eglBindAPI)
+                LOAD_EGL(eglReleaseThread)
+                mg_ts::adopt_context(dpy, draw, read, ctx, egl_eglBindAPI, egl_eglMakeCurrent,
+                                     egl_eglReleaseThread);
+            }
+#endif
+        }
+#if defined(ZOMDROID_EXPERIMENTAL)
+        else if (previous != nullptr) {
+            // Releasing the worker was necessary before attempting the backend
+            // switch. Restore EGL's failed-make-current guarantee for the old context.
+            if (egl_eglMakeCurrent(previous->display, previous->draw, previous->read, previous->handle) == EGL_TRUE &&
+                mg_ts::adopt_context != nullptr) {
+                LOAD_EGL(eglBindAPI)
+                LOAD_EGL(eglReleaseThread)
+                mg_ts::adopt_context(previous->display, previous->draw, previous->read, previous->handle,
+                                     egl_eglBindAPI, egl_eglMakeCurrent, egl_eglReleaseThread);
+            }
+        }
+#endif
         return result;
     }
 
     EGL_API EGLContext eglGetCurrentContext(void) {
         LOG_D("eglGetCurrentContext");
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::owns_context_for_caller != nullptr && mg_ts::owns_context_for_caller() &&
+            g_current_ctx != nullptr) {
+            return g_current_ctx->handle;
+        }
+#endif
         LOAD_EGL(eglGetCurrentContext)
         return egl_eglGetCurrentContext();
     }
 
     EGL_API EGLSurface eglGetCurrentSurface(EGLint readdraw) {
         LOG_D("eglGetCurrentSurface, readdraw: %d", readdraw);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::owns_context_for_caller != nullptr && mg_ts::owns_context_for_caller() &&
+            g_current_ctx != nullptr) {
+            return readdraw == EGL_READ ? g_current_ctx->read : g_current_ctx->draw;
+        }
+#endif
         LOAD_EGL(eglGetCurrentSurface)
         return egl_eglGetCurrentSurface(readdraw);
     }
 
     EGL_API EGLDisplay eglGetCurrentDisplay(void) {
         LOG_D("eglGetCurrentDisplay");
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (mg_ts::owns_context_for_caller != nullptr && mg_ts::owns_context_for_caller() &&
+            g_current_ctx != nullptr) {
+            return g_current_ctx->display;
+        }
+#endif
         LOAD_EGL(eglGetCurrentDisplay)
         return egl_eglGetCurrentDisplay();
     }
@@ -847,13 +962,21 @@ extern "C"
     EGL_API EGLBoolean eglWaitGL(void) {
         LOG_D("eglWaitGL");
         LOAD_EGL(eglWaitGL)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglWaitGL, true);
+#else
         return egl_eglWaitGL();
+#endif
     }
 
     EGL_API EGLBoolean eglWaitNative(EGLint engine) {
         LOG_D("eglWaitNative, engine: %d", engine);
         LOAD_EGL(eglWaitNative)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglWaitNative, true, engine);
+#else
         return egl_eglWaitNative(engine);
+#endif
     }
 
     EGL_API EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
@@ -889,7 +1012,11 @@ extern "C"
     EGL_API EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target) {
         LOG_D("eglCopyBuffers, dpy: %p, surface: %p, target: %p", dpy, surface, target);
         LOAD_EGL(eglCopyBuffers)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglCopyBuffers, true, dpy, surface, target);
+#else
         return egl_eglCopyBuffers(dpy, surface, target);
+#endif
     }
 
     EGL_API EGLDisplay eglGetPlatformDisplay(EGLenum platform, void* native_display, const EGLAttrib* attrib_list) {
@@ -947,44 +1074,72 @@ extern "C"
     EGL_API EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib* attrib_list) {
         LOG_D("eglCreateSync, dpy: %p, type: %d", dpy, type);
         LOAD_EGL_OR(eglCreateSync, setFrontendError(EGL_BAD_PARAMETER), EGL_NO_SYNC)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglCreateSync, true, dpy, type, attrib_list);
+#else
         return egl_eglCreateSync(dpy, type, attrib_list);
+#endif
     }
 
     EGL_API EGLBoolean eglDestroySync(EGLDisplay dpy, EGLSync sync) {
         LOG_D("eglDestroySync, dpy: %p, sync: %p", dpy, sync);
         LOAD_EGL_OR(eglDestroySync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglDestroySync, true, dpy, sync);
+#else
         return egl_eglDestroySync(dpy, sync);
+#endif
     }
 
     EGL_API EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags, EGLTime timeout) {
         LOG_D("eglClientWaitSync, dpy: %p, sync: %p", dpy, sync);
         LOAD_EGL_OR(eglClientWaitSync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglClientWaitSync, true, dpy, sync, flags, timeout);
+#else
         return egl_eglClientWaitSync(dpy, sync, flags, timeout);
+#endif
     }
 
     EGL_API EGLBoolean eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib* value) {
         LOG_D("eglGetSyncAttrib, dpy: %p, sync: %p, attribute: %d", dpy, sync, attribute);
         LOAD_EGL_OR(eglGetSyncAttrib, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglGetSyncAttrib, true, dpy, sync, attribute, value);
+#else
         return egl_eglGetSyncAttrib(dpy, sync, attribute, value);
+#endif
     }
 
     EGL_API EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags) {
         LOG_D("eglWaitSync, dpy: %p, sync: %p", dpy, sync);
         LOAD_EGL_OR(eglWaitSync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglWaitSync, true, dpy, sync, flags);
+#else
         return egl_eglWaitSync(dpy, sync, flags);
+#endif
     }
 
     EGL_API EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer,
                                     const EGLAttrib* attrib_list) {
         LOG_D("eglCreateImage, dpy: %p, ctx: %p, target: %d", dpy, ctx, target);
         LOAD_EGL_OR(eglCreateImage, setFrontendError(EGL_BAD_PARAMETER), EGL_NO_IMAGE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglCreateImage, true, dpy, ctx, target, buffer, attrib_list);
+#else
         return egl_eglCreateImage(dpy, ctx, target, buffer, attrib_list);
+#endif
     }
 
     EGL_API EGLBoolean eglDestroyImage(EGLDisplay dpy, EGLImage image) {
         LOG_D("eglDestroyImage, dpy: %p, image: %p", dpy, image);
         LOAD_EGL_OR(eglDestroyImage, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
+#if defined(ZOMDROID_EXPERIMENTAL)
+        return mg_ts::dispatch_call(egl_eglDestroyImage, true, dpy, image);
+#else
         return egl_eglDestroyImage(dpy, image);
+#endif
     }
 
     // An EGL name must resolve to THIS layer's wrapper.

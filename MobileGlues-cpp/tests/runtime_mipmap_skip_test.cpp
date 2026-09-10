@@ -13,6 +13,7 @@ bool mg_pz_buffer_discard_coalesce_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = true;
 bool mg_pz_quad_index_cache_active = false;
+bool mg_pz_threaded_submission_active = false;
 
 static int failures = 0;
 

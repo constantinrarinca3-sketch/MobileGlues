@@ -21,6 +21,7 @@ bool mg_pz_buffer_discard_coalesce_active = false;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
+bool mg_pz_threaded_submission_active = false;
 
 namespace {
 
@@ -350,6 +351,9 @@ void mg_pz_census_init(void) {
         runtime_mipmap_value != nullptr && std::strcmp(runtime_mipmap_value, "1") == 0;
     const char* quad_cache_value = std::getenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
     mg_pz_quad_index_cache_active = quad_cache_value != nullptr && std::strcmp(quad_cache_value, "1") == 0;
+    const char* threaded_submission_value = std::getenv("MOBILEGLUES_PZ_THREADED_SUBMISSION");
+    mg_pz_threaded_submission_active =
+        threaded_submission_value != nullptr && std::strcmp(threaded_submission_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -370,6 +374,8 @@ void mg_pz_census_init(void) {
     if (mg_pz_runtime_mipmap_skip_active) LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
     if (mg_pz_quad_index_cache_active)
         LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
+    if (mg_pz_threaded_submission_active)
+        LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_queue")
 #endif
 }
 

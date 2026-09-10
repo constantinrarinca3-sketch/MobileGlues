@@ -40,6 +40,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
+    setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active, "0 must disable the census");
@@ -51,6 +52,7 @@ int main() {
     expect(!mg_pz_state_shadow_active, "0 must disable the fixed-state shadow");
     expect(!mg_pz_runtime_mipmap_skip_active, "0 must disable runtime mipmap skipping");
     expect(!mg_pz_quad_index_cache_active, "0 must disable the quad index cache");
+    expect(!mg_pz_threaded_submission_active, "0 must disable threaded submission");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
     mg_pz_census_init();
@@ -64,6 +66,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "true", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "true", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "true", 1);
+    setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "true", 1);
     mg_pz_census_init();
     expect(!mg_pz_vao_fastpath_active, "only the exact value 1 may enable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "only the exact value 1 may enable the attribute fast path");
@@ -74,6 +77,7 @@ int main() {
     expect(!mg_pz_state_shadow_active, "only the exact value 1 may enable the fixed-state shadow");
     expect(!mg_pz_runtime_mipmap_skip_active, "only the exact value 1 may enable runtime mipmap skipping");
     expect(!mg_pz_quad_index_cache_active, "only the exact value 1 may enable the quad index cache");
+    expect(!mg_pz_threaded_submission_active, "only the exact value 1 may enable threaded submission");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "1", 1);
@@ -83,6 +87,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "1", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "1", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "1", 1);
+    setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
     mg_pz_census_init();
     expect(mg_pz_census_active, "1 must enable the census");
@@ -94,6 +99,7 @@ int main() {
     expect(mg_pz_state_shadow_active, "1 must enable the fixed-state shadow");
     expect(mg_pz_runtime_mipmap_skip_active, "1 must enable runtime mipmap skipping");
     expect(mg_pz_quad_index_cache_active, "1 must enable the quad index cache");
+    expect(mg_pz_threaded_submission_active, "1 must enable threaded submission");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
 
@@ -150,11 +156,13 @@ int main() {
     setenv("MOBILEGLUES_PZ_STATE_SHADOW", "0", 1);
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
+    setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active &&
                !mg_pz_uniform_fastpath_active && !mg_pz_buffer_streaming_active &&
                !mg_pz_buffer_discard_coalesce_active && !mg_pz_state_shadow_active &&
-               !mg_pz_runtime_mipmap_skip_active && !mg_pz_quad_index_cache_active,
+               !mg_pz_runtime_mipmap_skip_active && !mg_pz_quad_index_cache_active &&
+               !mg_pz_threaded_submission_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);

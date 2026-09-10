@@ -299,7 +299,13 @@ void InitGLESCapabilities() {
 void init_target_gles() {
     init_gl_state();
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Dispatch slots carry immutable function names used to select their copy/
+    // synchronization policy. A byte memset would erase those names.
+    g_gles_func = gles_func_t{};
+#else
     memset(&g_gles_func, 0, sizeof(g_gles_func));
+#endif
     INIT_GLES_FUNC(glActiveTexture)
     INIT_GLES_FUNC(glAttachShader)
     INIT_GLES_FUNC(glBindAttribLocation)
@@ -673,9 +679,12 @@ void init_target_gles() {
     INIT_GLES_FUNC(glMultiDrawElementsBaseVertexEXT)
     //    INIT_GLES_FUNC(glBruh)
 
-    LOG_D("glMultiDrawArraysIndirectEXT() @ 0x%x", GLES.glMultiDrawArraysIndirectEXT)
-    LOG_D("glMultiDrawElementsIndirectEXT() @ 0x%x", GLES.glMultiDrawElementsIndirectEXT)
-    LOG_D("glMultiDrawElementsBaseVertexEXT() @ 0x%x", GLES.glMultiDrawElementsBaseVertexEXT)
+    LOG_D("glMultiDrawArraysIndirectEXT() @ %p",
+          reinterpret_cast<void*>(static_cast<glMultiDrawArraysIndirectEXT_PTR>(GLES.glMultiDrawArraysIndirectEXT)))
+    LOG_D("glMultiDrawElementsIndirectEXT() @ %p",
+          reinterpret_cast<void*>(static_cast<glMultiDrawElementsIndirectEXT_PTR>(GLES.glMultiDrawElementsIndirectEXT)))
+    LOG_D("glMultiDrawElementsBaseVertexEXT() @ %p",
+          reinterpret_cast<void*>(static_cast<glMultiDrawElementsBaseVertexEXT_PTR>(GLES.glMultiDrawElementsBaseVertexEXT)))
 
     //    LOG_D("glBruh() @ 0x%x", GLES.glBruh)
 
