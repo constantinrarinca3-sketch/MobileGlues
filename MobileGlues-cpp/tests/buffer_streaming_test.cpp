@@ -13,6 +13,8 @@ bool mg_pz_buffer_streaming_active = true;
 bool mg_pz_buffer_discard_coalesce_active = true;
 bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
+struct gles_func_t g_gles_func{};
+struct gles_caps_t g_gles_caps{};
 
 static GLenum last_error = GL_NO_ERROR;
 static int failures = 0;
@@ -29,6 +31,7 @@ void mg_test_cancel_staging_map(GLuint buffer);
 void mg_test_complete_staging_upload(GLuint buffer);
 bool mg_test_try_elide_buffer_discard(GLenum target, GLuint buffer, GLsizeiptr size, GLenum usage);
 bool mg_test_buffer_discard_is_elided(GLuint buffer);
+int mg_test_choose_gpu_ring_slot(const bool* retired, size_t count, size_t current);
 
 static void expect(bool condition, const char* message) {
     if (condition) return;
@@ -70,6 +73,16 @@ int main() {
            "size changes stay on the direct path");
     expect(!mg_test_try_elide_buffer_discard(GL_ARRAY_BUFFER, buffer, 4096, GL_DYNAMIC_DRAW),
            "usage changes stay on the direct path");
+
+    bool retired[4] = {false, false, false, false};
+    expect(mg_test_choose_gpu_ring_slot(retired, 1, 0) == 1,
+           "a busy persistent backing allocates the next ring slot");
+    retired[0] = true;
+    expect(mg_test_choose_gpu_ring_slot(retired, 4, 3) == 0,
+           "a retired persistent backing is reused before waiting");
+    retired[0] = false;
+    expect(mg_test_choose_gpu_ring_slot(retired, 4, 3) == -1,
+           "a full busy ring requests the correctness fallback");
 
     handled = true;
     pointer = mg_test_try_staging_map(buffer, 16, 4080, write_discard, &handled);

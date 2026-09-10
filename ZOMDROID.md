@@ -90,17 +90,21 @@ driver query, so pass-through names and unusual allocation paths retain the prev
 The experimental dynamic-buffer streaming path is independently opt-in:
 
 ```text
-MOBILEGLUES_PZ_BUFFER_STREAMING=1  # CPU staging enabled
+MOBILEGLUES_PZ_BUFFER_STREAMING=1  # CPU staging + automatic persistent mapping
 MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping (default)
 ```
 
 It intercepts only complete write-only invalidating maps of mutable, tracked buffers. Whole-buffer
 maps using either `GL_MAP_INVALIDATE_BUFFER_BIT` or `GL_MAP_INVALIDATE_RANGE_BIT` qualify. The application
 writes into aligned CPU staging memory; unmap replaces the driver's store and uploads the completed
-buffer in one call, avoiding a direct map/unmap synchronization with an in-flight GPU buffer. Reads,
-partial maps, immutable storage and unknown buffer names keep the normal driver path. While enabled,
-the first map attempts emit `ZOMDROID_PZ_BUFFER_STREAMING_PATTERN` with the access flags, tracked size
-and exact fallback reason.
+buffer in one call, avoiding a direct map/unmap synchronization with an in-flight GPU buffer. Once a
+repeated discard/full-map pattern is proven, `GL_EXT_buffer_storage` is available and the buffer is
+not shared with another context, the stream is promoted automatically to coherent persistent
+mapping. Later writes go directly into a four-slot GPU ring and fences prevent reuse while a draw is
+still in flight, removing the staging-to-driver copy. Reads, partial maps, immutable storage and
+unknown buffer names keep the normal driver path. While enabled, the first map attempts emit
+`ZOMDROID_PZ_BUFFER_STREAMING_PATTERN`; persistent milestones use
+`ZOMDROID_PZ_PERSISTENT_BUFFER_STREAM`.
 
 Repeated discard-then-map cycles can additionally be coalesced:
 
@@ -112,7 +116,7 @@ MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=0  # submit it directly (default)
 After a buffer has completed one qualifying CPU-staged upload, a same-size, same-usage
 `glBufferData(..., NULL, ...)` before its next staged upload stays in the frontend. The staged unmap
 replaces the store with the completed bytes, collapsing the discard and upload into one driver call.
-This applies only to mutable array and element buffers and requires
+This applies only to streamed array and element buffers and requires
 `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. Milestones are reported as
 `ZOMDROID_PZ_BUFFER_DISCARD_COALESCE`.
 

@@ -358,7 +358,8 @@ void mg_pz_census_init(void) {
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
     if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
-    if (mg_pz_buffer_streaming_active) LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging")
+    if (mg_pz_buffer_streaming_active)
+        LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging+auto_persistent")
     if (mg_pz_buffer_discard_coalesce_active) {
         LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
     }
