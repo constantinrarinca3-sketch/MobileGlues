@@ -168,3 +168,20 @@ This path changes EGL context ownership and is deliberately isolated from the fr
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report does not require the general census.
+
+## Zero-copy staged buffer handoff (high-risk experiment)
+
+The `zomdroid-zero-copy-buffer-experimental` branch can transfer a completed CPU staging allocation
+directly to the submission worker:
+
+```text
+MOBILEGLUES_PZ_BUFFER_ZERO_COPY=1  # hand staging ownership to the worker
+MOBILEGLUES_PZ_BUFFER_ZERO_COPY=0  # copy into a command-owned allocation (default)
+```
+
+This requires both buffer streaming and threaded submission. A shared allocation keeps the bytes
+alive until the backend `glBufferData` executes. If the worker has retired it before the next map,
+the producer reuses the same block; otherwise it selects a different block and never mutates memory
+still queued for upload. Unsupported calls and failed queue submission retain the existing copied
+path. With the census enabled, `zero_copy=eligible/handoffs/bytes` reports accepted transfers and
+the memcpy traffic removed.

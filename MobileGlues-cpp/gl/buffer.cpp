@@ -113,7 +113,7 @@ enum class buffer_storage_kind_t : uint8_t {
 };
 
 struct buffer_staging_map_t {
-    std::vector<unsigned char> storage;
+    std::shared_ptr<std::vector<unsigned char>> storage;
     void* pointer = nullptr;
     GLsizeiptr size = 0;
     GLbitfield access = 0;
@@ -1213,8 +1213,14 @@ static void* try_staging_map(GLenum target, GLuint buffer, GLintptr offset, GLsi
 
     try {
         buffer_staging_map_t& staging = g_buffer_staging_maps[buffer];
-        staging.storage.resize(bytes + kMapAlignment - 1);
-        const uintptr_t base = reinterpret_cast<uintptr_t>(staging.storage.data());
+        // A queued zero-copy upload owns another reference. Never resize that
+        // allocation while the worker may still be reading it; take a fresh
+        // block and automatically reuse either block once its command retires.
+        if (!staging.storage || staging.storage.use_count() != 1)
+            staging.storage = std::make_shared<std::vector<unsigned char>>(bytes + kMapAlignment - 1);
+        else
+            staging.storage->resize(bytes + kMapAlignment - 1);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(staging.storage->data());
         const uintptr_t aligned = (base + kMapAlignment - 1) & ~(uintptr_t{kMapAlignment - 1});
         staging.pointer = reinterpret_cast<void*>(aligned);
         staging.size = length;
@@ -2575,7 +2581,18 @@ GLboolean glUnmapBuffer(GLenum target) {
             borrowed_target_t t(target);
             const GLenum usage = frontend_buffer < g_buffer_usage.size() ? g_buffer_usage[frontend_buffer]
                                                                          : GL_STREAM_DRAW;
-            GLES.glBufferData(t.target, staged_size, staged->second.pointer, usage);
+            bool handed_off = false;
+            const bool zero_copy_eligible = mg_pz_buffer_zero_copy_active && staged->second.storage &&
+                                            staged->second.pointer != nullptr;
+            if (zero_copy_eligible) {
+                const auto* base = staged->second.storage->data();
+                const auto* data = static_cast<const unsigned char*>(staged->second.pointer);
+                const size_t offset = static_cast<size_t>(data - base);
+                handed_off = GLES.glBufferData.submitSharedBufferData(t.target, staged_size, usage,
+                                                                       staged->second.storage, offset);
+            }
+            MG_PZ_CENSUS(mg_pz_census_buffer_zero_copy(zero_copy_eligible, handed_off, staged_size));
+            if (!handed_off) GLES.glBufferData(t.target, staged_size, staged->second.pointer, usage);
         }
         if (staged->second.discard_elided) {
             staged->second.discard_elided = false;
@@ -2586,7 +2603,7 @@ GLboolean glUnmapBuffer(GLenum target) {
         }
         note_buffer_content_write(frontend_buffer);
         replace_buffer_index_shadow(target, frontend_buffer, staged->second.pointer, staged_size);
-        if (promote) std::vector<unsigned char>().swap(staged->second.storage);
+        if (promote) staged->second.storage.reset();
         staged->second.completed_upload = true;
         staged->second.mapped = false;
         staged->second.persistent_direct = false;

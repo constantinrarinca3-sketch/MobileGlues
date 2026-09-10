@@ -29,6 +29,7 @@ bool flush_executed = false;
 std::thread::id worker_id;
 std::vector<int> order;
 unsigned char uploaded[4] = {};
+unsigned char shared_uploaded[4] = {};
 GLfloat uniform[4] = {};
 std::atomic<uint64_t> counted{0};
 
@@ -63,6 +64,12 @@ void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(2);
     if (size == 4 && data != nullptr) std::memcpy(uploaded, data, 4);
+}
+
+void fakeSharedBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(6);
+    if (size == 4 && data != nullptr) std::memcpy(shared_uploaded, data, 4);
 }
 
 void fakeUniform4fv(GLint, GLsizei count, const GLfloat* value) {
@@ -118,6 +125,7 @@ int main() {
     mg_ts_dispatch_slot<void (*)(GLint)> no_op{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLint)> count{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
+    mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> shared_buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
     mg_ts_dispatch_slot<GLint (*)()> quiet_query{"glGetError"};
@@ -126,6 +134,7 @@ int main() {
     no_op = fakeNoop;
     count = fakeCount;
     buffer_data = fakeBufferData;
+    shared_buffer_data = fakeSharedBufferData;
     uniform4fv = fakeUniform4fv;
     query = fakeQuery;
     quiet_query = fakeQuietQuery;
@@ -143,6 +152,16 @@ int main() {
     GLfloat source_uniform[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     buffer_data(GL_ARRAY_BUFFER, 4, source, GL_STREAM_DRAW);
     uniform4fv(9, 1, source_uniform);
+    auto shared_storage = std::make_shared<std::vector<unsigned char>>(68);
+    (*shared_storage)[64] = 5;
+    (*shared_storage)[65] = 6;
+    (*shared_storage)[66] = 7;
+    (*shared_storage)[67] = 8;
+    std::weak_ptr<std::vector<unsigned char>> shared_lifetime = shared_storage;
+    expect(shared_buffer_data.submitSharedBufferData(GL_ARRAY_BUFFER, 4, GL_STREAM_DRAW, shared_storage, 64),
+           "staging storage must transfer to the worker without a byte copy");
+    shared_storage.reset();
+    expect(!shared_lifetime.expired(), "the queued upload must retain its staging allocation");
     std::memset(source, 9, sizeof(source));
     for (float& value : source_uniform) value = 9.0f;
 
@@ -157,6 +176,10 @@ int main() {
            "buffer bytes must be copied before returning to the caller");
     expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
            "uniform bytes must be copied before returning to the caller");
+    expect(shared_uploaded[0] == 5 && shared_uploaded[1] == 6 && shared_uploaded[2] == 7 &&
+               shared_uploaded[3] == 8,
+           "the worker must read the retained staging allocation at its aligned offset");
+    expect(shared_lifetime.expired(), "the staging allocation must retire after backend execution");
 
     // Cross the packet-ring boundary and make a partial final packet visible
     // through the following synchronous query.
@@ -180,7 +203,7 @@ int main() {
     expect(mg_ts::release_context(), "release must drain work and unbind the worker context");
     mg_ts::shutdown();
 
-    expect(order == std::vector<int>({1, 2, 3, 4, 5}), "backend calls must preserve producer order");
+    expect(order == std::vector<int>({1, 2, 3, 6, 4, 5}), "backend calls must preserve producer order");
     expect(!mg_ts::active(), "submission must be inactive after release");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "threaded submission checks passed", failures);
