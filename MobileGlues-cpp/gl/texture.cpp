@@ -13,6 +13,7 @@
 #include <ska/flat_hash_map.hpp>
 #include "GLES3/gl32.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -514,6 +515,53 @@ TextureObject* mgGetTexObjectByID(unsigned texture) {
 #if defined(ZOMDROID_EXPERIMENTAL)
 namespace {
 
+bool storage_reuse_tracking_active() {
+    return mg_pz_texture_storage_reuse_active || mg_pz_census_active;
+}
+
+bool storage_2d_params_trackable(TextureObject* texture, GLenum target, GLint level, GLint internal_format,
+                                 GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type) {
+    // The measured PZ traffic is mutable GL_TEXTURE_2D. Keeping the experiment
+    // on that target avoids guessing about cube-face and multisample identity.
+    return texture != nullptr && texture->texture != 0 && target == GL_TEXTURE_2D && level >= 0 && level < 32 &&
+           internal_format != 0 && width > 0 && height > 0 && border == 0 && format != 0 && type != 0;
+}
+
+auto find_storage_2d(TextureObject* texture, GLenum target, GLint level) {
+    return std::find_if(texture->pz_storage_2d.begin(), texture->pz_storage_2d.end(),
+                        [target, level](const mg_texture_storage_2d_t& entry) {
+                            return entry.target == target && entry.level == level;
+                        });
+}
+
+bool storage_2d_exact(TextureObject* texture, GLenum target, GLint level, GLint internal_format, GLsizei width,
+                      GLsizei height, GLint border, GLenum format, GLenum type) {
+    if (!storage_2d_params_trackable(texture, target, level, internal_format, width, height, border, format, type))
+        return false;
+    const auto found = find_storage_2d(texture, target, level);
+    return found != texture->pz_storage_2d.end() && found->internal_format == internal_format &&
+           found->width == width && found->height == height && found->border == border && found->format == format &&
+           found->type == type;
+}
+
+void remember_storage_2d(TextureObject* texture, GLenum target, GLint level, GLint internal_format, GLsizei width,
+                         GLsizei height, GLint border, GLenum format, GLenum type) {
+    if (!storage_2d_params_trackable(texture, target, level, internal_format, width, height, border, format, type))
+        return;
+    auto found = find_storage_2d(texture, target, level);
+    if (found == texture->pz_storage_2d.end()) {
+        texture->pz_storage_2d.push_back({target, level, internal_format, width, height, border, format, type});
+        return;
+    }
+    *found = {target, level, internal_format, width, height, border, format, type};
+}
+
+void forget_storage_2d(TextureObject* texture, GLenum target, GLint level) {
+    if (!texture) return;
+    const auto found = find_storage_2d(texture, target, level);
+    if (found != texture->pz_storage_2d.end()) texture->pz_storage_2d.erase(found);
+}
+
 #if defined(ZOMDROID_GL_BREADCRUMBS)
 std::atomic<unsigned long long> g_runtime_mipmap_skips{0};
 #endif
@@ -572,6 +620,18 @@ GLint runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pn
 } // namespace
 #endif
 
+void mg_texture_storage_reuse_invalidate(GLenum target, GLint level) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (!storage_reuse_tracking_active() || target != GL_TEXTURE_2D ||
+        ConvertGLEnumToTextureTarget(target) == TextureTarget::UNKNWON)
+        return;
+    forget_storage_2d(mgGetTexObjectByTarget(target), target, level);
+#else
+    (void)target;
+    (void)level;
+#endif
+}
+
 bool mg_texture_prepare_generate_mipmap(GLenum target) {
 #if defined(ZOMDROID_EXPERIMENTAL)
     if (ConvertGLEnumToTextureTarget(target) == TextureTarget::UNKNWON) return true;
@@ -589,6 +649,24 @@ bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
 
 GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param) {
     return runtime_mipmap_min_filter(texture, target, pname, param);
+}
+
+bool mg_test_texture_storage_reuse(TextureObject* texture, GLenum target, GLint level, GLint internal_format,
+                                   GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type,
+                                   bool has_data) {
+    const bool eligible = !has_data && storage_2d_params_trackable(texture, target, level, internal_format, width,
+                                                                   height, border, format, type);
+    const bool exact = eligible && storage_2d_exact(texture, target, level, internal_format, width, height, border,
+                                                    format, type);
+    const bool skipped = mg_pz_texture_storage_reuse_active && exact;
+    if (!skipped) forget_storage_2d(texture, target, level);
+    if (!skipped && !has_data)
+        remember_storage_2d(texture, target, level, internal_format, width, height, border, format, type);
+    return skipped;
+}
+
+void mg_test_texture_storage_reuse_forget(TextureObject* texture, GLenum target, GLint level) {
+    forget_storage_2d(texture, target, level);
 }
 #endif
 
@@ -1059,7 +1137,36 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
 
     tex->format = format;
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // With no unpack PBO, a null pointer defines storage whose contents are
+    // unspecified. Repeating the exact same mutable-level definition therefore
+    // does not require new storage. Keep this opt-in: some engines deliberately
+    // use null redefinition as an orphaning hint, so device testing decides
+    // whether avoiding the allocation wins on PZ's actual workload.
+    const bool track_storage = storage_reuse_tracking_active() && driver_texture_shadow_trustworthy();
+    const bool storage_eligible =
+        track_storage && !fix.has_data() &&
+        storage_2d_params_trackable(tex, target, level, internalFormat, width, height, border, format, type);
+    const bool storage_exact = storage_eligible &&
+                               storage_2d_exact(tex, target, level, internalFormat, width, height, border, format,
+                                                type);
+    const bool storage_skipped = mg_pz_texture_storage_reuse_active && storage_exact;
+    MG_PZ_CENSUS(mg_pz_census_texture_storage_reuse(storage_eligible, storage_exact, storage_skipped));
+    if (storage_skipped) {
+        CHECK_GL_ERROR
+        return;
+    }
+    if (track_storage) forget_storage_2d(tex, target, level);
+#endif
+
     GLES.glTexImage2D(target, level, internalFormat, width, height, border, format, type, fix.pixels);
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Data-bearing definitions invalidate the previous allocation record. A
+    // later null definition must reach GLES once before exact repeats qualify.
+    if (track_storage && !fix.has_data())
+        remember_storage_2d(tex, target, level, internalFormat, width, height, border, format, type);
+#endif
 
     CHECK_GL_ERROR
 }
@@ -1164,6 +1271,9 @@ void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
     GLES.glTexStorage2D(target, levels, internalFormat, width, height);
 
     GET_TEXTURE_OBJECT(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    tex->pz_storage_2d.clear();
+#endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
     tex->width = width;
@@ -1283,6 +1393,8 @@ static GLenum get_binding_for_target(GLenum target) {
 void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
                       GLsizei height, GLint border) {
     LOG()
+
+    mg_texture_storage_reuse_invalidate(target, level);
 
     // The source is the read framebuffer; under FSR1 that has to be the render
     // target, not the surface. Matters most on the depth path below, whose depth

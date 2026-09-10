@@ -22,6 +22,7 @@ bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
+bool mg_pz_texture_storage_reuse_active = false;
 
 namespace {
 
@@ -86,6 +87,9 @@ struct counters_t {
     count_t texture_conversion_bytes = 0;
     count_t texture_pbo_calls = 0;
     count_t texture_dropped_calls = 0;
+    count_t texture_storage_reuse_eligible = 0;
+    count_t texture_storage_reuse_exact = 0;
+    count_t texture_storage_reuse_skipped = 0;
 
     // Exact, diagnostic-only upper bound for replacing adjacent direct
     // glDrawElements calls with one multi-draw submission. `adjacent` is also
@@ -156,6 +160,9 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(texture_conversion_bytes);
     MG_ADD_FIELD(texture_pbo_calls);
     MG_ADD_FIELD(texture_dropped_calls);
+    MG_ADD_FIELD(texture_storage_reuse_eligible);
+    MG_ADD_FIELD(texture_storage_reuse_exact);
+    MG_ADD_FIELD(texture_storage_reuse_skipped);
     MG_ADD_FIELD(batch_elements_candidates);
     MG_ADD_FIELD(batch_elements_adjacent);
     MG_ADD_FIELD(batch_elements_runs);
@@ -289,7 +296,7 @@ void report(const census_state_t& state) {
     const double worst_ms = static_cast<double>(state.worst_ns) / 1000000.0;
     const counters_t& c = state.window;
     const counters_t& w = state.worst_frame;
-    LOG_I("ZOMDROID_PZ_CENSUS schema=5 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
+    LOG_I("ZOMDROID_PZ_CENSUS schema=6 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
@@ -298,7 +305,8 @@ void report(const census_state_t& state) {
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
           "tex_upload=%llu+%llu/%llu/%lluB/%lluB tex_src=%llu/%llu/%llu "
-          "tex_convert=%llu/%lluB tex_pbo=%llu tex_drop=%llu tex_frames=%u/%u/%u/%u/%u "
+          "tex_convert=%llu/%lluB tex_pbo=%llu tex_drop=%llu tex_storage=%llu/%llu/%llu "
+          "tex_frames=%u/%u/%u/%u/%u "
           "batch_e=%llu/%llu/%llu/%llu batch_break=%llu/%llu/%llu/%llu/%llu/%llu "
           "worst_draw=%llu worst_items=%llu worst_upload=%lluB worst_tex=%llu/%lluB/%lluB",
           state.frames, average_ms, worst_ms, state.over_20_ms, state.over_33_ms, state.over_50_ms,
@@ -319,7 +327,8 @@ void report(const census_state_t& state) {
           c.buffer_map_bytes, c.texture_image_calls, c.texture_sub_image_calls, c.texture_data_calls,
           c.texture_upload_bytes, c.texture_max_upload_bytes, c.texture_rgba_calls, c.texture_bgra_calls,
           c.texture_other_calls, c.texture_conversion_calls, c.texture_conversion_bytes, c.texture_pbo_calls,
-          c.texture_dropped_calls, state.texture_frames, state.texture_over_20_ms, state.texture_over_33_ms,
+          c.texture_dropped_calls, c.texture_storage_reuse_eligible, c.texture_storage_reuse_exact,
+          c.texture_storage_reuse_skipped, state.texture_frames, state.texture_over_20_ms, state.texture_over_33_ms,
           state.texture_over_50_ms, state.texture_over_100_ms, c.batch_elements_candidates,
           c.batch_elements_adjacent, c.batch_elements_runs,
           c.batch_elements_max_run, c.batch_breaks[0], c.batch_breaks[1], c.batch_breaks[2], c.batch_breaks[3],
@@ -354,13 +363,16 @@ void mg_pz_census_init(void) {
     const char* threaded_submission_value = std::getenv("MOBILEGLUES_PZ_THREADED_SUBMISSION");
     mg_pz_threaded_submission_active =
         threaded_submission_value != nullptr && std::strcmp(threaded_submission_value, "1") == 0;
+    const char* texture_storage_reuse_value = std::getenv("MOBILEGLUES_PZ_TEXTURE_STORAGE_REUSE");
+    mg_pz_texture_storage_reuse_active =
+        texture_storage_reuse_value != nullptr && std::strcmp(texture_storage_reuse_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
     g_uniform_context = 0;
     g_batch = {};
     if (mg_pz_census_active) {
-        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=5 interval_frames=%u", kReportFrames)
+        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=6 interval_frames=%u", kReportFrames)
     }
     if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
     if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
@@ -376,6 +388,8 @@ void mg_pz_census_init(void) {
         LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
     if (mg_pz_threaded_submission_active)
         LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
+    if (mg_pz_texture_storage_reuse_active)
+        LOG_I("ZOMDROID_PZ_TEXTURE_STORAGE_REUSE enabled=1 mode=exact_mutable_2d_null_redefine")
 #endif
 }
 
@@ -651,6 +665,13 @@ void mg_pz_census_texture_upload(bool sub_image, GLenum source_format, bool has_
         c.texture_conversion_bytes += static_cast<count_t>(converted_bytes);
     }
     if (from_pbo) ++c.texture_pbo_calls;
+}
+
+void mg_pz_census_texture_storage_reuse(bool eligible, bool exact, bool skipped) {
+    if (!mg_pz_census_active || !eligible) return;
+    ++g_census.frame.texture_storage_reuse_eligible;
+    if (exact) ++g_census.frame.texture_storage_reuse_exact;
+    if (skipped) ++g_census.frame.texture_storage_reuse_skipped;
 }
 
 void mg_pz_census_present(bool succeeded) {

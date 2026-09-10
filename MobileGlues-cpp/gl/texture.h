@@ -9,6 +9,7 @@
 #define MOBILEGLUES_TEXTURE_H
 
 #include <memory>
+#include <vector>
 
 #ifdef __cplusplus
 extern "C"
@@ -92,6 +93,19 @@ enum class TextureTarget : unsigned int {
     UNKNWON
 };
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+struct mg_texture_storage_2d_t {
+    GLenum target = 0;
+    GLint level = -1;
+    GLint internal_format = 0;
+    GLsizei width = 0;
+    GLsizei height = 0;
+    GLint border = 0;
+    GLenum format = 0;
+    GLenum type = 0;
+};
+#endif
+
 GLenum ConvertTextureTargetToGLEnum(TextureTarget target);
 TextureTarget ConvertGLEnumToTextureTarget(GLenum target);
 
@@ -111,6 +125,11 @@ public:
     bool runtime_mipmap_generated = false;
     bool runtime_mipmap_fallback_logged = false;
     bool runtime_mipmap_base_only = false;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Sparse because PZ normally defines only level zero. This exists only on
+    // the opt-in experimental build and allocates nothing until tracking is on.
+    std::vector<mg_texture_storage_2d_t> pz_storage_2d;
+#endif
 };
 
 // How many texture units this layer can actually track. Anything the driver
@@ -124,6 +143,10 @@ void InitTextureMap(size_t expectedSize);
 // Records the generation request and returns false only when the opt-in PZ path
 // has already proved that this texture is sampled from level 0.
 bool mg_texture_prepare_generate_mipmap(GLenum target);
+
+// A storage-defining path outside gl/texture.cpp must invalidate the exact
+// mutable-level record before it reaches GLES.
+void mg_texture_storage_reuse_invalidate(GLenum target, GLint level);
 
 // The driver's own texture state, tracked as this layer issues it, so a caller
 // that only wants to save and restore a binding does not have to make the driver

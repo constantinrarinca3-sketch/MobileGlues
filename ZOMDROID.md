@@ -168,3 +168,21 @@ This path changes EGL context ownership and is deliberately isolated from the fr
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report does not require the general census.
+
+## Exact mutable texture-storage reuse (high-risk experiment)
+
+The `zomdroid-texture-storage-reuse-experimental` branch can suppress repeated allocation-only
+definitions of the same mutable 2D texture level:
+
+```text
+MOBILEGLUES_PZ_TEXTURE_STORAGE_REUSE=1  # reuse an exact existing null-data definition
+MOBILEGLUES_PZ_TEXTURE_STORAGE_REUSE=0  # submit every definition (default)
+```
+
+Only `GL_TEXTURE_2D` calls without client data or an unpack PBO qualify. Texture name, mip level,
+internal format, dimensions, border, source format and source type must all match the previously
+submitted definition. Calls carrying pixels, changed definitions, unknown context state and other
+targets always reach GLES. Texture storage, copy-image and compressed-image definitions invalidate
+the corresponding record. With the census enabled, `tex_storage=eligible/exact/skipped` reports
+whether the path sees useful work; keep the optimization disabled if exact hits are scarce or frame
+pacing becomes worse.

@@ -14,6 +14,7 @@ bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = true;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
+bool mg_pz_texture_storage_reuse_active = true;
 
 static int failures = 0;
 
@@ -22,6 +23,10 @@ extern "C" void write_log_n(const char*, ...) {}
 
 bool mg_test_runtime_mipmap_prepare(TextureObject* texture, GLenum target);
 GLint mg_test_runtime_mipmap_min_filter(TextureObject* texture, GLenum target, GLenum pname, GLint param);
+bool mg_test_texture_storage_reuse(TextureObject* texture, GLenum target, GLint level, GLint internal_format,
+                                   GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type,
+                                   bool has_data);
+void mg_test_texture_storage_reuse_forget(TextureObject* texture, GLenum target, GLint level);
 TextureObject* GetOrCreateTextureObject(GLuint index);
 void mg_texture_bind_context(unsigned long long ctx_id, unsigned long long group_id);
 void mg_texture_forget_context(unsigned long long ctx_id);
@@ -68,6 +73,38 @@ int main() {
     mg_pz_runtime_mipmap_skip_active = true;
     expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_CUBE_MAP),
            "non-2D texture targets must keep the driver path");
+
+    TextureObject storage{};
+    storage.texture = 42;
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, false),
+           "the first null definition must reach the driver");
+    expect(mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA,
+                                         GL_UNSIGNED_BYTE, false),
+           "an exact repeated null definition may reuse storage");
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, true),
+           "a definition carrying pixels must never be skipped");
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, false),
+           "a data definition must invalidate reuse until one null definition reaches the driver");
+    expect(mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 1024, 1024, 0, GL_RGBA,
+                                         GL_UNSIGNED_BYTE, false),
+           "the repeated null definition may reuse storage after the new baseline");
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 512, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, false),
+           "a size change must redefine storage");
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_RGBA8, 512, 1024, 0,
+                                          GL_RGBA, GL_UNSIGNED_BYTE, false),
+           "unmeasured targets must remain on the driver path");
+    mg_test_texture_storage_reuse_forget(&storage, GL_TEXTURE_2D, 0);
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 512, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, false),
+           "another storage definition must invalidate the saved level");
+    mg_pz_texture_storage_reuse_active = false;
+    expect(!mg_test_texture_storage_reuse(&storage, GL_TEXTURE_2D, 0, GL_RGBA8, 512, 1024, 0, GL_RGBA,
+                                          GL_UNSIGNED_BYTE, false),
+           "disabling the optimization must keep exact calls on the driver path");
 
     mg_texture_bind_context(101, 201);
     InitTextureMap(8);
