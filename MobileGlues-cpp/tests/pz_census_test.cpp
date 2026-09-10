@@ -41,7 +41,6 @@ int main() {
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
-    setenv("MOBILEGLUES_PZ_BUFFER_ZERO_COPY", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active, "0 must disable the census");
@@ -54,7 +53,6 @@ int main() {
     expect(!mg_pz_runtime_mipmap_skip_active, "0 must disable runtime mipmap skipping");
     expect(!mg_pz_quad_index_cache_active, "0 must disable the quad index cache");
     expect(!mg_pz_threaded_submission_active, "0 must disable threaded submission");
-    expect(!mg_pz_buffer_zero_copy_active, "0 must disable zero-copy buffer handoff");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
     mg_pz_census_init();
@@ -69,7 +67,6 @@ int main() {
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "true", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "true", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "true", 1);
-    setenv("MOBILEGLUES_PZ_BUFFER_ZERO_COPY", "true", 1);
     mg_pz_census_init();
     expect(!mg_pz_vao_fastpath_active, "only the exact value 1 may enable the VAO fast path");
     expect(!mg_pz_attrib_fastpath_active, "only the exact value 1 may enable the attribute fast path");
@@ -81,7 +78,6 @@ int main() {
     expect(!mg_pz_runtime_mipmap_skip_active, "only the exact value 1 may enable runtime mipmap skipping");
     expect(!mg_pz_quad_index_cache_active, "only the exact value 1 may enable the quad index cache");
     expect(!mg_pz_threaded_submission_active, "only the exact value 1 may enable threaded submission");
-    expect(!mg_pz_buffer_zero_copy_active, "only the exact value 1 may enable zero-copy buffer handoff");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "1", 1);
@@ -92,7 +88,6 @@ int main() {
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "1", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "1", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "1", 1);
-    setenv("MOBILEGLUES_PZ_BUFFER_ZERO_COPY", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
     mg_pz_census_init();
     expect(mg_pz_census_active, "1 must enable the census");
@@ -105,7 +100,6 @@ int main() {
     expect(mg_pz_runtime_mipmap_skip_active, "1 must enable runtime mipmap skipping");
     expect(mg_pz_quad_index_cache_active, "1 must enable the quad index cache");
     expect(mg_pz_threaded_submission_active, "1 must enable threaded submission");
-    expect(mg_pz_buffer_zero_copy_active, "1 must enable zero-copy buffer handoff");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
 
@@ -119,7 +113,6 @@ int main() {
         mg_pz_census_gl_call("glEnableVertexAttribArray");
         mg_pz_census_attrib(mg_pz_attrib_kind::enable, true, frame != 0, frame != 0);
         mg_pz_census_buffer_data(128, false);
-        mg_pz_census_buffer_zero_copy(true, frame % 2 == 0, 128);
         mg_pz_census_texture_upload(false, GL_RGBA, true, false, false, false, 256, 0);
         mg_pz_census_texture_upload(true, GL_BGRA, true, true, true, false, 512, 512);
         mg_pz_census_batch_draw(7, GL_TRIANGLES, GL_UNSIGNED_SHORT, 6, 3);
@@ -133,7 +126,7 @@ int main() {
     expect(last_file_log.find("draw_a=300") != std::string::npos, "array draws must be aggregated");
     expect(last_file_log.find("items=1800") != std::string::npos, "draw item count must be aggregated");
     expect(last_file_log.find("program=300/100") != std::string::npos, "redundant program calls must be split");
-    expect(last_file_log.find("schema=6") != std::string::npos, "schema 6 must be reported");
+    expect(last_file_log.find("schema=5") != std::string::npos, "schema 5 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
     expect(last_file_log.find("uniform=300/300/299/299") != std::string::npos,
@@ -141,8 +134,6 @@ int main() {
     expect(last_file_log.find("attrib=300/300/299/299") != std::string::npos,
            "attribute tracked, exact and skipped counts must be split");
     expect(last_file_log.find("upload=300+0/38400B") != std::string::npos, "buffer bytes must be aggregated");
-    expect(last_file_log.find("zero_copy=300/150/19200B") != std::string::npos,
-           "zero-copy eligibility, handoffs and bytes must be aggregated");
     expect(last_file_log.find("tex_upload=300+300/600/230400B/512B") != std::string::npos,
            "texture calls, bytes and largest upload must be aggregated");
     expect(last_file_log.find("tex_src=300/300/0") != std::string::npos,
@@ -166,13 +157,12 @@ int main() {
     setenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP", "0", 1);
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
-    setenv("MOBILEGLUES_PZ_BUFFER_ZERO_COPY", "0", 1);
     mg_pz_census_init();
     expect(!mg_pz_census_active && !mg_pz_vao_fastpath_active && !mg_pz_attrib_fastpath_active &&
                !mg_pz_uniform_fastpath_active && !mg_pz_buffer_streaming_active &&
                !mg_pz_buffer_discard_coalesce_active && !mg_pz_state_shadow_active &&
                !mg_pz_runtime_mipmap_skip_active && !mg_pz_quad_index_cache_active &&
-               !mg_pz_threaded_submission_active && !mg_pz_buffer_zero_copy_active,
+               !mg_pz_threaded_submission_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);

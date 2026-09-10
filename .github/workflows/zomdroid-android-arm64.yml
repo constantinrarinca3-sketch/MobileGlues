@@ -7,7 +7,6 @@ on:
       - zomdroid-experimental
       - zomdroid-optimization
       - zomdroid-threaded-submission-experimental
-      - zomdroid-zero-copy-buffer-experimental
 
 permissions:
   contents: read

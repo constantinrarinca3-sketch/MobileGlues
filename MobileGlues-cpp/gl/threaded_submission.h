@@ -14,12 +14,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <new>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace mg_ts {
 
@@ -365,39 +363,6 @@ inline bool tryBufferCopy(void (*function)(GLenum, GLintptr, GLsizeiptr, const v
 
 template <typename Fn, typename... Args> bool tryBufferCopy(Fn, Args...) { return false; }
 
-template <typename Fn> struct shared_buffer_data_command {
-    Fn function;
-    GLenum target;
-    GLsizeiptr size;
-    GLenum usage;
-    std::shared_ptr<std::vector<unsigned char>> storage;
-    size_t offset;
-
-    shared_buffer_data_command(Fn fn, GLenum target_in, GLsizeiptr size_in, GLenum usage_in,
-                               std::shared_ptr<std::vector<unsigned char>> storage_in, size_t offset_in)
-        : function(fn), target(target_in), size(size_in), usage(usage_in), storage(std::move(storage_in)),
-          offset(offset_in) {}
-
-    static void execute(void* payload) {
-        auto* command = static_cast<shared_buffer_data_command*>(payload);
-        const void* data = command->storage->data() + command->offset;
-        command->function(command->target, command->size, data, command->usage);
-    }
-    static void destroy(void* payload) {
-        static_cast<shared_buffer_data_command*>(payload)->~shared_buffer_data_command();
-    }
-};
-
-template <typename Fn>
-bool trySharedBufferData(Fn function, GLenum target, GLsizeiptr size, GLenum usage,
-                         const std::shared_ptr<std::vector<unsigned char>>& storage, size_t offset) {
-    if (!availableAndActive() || !storage || size <= 0 || offset > storage->size() ||
-        static_cast<uint64_t>(size) > storage->size() - offset)
-        return false;
-    using command = shared_buffer_data_command<Fn>;
-    return enqueue<command>(function, target, size, usage, storage, offset) != 0;
-}
-
 } // namespace mg_ts
 
 template <typename Function> class mg_ts_dispatch_slot;
@@ -420,15 +385,6 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     explicit operator bool() const { return function_ != nullptr; }
     bool operator==(std::nullptr_t) const { return function_ == nullptr; }
     bool operator!=(std::nullptr_t) const { return function_ != nullptr; }
-
-    bool submitSharedBufferData(GLenum target, GLsizeiptr size, GLenum usage,
-                                const std::shared_ptr<std::vector<unsigned char>>& storage, size_t offset) const {
-        if constexpr (std::is_void_v<R> && sizeof...(Args) == 4 &&
-                      std::is_invocable_r_v<void, function_type, GLenum, GLsizeiptr, const void*, GLenum>) {
-            return mg_ts::trySharedBufferData(function_, target, size, usage, storage, offset);
-        }
-        return false;
-    }
 
     R operator()(Args... args) const {
         if (!mg_ts::availableAndActive()) return function_(args...);

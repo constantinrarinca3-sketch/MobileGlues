@@ -24,7 +24,6 @@ extern bool mg_pz_state_shadow_active;
 extern bool mg_pz_runtime_mipmap_skip_active;
 extern bool mg_pz_quad_index_cache_active;
 extern bool mg_pz_threaded_submission_active;
-extern bool mg_pz_buffer_zero_copy_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,
@@ -59,7 +58,6 @@ void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redund
 void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* value, size_t bytes);
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data);
 void mg_pz_census_buffer_map(GLsizeiptr bytes);
-void mg_pz_census_buffer_zero_copy(bool eligible, bool handed_off, GLsizeiptr bytes);
 void mg_pz_census_texture_upload(bool sub_image, GLenum source_format, bool has_data, bool converted, bool from_pbo,
                                  bool dropped, size_t bytes, size_t converted_bytes);
 void mg_pz_census_present(bool succeeded);
