@@ -17,11 +17,15 @@
 #include "loader.h"
 #include "trace.h"
 #include <EGL/eglext.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <mutex>
 #include <string>
 #include <memory>
 #include <ska/flat_hash_map.hpp>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -381,6 +385,271 @@ namespace {
 
     using SwapWithDamageFn = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLint*, EGLint);
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // One frame may be presented on this worker while the render thread starts
+    // the next frame's CPU work. The backend context is never current on both
+    // threads: the producer releases it before queuing, and the worker releases
+    // it before waking the producer. MobileGlues' virtual context deliberately
+    // remains attached to the producer during that hand-off.
+    class ThreadedPresentState {
+      public:
+        struct Job {
+            EGLDisplay display = EGL_NO_DISPLAY;
+            EGLSurface draw = EGL_NO_SURFACE;
+            EGLSurface read = EGL_NO_SURFACE;
+            EGLSurface surface = EGL_NO_SURFACE;
+            EGLContext context = EGL_NO_CONTEXT;
+            eglBindAPI_PTR bind_api = nullptr;
+            eglMakeCurrent_PTR make_current = nullptr;
+            eglReleaseThread_PTR release_thread = nullptr;
+            eglSwapBuffers_PTR full_swap = nullptr;
+            SwapWithDamageFn damage_swap = nullptr;
+            std::vector<EGLint> damage_rects;
+            EGLint damage_count = 0;
+            bool check_resolution = false;
+            std::chrono::steady_clock::time_point submitted;
+        };
+
+        ~ThreadedPresentState() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                stop_ = true;
+            }
+            work_cv_.notify_one();
+            if (worker_.joinable()) worker_.join();
+        }
+
+        bool enqueue(Job job) {
+            if (!mg_pz_threaded_present_active || job.make_current == nullptr || job.bind_api == nullptr ||
+                job.full_swap == nullptr || g_current_ctx == nullptr || g_current_ctx->current_count != 1 ||
+                g_current_ctx->display != job.display || g_current_ctx->draw != job.surface ||
+                g_current_ctx->handle == EGL_NO_CONTEXT) {
+                return false;
+            }
+
+            acquire();
+
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (disabled_ || busy_) return false;
+            busy_ = true;
+            owner_ = std::this_thread::get_id();
+            try {
+                if (!worker_.joinable()) worker_ = std::thread(&ThreadedPresentState::workerLoop, this);
+            } catch (...) {
+                busy_ = false;
+                disabled_ = true;
+                lock.unlock();
+                LOG_W_FORCE("ZOMDROID_PZ_THREADED_PRESENT disabled reason=worker_start_failed")
+                return false;
+            }
+
+            // Keep the reservation while the backend context is released. It
+            // prevents a second rendering thread from claiming the single queue.
+            lock.unlock();
+            const EGLBoolean released =
+                job.make_current(job.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            lock.lock();
+            if (released != EGL_TRUE) {
+                busy_ = false;
+                disabled_ = true;
+                lock.unlock();
+                LOG_W_FORCE("ZOMDROID_PZ_THREADED_PRESENT disabled reason=producer_release_failed")
+                return false;
+            }
+
+            job.submitted = std::chrono::steady_clock::now();
+            job_ = std::move(job);
+            job_ready_ = true;
+            job_done_ = false;
+            pending_.store(true, std::memory_order_release);
+            lock.unlock();
+            work_cv_.notify_one();
+            return true;
+        }
+
+        void acquire() {
+            if (!pending_.load(std::memory_order_acquire)) return;
+
+            const auto acquire_started = std::chrono::steady_clock::now();
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!busy_ || owner_ != std::this_thread::get_id()) return;
+            const bool completed_before_acquire = job_done_;
+            done_cv_.wait(lock, [this] { return job_done_; });
+            const auto worker_completed = std::chrono::steady_clock::now();
+            const EGLDisplay completed_display = job_.display;
+            const EGLSurface completed_draw = job_.draw;
+            const EGLSurface completed_read = job_.read;
+            const EGLSurface completed_surface = job_.surface;
+            const EGLContext completed_context = job_.context;
+            const eglMakeCurrent_PTR completed_make_current = job_.make_current;
+            const bool check_resolution = job_.check_resolution;
+            const auto submitted = job_.submitted;
+            const EGLBoolean bind_result = worker_bind_result_;
+            const EGLBoolean make_current_result = worker_make_current_result_;
+            const EGLBoolean swap_result = worker_swap_result_;
+            const EGLBoolean release_result = worker_release_result_;
+            const double worker_swap_ms = worker_swap_ms_;
+            lock.unlock();
+
+            const auto rebind_started = std::chrono::steady_clock::now();
+            const EGLBoolean rebound =
+                completed_make_current(completed_display, completed_draw, completed_read, completed_context);
+            const auto rebound_at = std::chrono::steady_clock::now();
+
+            const double overlap_ms =
+                std::chrono::duration<double, std::milli>(acquire_started - submitted).count();
+            const double wait_ms =
+                std::chrono::duration<double, std::milli>(worker_completed - acquire_started).count();
+            const double rebind_ms = std::chrono::duration<double, std::milli>(rebound_at - rebind_started).count();
+
+            bool report = false;
+            bool failed = false;
+            uint64_t sample_count = 0;
+            uint64_t ready_count = 0;
+            double average_overlap_ms = 0.0;
+            double average_wait_ms = 0.0;
+            double average_swap_ms = 0.0;
+            double average_rebind_ms = 0.0;
+            double maximum_wait_ms = 0.0;
+            lock.lock();
+            ++samples_;
+            if (completed_before_acquire) ++completed_before_acquire_;
+            overlap_ms_total_ += overlap_ms;
+            wait_ms_total_ += wait_ms;
+            swap_ms_total_ += worker_swap_ms;
+            rebind_ms_total_ += rebind_ms;
+            if (wait_ms > maximum_wait_ms_) maximum_wait_ms_ = wait_ms;
+
+            failed = bind_result != EGL_TRUE || make_current_result != EGL_TRUE || swap_result != EGL_TRUE ||
+                     release_result != EGL_TRUE || rebound != EGL_TRUE;
+            if (failed) disabled_ = true;
+            job_ready_ = false;
+            busy_ = false;
+            pending_.store(false, std::memory_order_release);
+
+            if (samples_ == 60 || samples_ % 300 == 0 || failed) {
+                report = true;
+                sample_count = samples_;
+                ready_count = completed_before_acquire_;
+                average_overlap_ms = overlap_ms_total_ / static_cast<double>(samples_);
+                average_wait_ms = wait_ms_total_ / static_cast<double>(samples_);
+                average_swap_ms = swap_ms_total_ / static_cast<double>(samples_);
+                average_rebind_ms = rebind_ms_total_ / static_cast<double>(samples_);
+                maximum_wait_ms = maximum_wait_ms_;
+            }
+            lock.unlock();
+
+            // Clear pending before this call: resizing may rebuild the FSR FBO
+            // through ordinary GL wrappers, which enter this acquire hook again.
+            if (rebound == EGL_TRUE && check_resolution) {
+                CheckResolutionChange(completed_display, completed_surface);
+            }
+
+            if (report) {
+                LOG_I("ZOMDROID_PZ_THREADED_PRESENT samples=%llu ready=%llu overlap_avg_ms=%.3f wait_avg_ms=%.3f "
+                      "wait_max_ms=%.3f swap_avg_ms=%.3f rebind_avg_ms=%.3f failures=%d",
+                      static_cast<unsigned long long>(sample_count), static_cast<unsigned long long>(ready_count),
+                      average_overlap_ms, average_wait_ms, maximum_wait_ms, average_swap_ms, average_rebind_ms,
+                      failed ? 1 : 0)
+            }
+            if (failed) {
+                LOG_W_FORCE("ZOMDROID_PZ_THREADED_PRESENT disabled bind=%d make_current=%d swap=%d release=%d "
+                            "rebind=%d",
+                            bind_result == EGL_TRUE, make_current_result == EGL_TRUE, swap_result == EGL_TRUE,
+                            release_result == EGL_TRUE, rebound == EGL_TRUE)
+            }
+        }
+
+        bool pendingForCaller() {
+            if (!pending_.load(std::memory_order_acquire)) return false;
+            std::lock_guard<std::mutex> lock(mutex_);
+            return busy_ && owner_ == std::this_thread::get_id();
+        }
+
+      private:
+        void workerLoop() {
+            for (;;) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                work_cv_.wait(lock, [this] { return stop_ || job_ready_; });
+                if (stop_ && !job_ready_) return;
+                Job job = std::move(job_);
+                job_ready_ = false;
+                lock.unlock();
+
+                const EGLBoolean bind_result = job.bind_api(EGL_OPENGL_ES_API);
+                EGLBoolean make_current_result = EGL_FALSE;
+                EGLBoolean swap_result = EGL_FALSE;
+                EGLBoolean release_result = EGL_FALSE;
+                double swap_ms = 0.0;
+                if (bind_result == EGL_TRUE) {
+                    make_current_result = job.make_current(job.display, job.draw, job.read, job.context);
+                }
+                if (make_current_result == EGL_TRUE) {
+                    const auto swap_started = std::chrono::steady_clock::now();
+                    if (job.damage_swap != nullptr) {
+                        EGLint* rects = job.damage_rects.empty() ? nullptr : job.damage_rects.data();
+                        swap_result = job.damage_swap(job.display, job.surface, rects, job.damage_count);
+                    } else {
+                        swap_result = job.full_swap(job.display, job.surface);
+                    }
+                    const auto swap_finished = std::chrono::steady_clock::now();
+                    swap_ms = std::chrono::duration<double, std::milli>(swap_finished - swap_started).count();
+                    release_result =
+                        job.make_current(job.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+                    if (release_result != EGL_TRUE && job.release_thread != nullptr) {
+                        release_result = job.release_thread();
+                    }
+                }
+
+                lock.lock();
+                job_ = std::move(job);
+                worker_bind_result_ = bind_result;
+                worker_make_current_result_ = make_current_result;
+                worker_swap_result_ = swap_result;
+                worker_release_result_ = release_result;
+                worker_swap_ms_ = swap_ms;
+                job_done_ = true;
+                lock.unlock();
+                done_cv_.notify_one();
+            }
+        }
+
+        std::mutex mutex_;
+        std::condition_variable work_cv_;
+        std::condition_variable done_cv_;
+        std::thread worker_;
+        std::atomic<bool> pending_{false};
+        std::thread::id owner_;
+        Job job_;
+        bool busy_ = false;
+        bool job_ready_ = false;
+        bool job_done_ = false;
+        bool disabled_ = false;
+        bool stop_ = false;
+        EGLBoolean worker_bind_result_ = EGL_FALSE;
+        EGLBoolean worker_make_current_result_ = EGL_FALSE;
+        EGLBoolean worker_swap_result_ = EGL_FALSE;
+        EGLBoolean worker_release_result_ = EGL_FALSE;
+        double worker_swap_ms_ = 0.0;
+        uint64_t samples_ = 0;
+        uint64_t completed_before_acquire_ = 0;
+        double overlap_ms_total_ = 0.0;
+        double wait_ms_total_ = 0.0;
+        double swap_ms_total_ = 0.0;
+        double rebind_ms_total_ = 0.0;
+        double maximum_wait_ms_ = 0.0;
+    };
+
+    ThreadedPresentState& threadedPresentState() {
+        static ThreadedPresentState state;
+        return state;
+    }
+
+    void acquireThreadedPresent() {
+        if (mg_pz_threaded_present_active) threadedPresentState().acquire();
+    }
+#endif
+
     // dlsym first, then the backend's own eglGetProcAddress.
     //
     // An extension entry point is frequently missing from the backend's dynamic
@@ -406,15 +675,56 @@ namespace {
     // ApplyFSR upscales into the surface, the swap presents it, the resolution
     // check reacts to a surface that has changed size. The three belong together,
     // and every path that presents a frame has to go through here.
+    EGLBoolean presentSurfaceImpl(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects,
+                                  SwapWithDamageFn damage_swap, eglSwapBuffers_PTR full_swap,
+                                  eglBindAPI_PTR bind_api, eglMakeCurrent_PTR make_current,
+                                  eglReleaseThread_PTR release_thread) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+        // A second swap may arrive without an intervening GL call. Finish the
+        // previous hand-off before FSR or any other GL work touches the context.
+        acquireThreadedPresent();
+#endif
+        const bool fsr_on = global_settings.fsr1_setting != FSR1_Quality_Preset::Disabled;
+        if (fsr_on) ApplyFSR();
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+        ThreadedPresentState::Job job;
+        job.display = dpy;
+        job.draw = g_current_ctx != nullptr ? g_current_ctx->draw : EGL_NO_SURFACE;
+        job.read = g_current_ctx != nullptr ? g_current_ctx->read : EGL_NO_SURFACE;
+        job.surface = surface;
+        job.context = g_current_ctx != nullptr ? g_current_ctx->handle : EGL_NO_CONTEXT;
+        job.bind_api = bind_api;
+        job.make_current = make_current;
+        job.release_thread = release_thread;
+        job.full_swap = full_swap;
+        job.damage_swap = fsr_on ? nullptr : damage_swap;
+        job.damage_count = job.damage_swap != nullptr ? n_rects : 0;
+        job.check_resolution = fsr_on;
+        bool async_input_valid = job.damage_swap == nullptr || n_rects >= 0;
+        if (async_input_valid && job.damage_swap != nullptr && n_rects > 0 && rects != nullptr &&
+            static_cast<size_t>(n_rects) <= SIZE_MAX / (4 * sizeof(EGLint))) {
+            job.damage_rects.assign(rects, rects + static_cast<size_t>(n_rects) * 4);
+        } else if (job.damage_swap != nullptr && n_rects != 0) {
+            // Let the backend validate malformed damage input synchronously.
+            async_input_valid = false;
+        }
+        if (async_input_valid && threadedPresentState().enqueue(std::move(job))) return EGL_TRUE;
+#endif
+
+        const EGLBoolean result = damage_swap != nullptr && !fsr_on ? damage_swap(dpy, surface, rects, n_rects)
+                                                                    : full_swap(dpy, surface);
+        if (fsr_on) CheckResolutionChange(dpy, surface);
+        return result;
+    }
+
     EGLBoolean presentSurface(EGLDisplay dpy, EGLSurface surface) {
         LOAD_EGL(eglSwapBuffers)
-        if (global_settings.fsr1_setting == FSR1_Quality_Preset::Disabled) {
-            return egl_eglSwapBuffers(dpy, surface);
-        }
-        ApplyFSR();
-        const EGLBoolean result = egl_eglSwapBuffers(dpy, surface);
-        CheckResolutionChange(dpy, surface);
-        return result;
+        LOAD_EGL(eglBindAPI)
+        LOAD_EGL(eglMakeCurrent)
+        LOAD_EGL(eglReleaseThread)
+        return presentSurfaceImpl(dpy, surface, nullptr, 0, nullptr, egl_eglSwapBuffers, egl_eglBindAPI,
+                                  egl_eglMakeCurrent, egl_eglReleaseThread);
     }
 
     // The damage rectangles are dropped whenever FSR1 is on, and that is the point
@@ -426,20 +736,22 @@ namespace {
     // point at all.
     EGLBoolean presentSurfaceWithDamage(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects,
                                         SwapWithDamageFn backend) {
+        LOAD_EGL(eglSwapBuffers)
+        LOAD_EGL(eglBindAPI)
+        LOAD_EGL(eglMakeCurrent)
+        LOAD_EGL(eglReleaseThread)
         const bool fsr_on = global_settings.fsr1_setting != FSR1_Quality_Preset::Disabled;
-        if (backend != nullptr && !fsr_on) {
-            return backend(dpy, surface, rects, n_rects);
-        }
         // Once, not once a frame: a damage swap runs every frame the host presents
         // one, and this would otherwise be the loudest line in the whole trace for
         // no new information after the first.
         static bool logged = false;
-        if (!logged) {
+        if (!logged && (backend == nullptr || fsr_on)) {
             logged = true;
             ETRACE("damage-swap(dpy=%p) falling back to a full swap (backend=%d, fsr_on=%d)", dpy, backend != nullptr,
                    fsr_on);
         }
-        return presentSurface(dpy, surface);
+        return presentSurfaceImpl(dpy, surface, rects, n_rects, backend, egl_eglSwapBuffers, egl_eglBindAPI,
+                                  egl_eglMakeCurrent, egl_eglReleaseThread);
     }
 
     bool hasExtension(const std::string& extensions, const char* extension) {
@@ -497,6 +809,12 @@ namespace {
 extern "C"
 {
 #define EGL_API __attribute__((visibility("default")))
+#if defined(ZOMDROID_EXPERIMENTAL)
+    EGL_API void mg_pz_threaded_present_acquire(void) {
+        acquireThreadedPresent();
+    }
+#endif
+
     EGL_API EGLint eglGetError(void) {
         LOG_D("eglGetError");
         LOAD_EGL(eglGetError)
@@ -542,6 +860,7 @@ extern "C"
 
     EGL_API EGLBoolean eglTerminate(EGLDisplay dpy) {
         LOG_D("eglTerminate, dpy: %p", dpy);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglTerminate)
         // Only the last holder actually terminates. EGL itself does not
         // reference-count this, so an early eglTerminate from one part of the
@@ -633,18 +952,21 @@ extern "C"
 
     EGL_API EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
         LOG_D("eglDestroySurface, dpy: %p, surface: %p", dpy, surface);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglDestroySurface)
         return egl_eglDestroySurface(dpy, surface);
     }
 
     EGL_API EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint* value) {
         LOG_D("eglQuerySurface, dpy: %p, surface: %p, attribute: %d, value: %p", dpy, surface, attribute, value);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglQuerySurface)
         return egl_eglQuerySurface(dpy, surface, attribute, value);
     }
 
     EGL_API EGLBoolean eglBindAPI(EGLenum api) {
         LOG_D("eglBindAPI, api: %d", api);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglBindAPI)
         const EGLenum backend_api = api == EGL_OPENGL_API ? EGL_OPENGL_ES_API : api;
         const EGLBoolean result = egl_eglBindAPI(backend_api);
@@ -661,12 +983,14 @@ extern "C"
 
     EGL_API EGLBoolean eglWaitClient(void) {
         LOG_D("eglWaitClient");
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglWaitClient)
         return egl_eglWaitClient();
     }
 
     EGL_API EGLBoolean eglReleaseThread(void) {
         LOG_D("eglReleaseThread");
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglReleaseThread)
         const EGLBoolean result = egl_eglReleaseThread();
         ETRACE("eglReleaseThread -> %s", result == EGL_TRUE ? "ok" : "FAILED");
@@ -694,24 +1018,28 @@ extern "C"
 
     EGL_API EGLBoolean eglSurfaceAttrib(EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint value) {
         LOG_D("eglSurfaceAttrib, dpy: %p, surface: %p, attribute: %d, value: %d", dpy, surface, attribute, value);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglSurfaceAttrib)
         return egl_eglSurfaceAttrib(dpy, surface, attribute, value);
     }
 
     EGL_API EGLBoolean eglBindTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
         LOG_D("eglBindTexImage, dpy: %p, surface: %p, buffer: %d", dpy, surface, buffer);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglBindTexImage)
         return egl_eglBindTexImage(dpy, surface, buffer);
     }
 
     EGL_API EGLBoolean eglReleaseTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
         LOG_D("eglReleaseTexImage, dpy: %p, surface: %p, buffer: %d", dpy, surface, buffer);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglReleaseTexImage)
         return egl_eglReleaseTexImage(dpy, surface, buffer);
     }
 
     EGL_API EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
         LOG_D("eglSwapInterval, dpy: %p, interval: %d", dpy, interval);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglSwapInterval)
         return egl_eglSwapInterval(dpy, interval);
     }
@@ -721,6 +1049,7 @@ extern "C"
         LOG_D("eglCreateContext, dpy: %p, config: %p, share_context: %p, "
               "attrib_list: %p",
               dpy, config, share_context, attrib_list);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglCreateContext)
         if (frontend_api != EGL_OPENGL_API) {
             // An ES context still gets a record. Without one g_current_ctx stays
@@ -773,6 +1102,7 @@ extern "C"
 
     EGL_API EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
         LOG_D("eglDestroyContext, dpy: %p, ctx: %p", dpy, ctx);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglDestroyContext)
         std::lock_guard<std::mutex> lifecycle(context_lifecycle_mutex);
         MGContext* before = mg_context_find(ctx);
@@ -790,6 +1120,7 @@ extern "C"
 
     EGL_API EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx) {
         LOG_D("eglMakeCurrent, dpy: %p, draw: %p, read: %p, ctx: %p", dpy, draw, read, ctx);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglMakeCurrent)
         MGContext* before = mg_context_find(ctx);
         const EGLBoolean result = egl_eglMakeCurrent(dpy, draw, read, ctx);
@@ -803,24 +1134,37 @@ extern "C"
 
     EGL_API EGLContext eglGetCurrentContext(void) {
         LOG_D("eglGetCurrentContext");
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (threadedPresentState().pendingForCaller() && g_current_ctx != nullptr) return g_current_ctx->handle;
+#endif
         LOAD_EGL(eglGetCurrentContext)
         return egl_eglGetCurrentContext();
     }
 
     EGL_API EGLSurface eglGetCurrentSurface(EGLint readdraw) {
         LOG_D("eglGetCurrentSurface, readdraw: %d", readdraw);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (threadedPresentState().pendingForCaller() && g_current_ctx != nullptr) {
+            if (readdraw == EGL_DRAW) return g_current_ctx->draw;
+            if (readdraw == EGL_READ) return g_current_ctx->read;
+        }
+#endif
         LOAD_EGL(eglGetCurrentSurface)
         return egl_eglGetCurrentSurface(readdraw);
     }
 
     EGL_API EGLDisplay eglGetCurrentDisplay(void) {
         LOG_D("eglGetCurrentDisplay");
+#if defined(ZOMDROID_EXPERIMENTAL)
+        if (threadedPresentState().pendingForCaller() && g_current_ctx != nullptr) return g_current_ctx->display;
+#endif
         LOAD_EGL(eglGetCurrentDisplay)
         return egl_eglGetCurrentDisplay();
     }
 
     EGL_API EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint* value) {
         LOG_D("eglQueryContext, dpy: %p, ctx: %p, attribute: %d, value: %p", dpy, ctx, attribute, value);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglQueryContext)
         const EGLBoolean result = egl_eglQueryContext(dpy, ctx, attribute, value);
         if (result != EGL_TRUE || !value) return result;
@@ -846,12 +1190,14 @@ extern "C"
 
     EGL_API EGLBoolean eglWaitGL(void) {
         LOG_D("eglWaitGL");
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglWaitGL)
         return egl_eglWaitGL();
     }
 
     EGL_API EGLBoolean eglWaitNative(EGLint engine) {
         LOG_D("eglWaitNative, engine: %d", engine);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglWaitNative)
         return egl_eglWaitNative(engine);
     }
@@ -888,6 +1234,7 @@ extern "C"
 
     EGL_API EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target) {
         LOG_D("eglCopyBuffers, dpy: %p, surface: %p, target: %p", dpy, surface, target);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL(eglCopyBuffers)
         return egl_eglCopyBuffers(dpy, surface, target);
     }
@@ -946,30 +1293,35 @@ extern "C"
     // the wrapper and the backend are different implementations.
     EGL_API EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib* attrib_list) {
         LOG_D("eglCreateSync, dpy: %p, type: %d", dpy, type);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglCreateSync, setFrontendError(EGL_BAD_PARAMETER), EGL_NO_SYNC)
         return egl_eglCreateSync(dpy, type, attrib_list);
     }
 
     EGL_API EGLBoolean eglDestroySync(EGLDisplay dpy, EGLSync sync) {
         LOG_D("eglDestroySync, dpy: %p, sync: %p", dpy, sync);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglDestroySync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
         return egl_eglDestroySync(dpy, sync);
     }
 
     EGL_API EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags, EGLTime timeout) {
         LOG_D("eglClientWaitSync, dpy: %p, sync: %p", dpy, sync);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglClientWaitSync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
         return egl_eglClientWaitSync(dpy, sync, flags, timeout);
     }
 
     EGL_API EGLBoolean eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib* value) {
         LOG_D("eglGetSyncAttrib, dpy: %p, sync: %p, attribute: %d", dpy, sync, attribute);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglGetSyncAttrib, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
         return egl_eglGetSyncAttrib(dpy, sync, attribute, value);
     }
 
     EGL_API EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags) {
         LOG_D("eglWaitSync, dpy: %p, sync: %p", dpy, sync);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglWaitSync, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
         return egl_eglWaitSync(dpy, sync, flags);
     }
@@ -977,12 +1329,14 @@ extern "C"
     EGL_API EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer,
                                     const EGLAttrib* attrib_list) {
         LOG_D("eglCreateImage, dpy: %p, ctx: %p, target: %d", dpy, ctx, target);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglCreateImage, setFrontendError(EGL_BAD_PARAMETER), EGL_NO_IMAGE)
         return egl_eglCreateImage(dpy, ctx, target, buffer, attrib_list);
     }
 
     EGL_API EGLBoolean eglDestroyImage(EGLDisplay dpy, EGLImage image) {
         LOG_D("eglDestroyImage, dpy: %p, image: %p", dpy, image);
+        MG_PZ_THREADED_PRESENT_ACQUIRE();
         LOAD_EGL_OR(eglDestroyImage, setFrontendError(EGL_BAD_PARAMETER), EGL_FALSE)
         return egl_eglDestroyImage(dpy, image);
     }

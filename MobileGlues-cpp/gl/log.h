@@ -31,9 +31,27 @@ extern "C"
     const char* glEnumToString(GLenum e);
     void write_log(const char* format, ...);
     void write_log_n(const char* format, ...);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // egl.cpp supplies the strong definition in the Android library. Host unit
+    // tests deliberately link smaller slices of MobileGlues, so keep the hook
+    // weak and skip it when that translation unit is absent.
+    void mg_pz_threaded_present_acquire(void) __attribute__((weak));
+#endif
 
 #ifdef __cplusplus
 }
+#endif
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+#define MG_PZ_THREADED_PRESENT_ACQUIRE()                                                                               \
+    do {                                                                                                               \
+        if (mg_pz_threaded_present_active && mg_pz_threaded_present_acquire != nullptr)                               \
+            mg_pz_threaded_present_acquire();                                                                          \
+    } while (0)
+#else
+#define MG_PZ_THREADED_PRESENT_ACQUIRE()                                                                               \
+    do {                                                                                                               \
+    } while (0)
 #endif
 
 #ifndef __ANDROID__
@@ -55,7 +73,7 @@ int __android_log_print(int prio, const char* tag, const char* fmt, ...);
 
 #if GLOBAL_DEBUG_FORCE_OFF
 #define LOG()                                                                                                          \
-    {}
+    MG_PZ_THREADED_PRESENT_ACQUIRE()
 #define LOG_D(...)                                                                                                     \
     {}
 #define LOG_D_N(...)                                                                                                   \
@@ -69,10 +87,12 @@ int __android_log_print(int prio, const char* tag, const char* fmt, ...);
 #else
 #if PROFILING
 #define LOG()                                                                                                          \
+    MG_PZ_THREADED_PRESENT_ACQUIRE();                                                                                  \
     perfetto::StaticString _FUNC_NAME_ = __func__;                                                                     \
     TRACE_EVENT("glcalls", _FUNC_NAME_);
 #elif LOG_CALLED_FUNCS
 #define LOG()                                                                                                          \
+    MG_PZ_THREADED_PRESENT_ACQUIRE();                                                                                  \
     if (DEBUG || GLOBAL_DEBUG) {                                                                                       \
         __android_log_print(ANDROID_LOG_DEBUG, RENDERERNAME, "Use function: %s", __FUNCTION__);                        \
         printf("Use function: %s\n", __FUNCTION__);                                                                    \
@@ -85,6 +105,7 @@ void log_unique_function(const char* func_name);
 void trace_zomdroid_gl_after_unmap(const char* func_name);
 #else
 #define LOG()                                                                                                          \
+    MG_PZ_THREADED_PRESENT_ACQUIRE();                                                                                  \
     if (DEBUG || GLOBAL_DEBUG) {                                                                                       \
         __android_log_print(ANDROID_LOG_DEBUG, RENDERERNAME, "\nUse function: %s", __FUNCTION__);                      \
         printf("\nUse function: %s\n", __FUNCTION__);                                                                  \

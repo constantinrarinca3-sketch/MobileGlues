@@ -144,3 +144,32 @@ requests a mipmapped minification filter and MobileGlues applies its existing le
 fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling remains on level 0.
 Other sizes, texture targets and textures that have not taken the fallback remain on the normal
 driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.
+
+The quad index path is independently opt-in:
+
+```text
+MOBILEGLUES_PZ_QUAD_INDEX_CACHE=1  # direct repeated quad draws from the CPU index shadow
+MOBILEGLUES_PZ_QUAD_INDEX_CACHE=0  # normal indexed draw path (default)
+```
+
+It recognizes isolated indexed quads whose six indices describe four vertices, validates them
+against the complete CPU shadow of the element buffer, and submits the equivalent direct quad draw.
+Primitive-restart and base-vertex cases remain on the normal path. Runtime totals are reported as
+`ZOMDROID_PZ_QUAD_DIRECT` and `ZOMDROID_PZ_QUAD_CACHE`.
+
+Threaded present is a separate high-risk experiment:
+
+```text
+MOBILEGLUES_PZ_THREADED_PRESENT=1  # move presentation to one worker thread
+MOBILEGLUES_PZ_THREADED_PRESENT=0  # synchronous presentation (default)
+```
+
+At the end of a frame, the render thread releases its backend EGL context and a worker makes the
+same context and surface current, presents the frame, then releases them. The render thread may run
+CPU game logic during that presentation; its first following GL call waits for completion and takes
+the context back. The queue is limited to one frame and automatically disables itself after any EGL
+handoff, swap, or rebind failure. This can help only when useful CPU work occurs between the swap and
+the next GL call, and the extra EGL context migrations can cost more than they save on some drivers.
+Timing reports use `ZOMDROID_PZ_THREADED_PRESENT`; `ready` counts presentations already complete when
+the next GL call arrives, while `wait_avg_ms` and `wait_max_ms` measure the remaining render-thread
+stall.
