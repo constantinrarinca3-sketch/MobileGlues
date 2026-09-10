@@ -49,22 +49,15 @@ class submission_state {
         uint64_t head = producer_head_;
         const auto wait_started = std::chrono::steady_clock::now();
         bool blocked = false;
-        while (head - tail_.load(std::memory_order_acquire) >= kQueueCapacity) {
+        uint64_t completed = tail_.load(std::memory_order_acquire);
+        while (head - completed >= kQueueCapacity) {
             blocked = true;
-            const uint64_t wanted = head - kQueueCapacity + 1;
-            waiting_for_.store(wanted, std::memory_order_release);
-            std::unique_lock<std::mutex> lock(wait_mutex_);
-            completion_cv_.wait(lock, [this, wanted] {
-                return tail_.load(std::memory_order_acquire) >= wanted || !isActive();
-            });
-            if (!isActive()) return {nullptr, 0};
+            tail_.wait(completed, std::memory_order_acquire);
+            completed = tail_.load(std::memory_order_acquire);
         }
-        if (blocked) {
-            waiting_for_.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
-            recordProducerWait(wait_started);
-        }
+        if (blocked) recordProducerWait(wait_started);
 
-        const uint64_t depth = head - tail_.load(std::memory_order_relaxed) + 1;
+        const uint64_t depth = head - completed + 1;
         uint64_t high = queue_highwater_.load(std::memory_order_relaxed);
         while (depth > high && !queue_highwater_.compare_exchange_weak(high, depth, std::memory_order_relaxed)) {
         }
@@ -79,17 +72,18 @@ class submission_state {
         producer_head_ = sequence;
         submitted_.fetch_add(1, std::memory_order_relaxed);
         head_.store(sequence, std::memory_order_release);
-        work_cv_.notify_one();
+        signalWorker();
     }
 
     void waitFor(uint64_t sequence, bool record_wait = true) {
-        if (sequence == 0 || tail_.load(std::memory_order_acquire) >= sequence) return;
+        uint64_t completed = tail_.load(std::memory_order_acquire);
+        if (sequence == 0 || completed >= sequence) return;
         if (record_wait) synchronous_waits_.fetch_add(1, std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
-        waiting_for_.store(sequence, std::memory_order_release);
-        std::unique_lock<std::mutex> lock(wait_mutex_);
-        completion_cv_.wait(lock, [this, sequence] { return tail_.load(std::memory_order_acquire) >= sequence; });
-        waiting_for_.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
+        while (completed < sequence) {
+            tail_.wait(completed, std::memory_order_acquire);
+            completed = tail_.load(std::memory_order_acquire);
+        }
         if (record_wait) recordSynchronousWait(started);
     }
 
@@ -121,7 +115,7 @@ class submission_state {
         control_done_ = false;
         request_ = control_request::adopt;
         lock.unlock();
-        work_cv_.notify_one();
+        signalWorker();
         lock.lock();
         control_cv_.wait(lock, [this] { return control_done_; });
         const bool adopted = control_result_;
@@ -151,7 +145,7 @@ class submission_state {
         control_done_ = false;
         request_ = control_request::release;
         lock.unlock();
-        work_cv_.notify_one();
+        signalWorker();
         lock.lock();
         control_cv_.wait(lock, [this] { return control_done_; });
         const bool result = control_result_;
@@ -167,7 +161,7 @@ class submission_state {
         control_done_ = false;
         request_ = control_request::stop;
         lock.unlock();
-        work_cv_.notify_one();
+        signalWorker();
         worker_.join();
         lock.lock();
         request_ = control_request::none;
@@ -228,11 +222,17 @@ class submission_state {
     }
 
   private:
+    void signalWorker() {
+        wake_counter_.fetch_add(1, std::memory_order_release);
+        wake_counter_.notify_one();
+    }
+
     bool ensureWorker() {
         std::lock_guard<std::mutex> lock(control_mutex_);
         if (disabled_) return false;
         if (worker_.joinable()) return true;
         try {
+            if (!queue_) queue_ = std::make_unique<queue_slot[]>(kQueueCapacity);
             worker_ = std::thread(&submission_state::workerLoop, this);
             return true;
         } catch (...) {
@@ -245,6 +245,10 @@ class submission_state {
     void workerLoop() {
         uint64_t consumer_tail = tail_.load(std::memory_order_relaxed);
         for (;;) {
+            // Read the event generation before checking either work source. If
+            // a publisher wins any race after this point, atomic::wait observes
+            // a changed value and cannot sleep through the notification.
+            const uint64_t wake_value = wake_counter_.load(std::memory_order_acquire);
             const uint64_t available = head_.load(std::memory_order_acquire);
             if (consumer_tail < available) {
                 queue_slot& slot = queue_[consumer_tail & kQueueMask];
@@ -253,7 +257,7 @@ class submission_state {
                 ++consumer_tail;
                 executed_.fetch_add(1, std::memory_order_relaxed);
                 tail_.store(consumer_tail, std::memory_order_release);
-                if (consumer_tail >= waiting_for_.load(std::memory_order_acquire)) completion_cv_.notify_all();
+                tail_.notify_all();
                 continue;
             }
 
@@ -261,11 +265,11 @@ class submission_state {
             context_binding binding;
             {
                 std::unique_lock<std::mutex> lock(control_mutex_);
-                work_cv_.wait(lock, [this, consumer_tail] {
-                    return head_.load(std::memory_order_acquire) > consumer_tail ||
-                           request_ != control_request::none;
-                });
-                if (head_.load(std::memory_order_acquire) > consumer_tail) continue;
+                if (request_ == control_request::none) {
+                    lock.unlock();
+                    wake_counter_.wait(wake_value, std::memory_order_acquire);
+                    continue;
+                }
                 request = request_;
                 binding = binding_;
                 request_ = control_request::none;
@@ -326,17 +330,16 @@ class submission_state {
         }
     }
 
-    std::unique_ptr<queue_slot[]> queue_{new queue_slot[kQueueCapacity]};
+    // Allocated only after the feature is enabled and a real context is adopted.
+    // The normal renderer path does not pay the roughly 8.5 MiB queue cost.
+    std::unique_ptr<queue_slot[]> queue_;
     std::atomic<uint64_t> head_{0};
     std::atomic<uint64_t> tail_{0};
+    std::atomic<uint64_t> wake_counter_{0};
     uint64_t producer_head_ = 0;
-    std::atomic<uint64_t> waiting_for_{std::numeric_limits<uint64_t>::max()};
     std::atomic<bool> active_{false};
     std::thread::id owner_;
 
-    std::mutex wait_mutex_;
-    std::condition_variable work_cv_;
-    std::condition_variable completion_cv_;
     std::mutex control_mutex_;
     std::condition_variable control_cv_;
     std::thread worker_;

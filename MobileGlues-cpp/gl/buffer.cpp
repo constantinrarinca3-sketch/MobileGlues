@@ -1509,6 +1509,32 @@ GLuint find_bound_buffer(GLenum key) {
     return 0;
 }
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+namespace mg_ts {
+
+bool draw_async_safe(bool indexed, bool indirect) {
+    if (indexed && find_bound_buffer_by_target(GL_ELEMENT_ARRAY_BUFFER) == 0) return false;
+    if (indirect && find_bound_buffer_by_target(GL_DRAW_INDIRECT_BUFFER) == 0) return false;
+
+    const vertex_array_state_t& state = current_vertex_array_state();
+    for (size_t index = 0; index < kTrackedVertexAttribs; ++index) {
+        const vertex_attrib_state_t& attrib = state.attribs[index];
+        if (attrib.enabled != GL_TRUE) continue;
+        if (!attrib.configured) return false;
+        if (!attrib.uses_binding_model) {
+            if (attrib.buffer == 0) return false;
+            continue;
+        }
+        if (attrib.binding >= kTrackedVertexAttribs) return false;
+        const vertex_binding_state_t& binding = state.bindings[attrib.binding];
+        if (!binding.configured || binding.buffer == 0) return false;
+    }
+    return true;
+}
+
+} // namespace mg_ts
+#endif
+
 GLuint gen_array() {
     if (!g_free_array_ids.empty()) {
         GLuint id = g_free_array_ids.back();

@@ -134,9 +134,9 @@ int main() {
            "uniform bytes must be copied before returning to the caller");
 
     EGLBoolean swap_result = EGL_FALSE;
-    expect(mg_ts::submit_swap(display, surface, fakeSwap, nullptr, nullptr, 0, false, &swap_result),
+    expect(mg_ts::submit_swap(display, surface, fakeSwap, nullptr, nullptr, 0, true, &swap_result),
            "swap must enter the worker queue");
-    expect(swap_result == EGL_TRUE, "an asynchronous swap must acknowledge queueing");
+    expect(swap_result == EGL_TRUE, "a synchronous swap must return the backend result");
     expect(mg_ts::release_context(), "release must drain work and unbind the worker context");
     mg_ts::shutdown();
 

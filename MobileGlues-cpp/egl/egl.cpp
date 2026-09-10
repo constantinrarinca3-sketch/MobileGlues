@@ -415,7 +415,7 @@ namespace {
 #if defined(ZOMDROID_EXPERIMENTAL)
         if (mg_ts::availableAndActive() && mg_ts::submit_swap != nullptr) {
             EGLBoolean result = EGL_FALSE;
-            if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, nullptr, nullptr, 0, fsr_on, &result)) {
+            if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, nullptr, nullptr, 0, true, &result)) {
                 if (fsr_on) CheckResolutionChange(dpy, surface);
                 return result;
             }
@@ -447,7 +447,7 @@ namespace {
             if (mg_ts::availableAndActive() && mg_ts::submit_swap != nullptr) {
                 EGLBoolean result = EGL_FALSE;
                 LOAD_EGL(eglSwapBuffers)
-                if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, backend, rects, n_rects, false, &result)) {
+                if (mg_ts::submit_swap(dpy, surface, egl_eglSwapBuffers, backend, rects, n_rects, true, &result)) {
                     return result;
                 }
                 return mg_ts::dispatch_call(backend, true, dpy, surface, rects, n_rects);
@@ -867,6 +867,15 @@ extern "C"
 #endif
 
         const EGLBoolean result = egl_eglMakeCurrent(dpy, draw, read, ctx);
+#if defined(ZOMDROID_EXPERIMENTAL)
+        EGLint make_current_error = EGL_SUCCESS;
+        if (result != EGL_TRUE) {
+            // EGL errors belong to the thread that produced them. Capture this
+            // one before restoring the old context and moving it back to the worker.
+            LOAD_EGL(eglGetError)
+            make_current_error = egl_eglGetError();
+        }
+#endif
         ETRACE("eglMakeCurrent(dpy=%p, draw=%p, read=%p, ctx=%p, MGContext=%llu) -> %s", dpy, draw, read, ctx,
                before ? before->id : 0ULL, result == EGL_TRUE ? "ok" : "FAILED");
         // Only on success: a failed make-current leaves the previous context
@@ -894,6 +903,7 @@ extern "C"
                                      egl_eglBindAPI, egl_eglMakeCurrent, egl_eglReleaseThread);
             }
         }
+        if (result != EGL_TRUE && make_current_error != EGL_SUCCESS) setFrontendError(make_current_error);
 #endif
         return result;
     }

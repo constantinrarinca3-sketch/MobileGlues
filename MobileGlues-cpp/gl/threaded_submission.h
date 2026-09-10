@@ -37,6 +37,7 @@ bool active() __attribute__((weak));
 reservation reserve(command_fn execute, command_fn destroy) __attribute__((weak));
 void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
+bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
 using egl_make_current_fn = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
@@ -128,6 +129,11 @@ inline bool nameEquals(const char* lhs, const char* rhs) { return std::strcmp(lh
 
 inline bool nameStartsWith(const char* value, const char* prefix) {
     return std::strncmp(value, prefix, std::strlen(prefix)) == 0;
+}
+
+inline bool isDrawCommand(const char* name) {
+    return nameStartsWith(name, "glDrawArrays") || nameStartsWith(name, "glDrawElements") ||
+           nameStartsWith(name, "glDrawRangeElements") || nameStartsWith(name, "glMultiDraw");
 }
 
 inline slot_policy policyForName(const char* name) {
@@ -385,7 +391,11 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
             if (policy_ == mg_ts::slot_policy::buffer_copy && mg_ts::tryBufferCopy(function_, args...)) return;
 
             constexpr bool has_pointer = (std::is_pointer_v<std::decay_t<Args>> || ... || false);
-            const bool synchronous = policy_ == mg_ts::slot_policy::synchronous ||
+            const bool draw_must_wait = mg_ts::isDrawCommand(name_) &&
+                                        (mg_ts::draw_async_safe == nullptr ||
+                                         !mg_ts::draw_async_safe(std::strstr(name_, "Elements") != nullptr,
+                                                                 std::strstr(name_, "Indirect") != nullptr));
+            const bool synchronous = draw_must_wait || policy_ == mg_ts::slot_policy::synchronous ||
                                      (has_pointer &&
                                       (policy_ != mg_ts::slot_policy::pointer_offset ||
                                        !mg_ts::pointerArgumentsLookLikeOffsets(args...)));

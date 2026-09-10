@@ -158,9 +158,9 @@ MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission on the render thread (
 The application thread retains MobileGlues state translation and records ordered backend commands
 into a fixed SPSC queue. Commands with return values, output pointers or caller-owned input that
 cannot safely outlive the call wait for the worker. Small uniform arrays and buffer uploads are
-copied before returning so those calls can remain asynchronous. Presentation permits at most one
-submitted frame in flight, preventing unbounded latency while allowing CPU translation for the next
-frame to overlap driver submission for the current one.
+copied before returning so those calls can remain asynchronous. Draws remain asynchronous only when
+the element and enabled vertex inputs are backed by GL buffers. Presentation drains the frame and
+returns the backend `eglSwapBuffers` result so surface loss is reported on the calling thread.
 
 This path changes EGL context ownership and is deliberately isolated from the frozen stable branch.
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows synchronous waits, queue-full waits, presentation
