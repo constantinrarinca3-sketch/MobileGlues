@@ -156,7 +156,6 @@ struct gpu_buffer_ring_t {
     std::array<gpu_buffer_ring_slot_t, kGpuBufferRingDepth> slots{};
     uint8_t count = 0;
     uint8_t current = 0;
-    GLuint legacy_buffer = 0;
 };
 
 struct gpu_buffer_fence_t {
@@ -682,7 +681,6 @@ static bool promote_persistent_stream(GLenum target, GLuint buffer, GLsizeiptr s
     }
 
     gpu_buffer_ring_t ring{};
-    ring.legacy_buffer = previous;
     if (!allocate_persistent_backing(target, size, &ring.slots[0])) {
         GLES.glBindBuffer(target, previous);
         ++stats.unsafe;
@@ -696,6 +694,11 @@ static bool promote_persistent_stream(GLenum target, GLuint buffer, GLsizeiptr s
     g_gpu_buffer_rings[buffer] = ring;
     modify_buffer(buffer, ring.slots[0].driver_buffer);
     refresh_bound_vao_backings();
+    // The new persistent store has replaced the mutable one. Deletion is safe
+    // for queued draws: GLES keeps the old object alive until its remaining VAO
+    // references and GPU commands retire, without us retaining a second full
+    // allocation for the lifetime of the frontend buffer.
+    if (previous != 0) GLES.glDeleteBuffers(1, &previous);
     record_buffer_storage(buffer, size, g_buffer_usage[buffer], buffer_storage_kind_t::persistent_stream);
     ++stats.promotions;
     stats.bytes += static_cast<unsigned long long>(size);
@@ -706,13 +709,12 @@ static bool promote_persistent_stream(GLenum target, GLuint buffer, GLsizeiptr s
 static bool delete_gpu_ring_backings(GLuint buffer) {
     const auto found = g_gpu_buffer_rings.find(buffer);
     if (found == g_gpu_buffer_rings.end()) return false;
-    std::array<GLuint, kGpuBufferRingDepth + 1> names{};
+    std::array<GLuint, kGpuBufferRingDepth> names{};
     GLsizei count = 0;
     for (uint8_t i = 0; i < found->second.count; ++i) {
         const GLuint name = found->second.slots[i].driver_buffer;
         if (name != 0) names[count++] = name;
     }
-    if (found->second.legacy_buffer != 0) names[count++] = found->second.legacy_buffer;
     if (count != 0) GLES.glDeleteBuffers(count, names.data());
     g_gpu_buffer_rings.erase(found);
     return count != 0;
@@ -2356,6 +2358,7 @@ GLboolean glUnmapBuffer(GLenum target) {
                                    promote ? "paired_persistent_promotion" : "paired_upload",
                                    g_bc->buffer_discard_coalesce_stats.paired);
         }
+        if (promote) std::vector<unsigned char>().swap(staged->second.storage);
         staged->second.completed_upload = true;
         staged->second.mapped = false;
         staged->second.persistent_direct = false;
