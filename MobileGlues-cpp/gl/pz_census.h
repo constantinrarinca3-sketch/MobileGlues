@@ -23,7 +23,6 @@ extern bool mg_pz_buffer_discard_coalesce_active;
 extern bool mg_pz_state_shadow_active;
 extern bool mg_pz_runtime_mipmap_skip_active;
 extern bool mg_pz_quad_index_cache_active;
-extern bool mg_pz_threaded_present_active;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,
