@@ -28,6 +28,12 @@
 #include "pz_material_stream_renderer_v43_base.cpp"
 #else
 
+// V4.3 contains two intentional absolute references to ::v43_base. While the
+// source is embedded below, expose a translation-unit alias to the nested base
+// so the retained V4.3 implementation stays byte-for-byte unchanged.
+namespace v44_base { namespace v43_base {} }
+namespace v43_base = v44_base::v43_base;
+
 namespace v44_base {
 namespace mg_ts {
 using backend_command_class = ::mg_ts::backend_command_class;
