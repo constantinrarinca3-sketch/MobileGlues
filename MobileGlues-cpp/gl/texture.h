@@ -29,9 +29,9 @@ extern "C"
                                          GLsizei height);
     GLAPI GLAPIENTRY void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width,
                                          GLsizei height, GLsizei depth);
-    GLAPI GLAPIENTRY void glCopyTexImage1D(GLenum target, GLint level, GLint internalFormat, GLint x, GLint y,
+    GLAPI GLAPIENTRY void glCopyTexImage1D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
                                            GLsizei width, GLint border);
-    GLAPI GLAPIENTRY void glCopyTexImage2D(GLenum target, GLint level, GLint internalFormat, GLint x, GLint y,
+    GLAPI GLAPIENTRY void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
                                            GLsizei width, GLsizei height, GLint border);
     GLAPI GLAPIENTRY void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x,
                                               GLint y, GLsizei width, GLsizei height);
