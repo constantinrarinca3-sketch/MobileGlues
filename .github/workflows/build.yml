@@ -5,6 +5,7 @@ on:
       - zomdroid-experimental
       - zomdroid-optimization
       - zomdroid-threaded-submission-experimental
+      - zomdroid-pz-renderer-experimental
   workflow_dispatch:
 jobs:
   build-ios:

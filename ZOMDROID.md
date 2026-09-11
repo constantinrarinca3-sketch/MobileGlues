@@ -175,10 +175,6 @@ The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.
 
 The separate `zomdroid-pz-renderer-experimental` branch also classifies each queued command as
 state, uniform, resource write, draw or barrier. Draws, resource writes and barriers close a safe
-renderer segment. Its compiler removes an earlier write when a later command overwrites
-the same independent state or the same uniform inside one segment and packet. The state pass covers enable state,
-vertex-attrib enable/divisors, blend colour, colour/depth masks, polygon offset, sample coverage and
-clear values. Uniform writes require an identical location, setter signature and element count;
-program changes terminate their segment. The compiler never folds bindings and never crosses a draw,
-resource write or barrier. With the census enabled, the threaded report appends
-`renderer=segments/state/uniform/resource/draw/barrier/drop_s/drop_u` totals.
+renderer segment. Execution remains strictly FIFO at this stage; the metadata prepares later
+coalescing without changing rendered output. With the census enabled, the threaded report appends
+`renderer=segments/state/uniform/resource/draw/barrier` totals.
