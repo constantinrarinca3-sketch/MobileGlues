@@ -34,7 +34,7 @@ const char* license = "GNU LGPL-2.1 License";
 #if defined(ZOMDROID_EXPERIMENTAL)
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-material-stream-4";
+    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.1";
 }
 #endif
 
@@ -79,28 +79,26 @@ void proc_init() {
     load_libs();
     init_target_egl();
     init_target_gles();
-#if defined(ZOMDROID_EXPERIMENTAL)
-    const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
-    if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
-        mg_pz_repack_renderer_install();
-        mg_pz_repack_draw_router_install();
-    } else {
-        mg_pz_repack_probe_install();
-    }
-#else
-    mg_pz_repack_probe_install();
-#endif
-    set_multidraw_setting();
+    mg_pz_buffer_streaming_install();
+    mg_pz_repack_renderer_install();
+    mg_pz_repack_draw_router_install();
+    init_target_gl();
+}
 
-    init_settings_post();
-
+__attribute__((constructor)) static void init() {
 #if PROFILING
     init_perfetto();
 #endif
+    proc_init();
+}
 
-    // Cleanup
-#ifndef __APPLE__
-    destroy_temp_egl_ctx();
+__attribute__((destructor)) static void deinit() {
+    // Stop the experimental worker while the backend EGL/GLES libraries are
+    // still loaded and while every command function pointer it may execute is
+    // valid. Static-destruction order across translation units is unspecified;
+    // relying on the worker object's destructor was a use-after-dlclose hazard.
+    mg_pz_threaded_submission_shutdown();
+#if PROFILING
+    perfetto::TrackEvent::Flush();
 #endif
-    g_initialized = 1;
 }
