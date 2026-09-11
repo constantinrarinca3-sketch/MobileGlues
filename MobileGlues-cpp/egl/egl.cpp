@@ -12,7 +12,6 @@
 #include "../gl/log.h"
 #include "../gl/mg.h"
 #include "../gl/pz_census.h"
-#include "../gl/pz_tile_batch.h"
 #include "../gl/threaded_submission.h"
 #include "../gles/loader.h"
 #include "../glx/lookup.h"
@@ -992,9 +991,6 @@ extern "C"
 
     EGL_API EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
         LOG_D("eglSwapBuffers, dpy: %p, surface: %p", dpy, surface);
-#if defined(ZOMDROID_EXPERIMENTAL)
-        mg_pz_tile_batch_present();
-#endif
         const EGLBoolean result = presentSurface(dpy, surface);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
         return result;
@@ -1009,9 +1005,6 @@ extern "C"
     // prefers the damage variant.
     EGL_API EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageKHR, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
-#if defined(ZOMDROID_EXPERIMENTAL)
-        mg_pz_tile_batch_present();
-#endif
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageKHR");
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
@@ -1020,9 +1013,6 @@ extern "C"
 
     EGL_API EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay dpy, EGLSurface surface, EGLint* rects, EGLint n_rects) {
         LOG_D("eglSwapBuffersWithDamageEXT, dpy: %p, surface: %p, n_rects: %d", dpy, surface, n_rects);
-#if defined(ZOMDROID_EXPERIMENTAL)
-        mg_pz_tile_batch_present();
-#endif
         static const SwapWithDamageFn backend = resolveSwapWithDamage("eglSwapBuffersWithDamageEXT");
         const EGLBoolean result = presentSurfaceWithDamage(dpy, surface, rects, n_rects, backend);
         MG_PZ_CENSUS(mg_pz_census_present(result == EGL_TRUE));
