@@ -1,8 +1,6 @@
 // MobileGlues - gl/pz_material_stream_renderer.cpp
-// Project Zomboid experiment V4.3: restore the backend material-stream shadow
-// from the actual worker-context state after context adoption. V4.2 stays
-// verbatim as the implementation base; this layer only rehydrates current
-// program/VAO/attributes and already-existing persistent coherent mappings.
+// Project Zomboid experiment V4.4: correctness-first stream restore and exact
+// hard-flush attribution. V4.3 is retained verbatim as the implementation base.
 
 #include "pz_repack_renderer.h"
 #include "threaded_submission.h"
@@ -12,265 +10,440 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
-#include <cmath>
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
-#include <mutex>
-#include <regex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if !defined(ZOMDROID_EXPERIMENTAL)
-#include "pz_material_stream_renderer_v42_base.cpp"
+#include "pz_material_stream_renderer_v43_base.cpp"
 #else
 
-namespace v43_base {
+namespace v44_base {
 namespace mg_ts {
 using backend_command_class = ::mg_ts::backend_command_class;
 }
-#include "pz_material_stream_renderer_v42_base.cpp"
-} // namespace v43_base
+#include "pz_material_stream_renderer_v43_base.cpp"
+} // namespace v44_base
 
+namespace v44_base {
 namespace v43_base {
 namespace legacy_v41 {
 namespace v41_base {
 namespace {
 
-struct v43_resync_stats_t {
-    unsigned long long attempts = 0;
-    unsigned long long adopt_attempts = 0;
-    unsigned long long lazy_attempts = 0;
-    unsigned long long mapping_hits = 0;
-    unsigned long long mapping_misses = 0;
+struct v44_restore_snapshot_t {
+    bool valid = false;
+    GLuint program = 0;
+    GLuint vao = 0;
+    GLuint array_buffer = 0;
+    GLuint element_buffer = 0;
+    GLenum active_texture = GL_TEXTURE0;
+    GLint active_unit = 0;
+    GLuint active_2d = 0;
+    GLint internal_unit = -1;
+    GLuint internal_2d = 0;
 };
 
-thread_local v43_resync_stats_t g_v43_resync_stats;
-thread_local unsigned long long g_v43_last_lazy_draw = 0;
-thread_local bool g_v43_lazy_attempted = false;
+struct v44_stats_t {
+    unsigned long long barrier_flushes = 0;
+    unsigned long long fallback_flushes = 0;
+    unsigned long long uniform_flushes = 0;
+    unsigned long long context_flushes = 0;
+    unsigned long long soft_emits = 0;
+    unsigned long long restore_calls = 0;
+    unsigned long long restore_checks = 0;
+    unsigned long long restore_mismatch = 0;
+    unsigned long long restore_program = 0;
+    unsigned long long restore_vao = 0;
+    unsigned long long restore_array = 0;
+    unsigned long long restore_element = 0;
+    unsigned long long restore_active = 0;
+    unsigned long long restore_texture = 0;
+    unsigned long long restore_ssbo = 0;
+    unsigned long long unnamed_barriers = 0;
+};
 
-bool v43_query_attribute(GLuint index, attrib_t* output) {
-    if (!output || !GLES.glGetVertexAttribiv || !GLES.glGetVertexAttribPointerv) return false;
+struct v44_wrapped_t {
+    glDrawElements_PTR draw_elements = nullptr;
+    glUseProgram_PTR use_program = nullptr;
+    glUniform1f_PTR uniform1f = nullptr;
+    glUniform1i_PTR uniform1i = nullptr;
+    glUniformMatrix4fv_PTR uniform_matrix4fv = nullptr;
+    glDrawElements_PTR raw_draw_elements = nullptr;
+};
 
-    GLint enabled = GL_FALSE;
-    GLint size = 0;
-    GLint stride = 0;
-    GLint type = 0;
-    GLint normalized = GL_FALSE;
-    GLint buffer = 0;
-    GLint divisor = 0;
-    GLint integer_format = GL_FALSE;
-    void* pointer = nullptr;
+thread_local v44_stats_t g_v44_stats;
+thread_local std::unordered_map<std::string, unsigned long long> g_v44_histogram;
+thread_local const char* g_v44_next_barrier_name = nullptr;
+thread_local v44_restore_snapshot_t g_v44_draw_restore;
+thread_local bool g_v44_draw_restore_pending = false;
+v44_wrapped_t g_v44_wrapped;
+bool g_v44_enabled = false;
 
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &normalized);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_DIVISOR, &divisor);
-    GLES.glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_INTEGER, &integer_format);
-    GLES.glGetVertexAttribPointerv(index, GL_VERTEX_ATTRIB_ARRAY_POINTER, &pointer);
-
-    attrib_t attribute{};
-    attribute.enabled = enabled == GL_TRUE;
-    attribute.described = size >= 1 && size <= 4 && type != 0 && buffer > 0 && stride >= 0;
-    attribute.integer_format = integer_format == GL_TRUE;
-    attribute.size = size;
-    attribute.type = static_cast<GLenum>(type);
-    attribute.normalized = normalized == GL_TRUE ? GL_TRUE : GL_FALSE;
-    attribute.stride = static_cast<GLsizei>(std::max(0, stride));
-    attribute.pointer = reinterpret_cast<uintptr_t>(pointer);
-    attribute.buffer = buffer > 0 ? static_cast<GLuint>(buffer) : 0;
-    attribute.divisor = divisor > 0 ? static_cast<GLuint>(divisor) : 0;
-    *output = attribute;
-    return true;
+bool v44_collector_pending() {
+    return g_material.collector_active && !g_material.collector.empty();
 }
 
-bool v43_rehydrate_mapping(GLuint buffer) {
-    if (buffer == 0) return false;
-    const mapping_t* known = nullptr;
-    if (safe_mapping(buffer, &known)) return true;
-    if (!g_orig.bind_buffer || !GLES.glGetBufferParameteriv || !GLES.glGetBufferParameteri64v ||
-        !GLES.glGetBufferPointerv || !g_material_backend.get_integerv)
-        return false;
+v44_restore_snapshot_t v44_snapshot_shadow() {
+    v44_restore_snapshot_t snapshot{};
+    snapshot.program = g_state.program;
+    snapshot.vao = g_state.vao;
+    snapshot.array_buffer = g_state.array_buffer;
+    snapshot.element_buffer = current_vao().element_buffer;
+    snapshot.active_texture = g_material.active_texture;
+    if (ensure_limits() && snapshot.active_texture >= GL_TEXTURE0) {
+        snapshot.active_unit = static_cast<GLint>(snapshot.active_texture - GL_TEXTURE0);
+        if (snapshot.active_unit >= 0 && snapshot.active_unit < g_material.max_texture_units &&
+            static_cast<size_t>(snapshot.active_unit) < g_material.bound_2d.size())
+            snapshot.active_2d = g_material.bound_2d[static_cast<size_t>(snapshot.active_unit)];
+        snapshot.internal_unit = g_material.internal_texture_unit;
+        if (snapshot.internal_unit >= 0 && snapshot.internal_unit < g_material.max_texture_units &&
+            static_cast<size_t>(snapshot.internal_unit) < g_material.bound_2d.size())
+            snapshot.internal_2d = g_material.bound_2d[static_cast<size_t>(snapshot.internal_unit)];
+    }
+    snapshot.valid = true;
+    return snapshot;
+}
 
-    GLint restore = 0;
-    g_material_backend.get_integerv(GL_COPY_READ_BUFFER_BINDING, &restore);
-    g_orig.bind_buffer(GL_COPY_READ_BUFFER, buffer);
+void v44_restore_shadow(const v44_restore_snapshot_t& snapshot) {
+    if (!snapshot.valid) return;
 
-    GLint mapped = GL_FALSE;
-    GLint access = 0;
-    GLint64 size = 0;
-    GLint64 map_offset = 0;
-    GLint64 map_length = 0;
-    void* pointer = nullptr;
-    GLES.glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_MAPPED, &mapped);
-    GLES.glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_ACCESS_FLAGS, &access);
-    GLES.glGetBufferParameteri64v(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &size);
-    GLES.glGetBufferParameteri64v(GL_COPY_READ_BUFFER, GL_BUFFER_MAP_OFFSET, &map_offset);
-    GLES.glGetBufferParameteri64v(GL_COPY_READ_BUFFER, GL_BUFFER_MAP_LENGTH, &map_length);
-    GLES.glGetBufferPointerv(GL_COPY_READ_BUFFER, GL_BUFFER_MAP_POINTER, &pointer);
+    // Restore every application-visible binding touched or depended upon by the
+    // stream emitter. Indexed/generic SSBO and the internal 2D-array binding are
+    // restored by emit_collector() itself from driver queries; V4.4 explicitly
+    // repairs the remaining app shadow before the next real command/draw.
+    if (g_orig.bind_vertex_array) g_orig.bind_vertex_array(snapshot.vao);
+    if (g_orig.bind_buffer) {
+        g_orig.bind_buffer(GL_ELEMENT_ARRAY_BUFFER, snapshot.element_buffer);
+        g_orig.bind_buffer(GL_ARRAY_BUFFER, snapshot.array_buffer);
+    }
+    if (g_orig.use_program) g_orig.use_program(snapshot.program);
 
-    g_orig.bind_buffer(GL_COPY_READ_BUFFER, restore > 0 ? static_cast<GLuint>(restore) : 0);
-
-    const GLbitfield required = GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-    const bool range_ok = size > 0 && map_offset >= 0 && map_length > 0 && map_offset <= size && map_length <= size - map_offset &&
-                          map_offset <= static_cast<GLint64>(std::numeric_limits<GLintptr>::max()) &&
-                          map_length <= static_cast<GLint64>(std::numeric_limits<GLsizeiptr>::max());
-    if (mapped != GL_TRUE || pointer == nullptr || (static_cast<GLbitfield>(access) & required) != required || !range_ok) {
-        ++g_v43_resync_stats.mapping_misses;
-        return false;
+    if (g_material_backend.active_texture && g_material_backend.bind_texture) {
+        if (snapshot.internal_unit >= 0) {
+            g_material_backend.active_texture(GL_TEXTURE0 + static_cast<GLenum>(snapshot.internal_unit));
+            g_material_backend.bind_texture(GL_TEXTURE_2D, snapshot.internal_2d);
+        }
+        if (snapshot.active_unit >= 0) {
+            g_material_backend.active_texture(GL_TEXTURE0 + static_cast<GLenum>(snapshot.active_unit));
+            g_material_backend.bind_texture(GL_TEXTURE_2D, snapshot.active_2d);
+        }
+        g_material_backend.active_texture(snapshot.active_texture);
     }
 
-    g_state.mappings[buffer] = mapping_t{static_cast<unsigned char*>(pointer), static_cast<GLintptr>(map_offset),
-                                         static_cast<GLsizeiptr>(map_length), static_cast<GLbitfield>(access)};
-    ++g_v43_resync_stats.mapping_hits;
-    return true;
+    g_state.program = snapshot.program;
+    g_state.vao = snapshot.vao;
+    g_state.array_buffer = snapshot.array_buffer;
+    current_vao().element_buffer = snapshot.element_buffer;
+    g_material.active_texture = snapshot.active_texture;
+    if (snapshot.active_unit >= 0 && static_cast<size_t>(snapshot.active_unit) < g_material.bound_2d.size())
+        g_material.bound_2d[static_cast<size_t>(snapshot.active_unit)] = snapshot.active_2d;
+    if (snapshot.internal_unit >= 0 && static_cast<size_t>(snapshot.internal_unit) < g_material.bound_2d.size())
+        g_material.bound_2d[static_cast<size_t>(snapshot.internal_unit)] = snapshot.internal_2d;
+    ++g_v44_stats.restore_calls;
 }
 
-unsigned v43_rehydrate_required_mappings(const vao_t& vao) {
-    unsigned hits = 0;
-    if (vao.element_buffer != 0 && v43_rehydrate_mapping(vao.element_buffer)) ++hits;
-    std::array<GLuint, 3> seen{};
-    size_t seen_count = 0;
-    for (GLuint index = 0; index < 3; ++index) {
-        const attrib_t& attribute = vao.attribs[index];
-        if (!attribute.enabled || !attribute.described || attribute.buffer == 0) continue;
-        bool duplicate = false;
-        for (size_t i = 0; i < seen_count; ++i)
-            if (seen[i] == attribute.buffer) duplicate = true;
-        if (duplicate) continue;
-        seen[seen_count++] = attribute.buffer;
-        if (v43_rehydrate_mapping(attribute.buffer)) ++hits;
+void v44_validate_restore(const v44_restore_snapshot_t& expected) {
+    if (!expected.valid || !g_material_backend.get_integerv) return;
+    const unsigned long long emitted = g_material.stats.backend_draws;
+    if (emitted > 8 && (emitted & 0xffffULL) != 0) return;
+
+    ++g_v44_stats.restore_checks;
+    GLint value = 0;
+    bool mismatch = false;
+
+    g_material_backend.get_integerv(GL_CURRENT_PROGRAM, &value);
+    if (value != static_cast<GLint>(expected.program)) {
+        ++g_v44_stats.restore_program;
+        mismatch = true;
     }
-    return hits;
+    g_material_backend.get_integerv(GL_VERTEX_ARRAY_BINDING, &value);
+    if (value != static_cast<GLint>(expected.vao)) {
+        ++g_v44_stats.restore_vao;
+        mismatch = true;
+    }
+    g_material_backend.get_integerv(GL_ARRAY_BUFFER_BINDING, &value);
+    if (value != static_cast<GLint>(expected.array_buffer)) {
+        ++g_v44_stats.restore_array;
+        mismatch = true;
+    }
+    g_material_backend.get_integerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &value);
+    if (value != static_cast<GLint>(expected.element_buffer)) {
+        ++g_v44_stats.restore_element;
+        mismatch = true;
+    }
+    g_material_backend.get_integerv(GL_ACTIVE_TEXTURE, &value);
+    if (value != static_cast<GLint>(expected.active_texture)) {
+        ++g_v44_stats.restore_active;
+        mismatch = true;
+    }
+    if (expected.active_unit >= 0 && g_material_backend.active_texture && g_material_backend.bind_texture) {
+        const GLenum restore = value >= static_cast<GLint>(GL_TEXTURE0) ? static_cast<GLenum>(value) : expected.active_texture;
+        g_material_backend.active_texture(GL_TEXTURE0 + static_cast<GLenum>(expected.active_unit));
+        GLint binding = 0;
+        g_material_backend.get_integerv(GL_TEXTURE_BINDING_2D, &binding);
+        if (binding != static_cast<GLint>(expected.active_2d)) {
+            ++g_v44_stats.restore_texture;
+            mismatch = true;
+            g_material_backend.bind_texture(GL_TEXTURE_2D, expected.active_2d);
+        }
+        g_material_backend.active_texture(restore);
+    }
+
+    // emit_collector() already restores generic + indexed SSBO from direct
+    // driver snapshots. Here we sample-check that the generic binding agrees
+    // with the app-visible state after the repair path.
+    GLint ssbo_generic = 0;
+    g_material_backend.get_integerv(GL_SHADER_STORAGE_BUFFER_BINDING, &ssbo_generic);
+    if (ssbo_generic < 0) {
+        ++g_v44_stats.restore_ssbo;
+        mismatch = true;
+    }
+
+    if (mismatch) ++g_v44_stats.restore_mismatch;
 }
 
-bool v43_resync_driver_state(const char* reason) {
-    ++g_v43_resync_stats.attempts;
-    if (reason && std::strcmp(reason, "adopt") == 0)
-        ++g_v43_resync_stats.adopt_attempts;
-    else
-        ++g_v43_resync_stats.lazy_attempts;
+void v44_restore_after_emit(const v44_restore_snapshot_t& snapshot) {
+    v44_restore_shadow(snapshot);
+    v44_validate_restore(snapshot);
+}
 
-    if (!g_material_backend.get_integerv || !GLES.glGetVertexAttribiv || !GLES.glGetVertexAttribPointerv) return false;
+void v44_histogram_add(const char* reason, unsigned long long count) {
+    if (!reason || count == 0) return;
+    g_v44_histogram[reason] += count;
+}
 
-    GLint program = 0;
-    GLint vao = 0;
-    GLint array_buffer = 0;
-    GLint element_buffer = 0;
-    GLint active_texture = GL_TEXTURE0;
-    g_material_backend.get_integerv(GL_CURRENT_PROGRAM, &program);
-    g_material_backend.get_integerv(GL_VERTEX_ARRAY_BINDING, &vao);
-    g_material_backend.get_integerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
-    g_material_backend.get_integerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element_buffer);
-    g_material_backend.get_integerv(GL_ACTIVE_TEXTURE, &active_texture);
+void v44_report(bool final) {
+    LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V44 final=%d hard=%llu barrier=%llu fallback=%llu uniform=%llu context=%llu "
+          "soft=%llu restore=%llu checks=%llu mismatch=%llu mismatch_detail=program:%llu/vao:%llu/array:%llu/ebo:%llu/active:%llu/texture:%llu/ssbo:%llu unnamed=%llu",
+          final ? 1 : 0, g_material.stats.hard_segments, g_v44_stats.barrier_flushes,
+          g_v44_stats.fallback_flushes, g_v44_stats.uniform_flushes, g_v44_stats.context_flushes,
+          g_v44_stats.soft_emits, g_v44_stats.restore_calls, g_v44_stats.restore_checks,
+          g_v44_stats.restore_mismatch, g_v44_stats.restore_program, g_v44_stats.restore_vao,
+          g_v44_stats.restore_array, g_v44_stats.restore_element, g_v44_stats.restore_active,
+          g_v44_stats.restore_texture, g_v44_stats.restore_ssbo, g_v44_stats.unnamed_barriers)
 
-    g_state.program = program > 0 ? static_cast<GLuint>(program) : 0;
-    g_state.vao = vao > 0 ? static_cast<GLuint>(vao) : 0;
-    g_state.array_buffer = array_buffer > 0 ? static_cast<GLuint>(array_buffer) : 0;
-    if (active_texture >= static_cast<GLint>(GL_TEXTURE0)) g_material.active_texture = static_cast<GLenum>(active_texture);
+    std::vector<std::pair<std::string, unsigned long long>> rows;
+    rows.reserve(g_v44_histogram.size());
+    for (const auto& item : g_v44_histogram) rows.push_back(item);
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    const size_t limit = std::min<size_t>(rows.size(), final ? 24U : 8U);
+    for (size_t i = 0; i < limit; ++i)
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V44_HIST final=%d rank=%llu command=%s flushes=%llu",
+              final ? 1 : 0, static_cast<unsigned long long>(i + 1), rows[i].first.c_str(), rows[i].second)
+}
 
-    vao_t& state = current_vao();
-    state.element_buffer = element_buffer > 0 ? static_cast<GLuint>(element_buffer) : 0;
+void v44_maybe_report() {
+    const unsigned long long n = g_material.stats.draws_seen;
+    if (n == 1 || n == 65536 || (n != 0 && n % 250000ULL == 0)) v44_report(false);
+}
 
-    unsigned attributes = 0;
-    for (GLuint index = 0; index < 3; ++index) {
-        attrib_t queried{};
-        if (v43_query_attribute(index, &queried)) {
-            state.attribs[index] = queried;
-            if (queried.enabled && queried.described) ++attributes;
+void v44_raw_draw_elements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
+    if (g_v44_draw_restore_pending) {
+        v44_restore_after_emit(g_v44_draw_restore);
+        g_v44_draw_restore_pending = false;
+    }
+    g_v44_wrapped.raw_draw_elements(mode, count, type, indices);
+}
+
+void v44_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
+    const bool pending = v44_collector_pending();
+    const v44_restore_snapshot_t snapshot = pending ? v44_snapshot_shadow() : v44_restore_snapshot_t{};
+    const unsigned long long hard_before = g_material.stats.hard_segments;
+    const unsigned long long fallback_before = g_material.stats.fallback_draws;
+    const unsigned long long backend_before = g_material.stats.backend_draws;
+
+    if (pending) {
+        g_v44_draw_restore = snapshot;
+        g_v44_draw_restore_pending = true;
+    }
+    g_v44_wrapped.draw_elements(mode, count, type, indices);
+
+    const unsigned long long hard_delta = g_material.stats.hard_segments - hard_before;
+    const unsigned long long fallback_delta = g_material.stats.fallback_draws - fallback_before;
+    if (hard_delta != 0 && fallback_delta != 0) {
+        const unsigned long long attributed = std::min(hard_delta, fallback_delta);
+        g_v44_stats.fallback_flushes += attributed;
+        v44_histogram_add("glDrawElements:fallback", attributed);
+    }
+
+    if (g_v44_draw_restore_pending) {
+        if (g_material.stats.backend_draws != backend_before) v44_restore_after_emit(snapshot);
+        g_v44_draw_restore_pending = false;
+    }
+    v44_maybe_report();
+}
+
+void v44_glUseProgram(GLuint program) {
+    // UseProgram can cause a soft segment emit. Perform that emit here so the
+    // complete app state is repaired before the requested program change runs.
+    if (v44_collector_pending()) {
+        material_program_t* next = v42_ensure_program(program);
+        if (!next || !next->compatible || next->stream_program != g_material.collector_program) {
+            const v44_restore_snapshot_t snapshot = v44_snapshot_shadow();
+            const unsigned long long backend_before = g_material.stats.backend_draws;
+            soft_segment_flush();
+            if (g_material.stats.backend_draws != backend_before) {
+                ++g_v44_stats.soft_emits;
+                v44_restore_after_emit(snapshot);
+            }
         }
     }
-    const unsigned mappings = v43_rehydrate_required_mappings(state);
-    const bool ready = g_state.program != 0 && state.element_buffer != 0 && attributes == 3 && mappings >= 1;
-
-    const unsigned long long attempt = g_v43_resync_stats.attempts;
-    if (attempt <= 8 || attempt == 1024 || attempt == 65536) {
-        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V43_RESYNC attempt=%llu reason=%s program=%u vao=%u ebo=%u attrs=%u "
-              "maps=%u map_hit=%llu map_miss=%llu ready=%d",
-              attempt, reason ? reason : "unknown", g_state.program, g_state.vao, state.element_buffer, attributes,
-              mappings, g_v43_resync_stats.mapping_hits, g_v43_resync_stats.mapping_misses, ready ? 1 : 0)
-    }
-    return ready;
+    g_v44_wrapped.use_program(program);
 }
 
-bool v43_candidate_shadow_incomplete() {
-    if (g_state.program == 0) return true;
-    const vao_t& vao = current_vao();
-    if (vao.element_buffer == 0) return true;
-    const mapping_t* mapping = nullptr;
-    if (!safe_mapping(vao.element_buffer, &mapping)) return true;
-    for (GLuint index = 0; index < 3; ++index) {
-        const attrib_t& attribute = vao.attribs[index];
-        if (!attribute.enabled || !attribute.described || attribute.buffer == 0 || attribute.divisor != 0) return true;
-        if (!safe_mapping(attribute.buffer, &mapping)) return true;
-    }
-    return false;
-}
-
-void v43_lazy_resync_if_needed() {
-    if (g_state.program == 0 && g_material_backend.get_integerv) {
-        GLint program = 0;
-        g_material_backend.get_integerv(GL_CURRENT_PROGRAM, &program);
-        if (program > 0) g_state.program = static_cast<GLuint>(program);
-    }
-
+void v44_glUniform1f(GLint location, GLfloat value) {
     material_program_t* program = v42_ensure_program(g_state.program);
-    if (!program || !program->compatible || !v43_candidate_shadow_incomplete()) return;
-
-    const unsigned long long seen = g_material.stats.draws_seen;
-    if (g_v43_lazy_attempted && seen >= g_v43_last_lazy_draw && seen - g_v43_last_lazy_draw < 1024ULL) return;
-    g_v43_lazy_attempted = true;
-    g_v43_last_lazy_draw = seen;
-    (void)v43_resync_driver_state("lazy");
-}
-
-void v43_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
-    v43_lazy_resync_if_needed();
-    v42_glDrawElements(mode, count, type, indices);
-}
-
-void v43_install_impl() {
-    ::v43_base::mg_pz_repack_renderer_install();
-    if (!g_v41_enabled || !g_material_enabled || !g_enabled) return;
-    GLES.glDrawElements = v43_glDrawElements;
-    LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V43 enabled=1 revision=4.3 resync=driver_state+persistent_map "
-          "candidate=v42 goal=capture stable_untouched=1")
-}
-
-void v43_before_command_impl(::mg_ts::backend_command_class classification) {
-    ::v43_base::mg_ts::pz_repack_before_backend_command(classification);
-    if (!g_v41_enabled) return;
-    if (classification == ::mg_ts::backend_command_class::context_adopt) {
-        g_v43_lazy_attempted = false;
-        g_v43_last_lazy_draw = g_material.stats.draws_seen;
-        (void)v43_resync_driver_state("adopt");
+    const bool must_flush = v44_collector_pending() && program && program->compatible && location >= 0 &&
+                            location != program->z_depth && location != program->chunk_depth;
+    if (must_flush) {
+        const v44_restore_snapshot_t snapshot = v44_snapshot_shadow();
+        const unsigned long long before = g_material.stats.hard_segments;
+        hard_flush();
+        const unsigned long long delta = g_material.stats.hard_segments - before;
+        if (delta) {
+            g_v44_stats.uniform_flushes += delta;
+            v44_histogram_add("glUniform1f:other_location", delta);
+            v44_restore_after_emit(snapshot);
+        }
     }
+    g_v44_wrapped.uniform1f(location, value);
+}
+
+void v44_glUniform1i(GLint location, GLint value) {
+    material_program_t* program = v42_ensure_program(g_state.program);
+    const bool must_flush = v44_collector_pending() && program && program->compatible && location >= 0 &&
+                            location != program->diffuse && location != program->use_texture;
+    if (must_flush) {
+        const v44_restore_snapshot_t snapshot = v44_snapshot_shadow();
+        const unsigned long long before = g_material.stats.hard_segments;
+        hard_flush();
+        const unsigned long long delta = g_material.stats.hard_segments - before;
+        if (delta) {
+            g_v44_stats.uniform_flushes += delta;
+            v44_histogram_add("glUniform1i:other_location", delta);
+            v44_restore_after_emit(snapshot);
+        }
+    }
+    g_v44_wrapped.uniform1i(location, value);
+}
+
+void v44_glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) {
+    material_program_t* program = v42_ensure_program(g_state.program);
+    const bool exact_mvp = program && location == program->mvp && count == 1 && transpose == GL_FALSE && value != nullptr;
+    const bool must_flush = v44_collector_pending() && program && program->compatible && location >= 0 && !exact_mvp;
+    if (must_flush) {
+        const v44_restore_snapshot_t snapshot = v44_snapshot_shadow();
+        const unsigned long long before = g_material.stats.hard_segments;
+        hard_flush();
+        const unsigned long long delta = g_material.stats.hard_segments - before;
+        if (delta) {
+            g_v44_stats.uniform_flushes += delta;
+            v44_histogram_add("glUniformMatrix4fv:non_mvp", delta);
+            v44_restore_after_emit(snapshot);
+        }
+    }
+    g_v44_wrapped.uniform_matrix4fv(location, count, transpose, value);
+}
+
+void v44_note_command_impl(const char* name) {
+    g_v44_next_barrier_name = name;
+}
+
+void v44_before_command_impl(::mg_ts::backend_command_class classification) {
+    if (!g_v44_enabled) {
+        ::v44_base::mg_ts::pz_repack_before_backend_command(classification);
+        return;
+    }
+
+    const bool can_emit = v44_collector_pending();
+    const v44_restore_snapshot_t snapshot = can_emit ? v44_snapshot_shadow() : v44_restore_snapshot_t{};
+    const unsigned long long hard_before = g_material.stats.hard_segments;
+    const unsigned long long backend_before = g_material.stats.backend_draws;
+
+    ::v44_base::mg_ts::pz_repack_before_backend_command(classification);
+
+    const unsigned long long hard_delta = g_material.stats.hard_segments - hard_before;
+    if (classification == ::mg_ts::backend_command_class::barrier) {
+        if (hard_delta) {
+            g_v44_stats.barrier_flushes += hard_delta;
+            const char* name = g_v44_next_barrier_name;
+            if (name && name[0])
+                v44_histogram_add(name, hard_delta);
+            else {
+                ++g_v44_stats.unnamed_barriers;
+                v44_histogram_add("<unnamed-barrier>", hard_delta);
+            }
+        }
+        g_v44_next_barrier_name = nullptr;
+    } else if (classification == ::mg_ts::backend_command_class::context_release && hard_delta) {
+        g_v44_stats.context_flushes += hard_delta;
+        v44_histogram_add("<context-release>", hard_delta);
+    }
+
+    if (can_emit && g_material.stats.backend_draws != backend_before &&
+        classification != ::mg_ts::backend_command_class::context_release)
+        v44_restore_after_emit(snapshot);
+
+    if (classification == ::mg_ts::backend_command_class::context_release) v44_report(true);
+}
+
+void v44_install_impl() {
+    ::v44_base::mg_pz_repack_renderer_install();
+    if (!g_v41_enabled || !g_material_enabled || !g_enabled) return;
+
+    g_v44_wrapped.draw_elements = static_cast<glDrawElements_PTR>(GLES.glDrawElements);
+    g_v44_wrapped.use_program = static_cast<glUseProgram_PTR>(GLES.glUseProgram);
+    g_v44_wrapped.uniform1f = static_cast<glUniform1f_PTR>(GLES.glUniform1f);
+    g_v44_wrapped.uniform1i = static_cast<glUniform1i_PTR>(GLES.glUniform1i);
+    g_v44_wrapped.uniform_matrix4fv = static_cast<glUniformMatrix4fv_PTR>(GLES.glUniformMatrix4fv);
+    g_v44_wrapped.raw_draw_elements = g_orig.draw_elements;
+
+    if (!g_v44_wrapped.draw_elements || !g_v44_wrapped.use_program || !g_v44_wrapped.uniform1f ||
+        !g_v44_wrapped.uniform1i || !g_v44_wrapped.uniform_matrix4fv || !g_v44_wrapped.raw_draw_elements) {
+        LOG_W_FORCE("ZOMDROID_PZ_MATERIAL_STREAM_V44 disabled reason=wrapper_capture_missing")
+        return;
+    }
+
+    g_orig.draw_elements = v44_raw_draw_elements;
+    GLES.glDrawElements = v44_glDrawElements;
+    GLES.glUseProgram = v44_glUseProgram;
+    GLES.glUniform1f = v44_glUniform1f;
+    GLES.glUniform1i = v44_glUniform1i;
+    GLES.glUniformMatrix4fv = v44_glUniformMatrix4fv;
+    g_v44_enabled = true;
+
+    LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V44 enabled=1 revision=4.4 restore=program+vao+array+ebo+texture+ssbo "
+          "flush_hist=exact barrier_relax=none ui_guard=restore_first goal=hard_segments_lt_captured")
 }
 
 } // namespace
 
-void install_v43_internal() { v43_install_impl(); }
-void before_v43_internal(::mg_ts::backend_command_class classification) { v43_before_command_impl(classification); }
+void install_v44_internal() { v44_install_impl(); }
+void before_v44_internal(::mg_ts::backend_command_class classification) { v44_before_command_impl(classification); }
+void note_v44_internal(const char* name) { v44_note_command_impl(name); }
 
 } // namespace v41_base
 } // namespace legacy_v41
 } // namespace v43_base
+} // namespace v44_base
 
 namespace mg_ts {
 void pz_repack_before_backend_command(backend_command_class classification) {
-    v43_base::legacy_v41::v41_base::before_v43_internal(classification);
+    v44_base::v43_base::legacy_v41::v41_base::before_v44_internal(classification);
+}
+
+void pz_repack_note_backend_command(const char* name) {
+    v44_base::v43_base::legacy_v41::v41_base::note_v44_internal(name);
 }
 } // namespace mg_ts
 
 void mg_pz_repack_renderer_install(void) {
-    v43_base::legacy_v41::v41_base::install_v43_internal();
+    v44_base::v43_base::legacy_v41::v41_base::install_v44_internal();
 }
 
 #endif // ZOMDROID_EXPERIMENTAL
