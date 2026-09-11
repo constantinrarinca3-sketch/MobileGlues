@@ -32,9 +32,11 @@ __attribute__((used))
 const char* license = "GNU LGPL-2.1 License";
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+void mg_pz_material_stream_v49_install(void);
+
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.8-perf-ceiling";
+    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.9-depth-ceiling";
 }
 #endif
 
@@ -83,9 +85,10 @@ void proc_init() {
     const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
     if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
         mg_pz_repack_renderer_install();
+        mg_pz_material_stream_v49_install();
         mg_pz_repack_draw_router_install();
-        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V48 enabled=1 revision=4.8 mode=perf_ceiling "
-              "base=v45 ui_guard=none draw_range=draw_class texparam_elide=exact_object_pname "
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V49_ROUTE enabled=1 revision=4.9 mode=perf_ceiling "
+              "base=v48 ui_guard=none texparam_elide=exact_object_pname depth_family=tile_depth "
               "real_state_changes=hard stable_untouched=1")
     } else {
         mg_pz_repack_probe_install();
