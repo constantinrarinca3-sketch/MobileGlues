@@ -14,6 +14,7 @@
 #include "gl/log.h"
 #include "gl/mg.h"
 #include "gl/pz_census.h"
+#include "gl/pz_repack_probe.h"
 #include "gles/loader.h"
 #include "includes.h"
 #include <cerrno>
@@ -30,7 +31,7 @@ const char* license = "GNU LGPL-2.1 License";
 #if defined(ZOMDROID_EXPERIMENTAL)
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-optimization-7";
+    return "MobileGlues-2.0.0-ZomDroid-repack-probe-1";
 }
 #endif
 
@@ -55,7 +56,6 @@ void init_perfetto() {
     perfetto::TracingInitArgs args;
 
     args.backends |= perfetto::kSystemBackend;
-
     perfetto::Tracing::Initialize(args);
     perfetto::TrackEvent::Register();
 }
@@ -76,6 +76,7 @@ void proc_init() {
     load_libs();
     init_target_egl();
     init_target_gles();
+    mg_pz_repack_probe_install();
     set_multidraw_setting();
 
     init_settings_post();
