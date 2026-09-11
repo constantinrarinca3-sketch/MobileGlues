@@ -34,7 +34,7 @@ const char* license = "GNU LGPL-2.1 License";
 #if defined(ZOMDROID_EXPERIMENTAL)
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.6";
+    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.7";
 }
 #endif
 
@@ -84,9 +84,9 @@ void proc_init() {
     if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
         mg_pz_repack_renderer_install();
         mg_pz_repack_draw_router_install();
-        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V46 enabled=1 revision=4.6 "
-              "ui_guard=default_or_fsr_surface capture_scope=explicit_offscreen_fbo "
-              "draw_range=draw_class texparam_relax=none correctness=first stable_untouched=1")
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V47 enabled=1 revision=4.7 "
+              "ui_guard=z0_and_chunk0 capture_scope=surface+offscreen "
+              "draw_range=draw_class texparam_relax=none correctness=semantic_depth stable_untouched=1")
     } else {
         mg_pz_repack_probe_install();
     }
