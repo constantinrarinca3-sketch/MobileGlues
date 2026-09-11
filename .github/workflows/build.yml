@@ -2,9 +2,7 @@ name: Build MobileGlues for iOS
 on:
   push:
     branches-ignore:
-      - zomdroid-experimental
-      - zomdroid-optimization
-      - zomdroid-threaded-submission-experimental
+      - 'zomdroid-*'
   workflow_dispatch:
 jobs:
   build-ios:
