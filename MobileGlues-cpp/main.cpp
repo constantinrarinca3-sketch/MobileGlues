@@ -34,7 +34,7 @@ const char* license = "GNU LGPL-2.1 License";
 #if defined(ZOMDROID_EXPERIMENTAL)
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-repack-renderer-3-program-handoff";
+    return "MobileGlues-2.0.0-ZomDroid-material-stream-4";
 }
 #endif
 

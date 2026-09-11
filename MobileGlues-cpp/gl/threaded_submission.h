@@ -39,8 +39,6 @@ struct reservation {
     uint64_t sequence;
 };
 
-// Weak because the small host tests link individual GL translation units. The
-// Android library supplies these from threaded_submission.cpp.
 bool active() __attribute__((weak));
 reservation reserve(command_fn execute, command_fn destroy, size_t payload_size,
                     size_t payload_alignment,
@@ -49,9 +47,6 @@ void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
 void flush_pending() __attribute__((weak));
 bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
-// Defined by the isolated repack renderer when that experiment is linked. The
-// worker calls it immediately before a backend command, while its GL context is
-// current, so delayed draws can be flushed at exact ordering boundaries.
 void pz_repack_before_backend_command(backend_command_class classification) __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
@@ -165,14 +160,19 @@ inline bool isDrawCommand(const char* name) {
 }
 
 inline backend_command_class classForName(const char* name) {
-    // V1 deliberately consumes only the measured hot call. Instanced,
-    // base-vertex, range and indirect draws are barriers and stay byte-for-byte
-    // on their existing paths.
     if (nameEquals(name, "glDrawElements")) return backend_command_class::draw_elements;
 
-    // These calls only change the source description. A delayed tiny draw has a
-    // complete snapshot of that description and is replayed/repacked through a
-    // private VAO, so this churn may pass without forcing a flush.
+    // Material-stream soft state. These commands are safe to cross only because
+    // the V4 renderer snapshots their effective values into each captured
+    // instance. The V4 wrapper still flushes before incompatible program
+    // changes. Everything not named here remains a hard ordering barrier.
+    if (nameEquals(name, "glUseProgram") || nameEquals(name, "glActiveTexture") ||
+        nameEquals(name, "glBindTexture") || nameEquals(name, "glUniform1f") ||
+        nameEquals(name, "glUniform1i") || nameEquals(name, "glUniformMatrix4fv"))
+        return backend_command_class::geometry_state;
+
+    // Source-description churn can cross a delayed draw because the renderer
+    // snapshots and deindexes the source data at capture time.
     if (nameEquals(name, "glBindBuffer") || nameEquals(name, "glBindVertexArray") ||
         nameEquals(name, "glVertexAttribPointer") || nameEquals(name, "glVertexAttribIPointer") ||
         nameEquals(name, "glEnableVertexAttribArray") || nameEquals(name, "glDisableVertexAttribArray") ||
@@ -317,42 +317,46 @@ inline bool validCopySize(GLsizei count, unsigned elements, size_t element_size,
 }
 
 template <typename T>
-bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned elements, GLint location, GLsizei count,
-                    const T* value) {
+bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned elements,
+                    backend_command_class classification, GLint location, GLsizei count, const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, location, count, value, bytes) != 0;
+    return enqueueClassified<command>(classification, function, location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
-                           GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) {
+                           backend_command_class classification, GLint location, GLsizei count,
+                           GLboolean transpose, const GLfloat* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, location, count, transpose, value, bytes) != 0;
+    return enqueueClassified<command>(classification, function, location, count, transpose, value, bytes) != 0;
 }
 
 template <typename T>
-bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned elements, GLuint program,
-                    GLint location, GLsizei count, const T* value) {
+bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned elements,
+                    backend_command_class classification, GLuint program, GLint location, GLsizei count,
+                    const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = program_uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, program, location, count, value, bytes) != 0;
+    return enqueueClassified<command>(classification, function, program, location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
-                           GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) {
+                           backend_command_class classification, GLuint program, GLint location, GLsizei count,
+                           GLboolean transpose, const GLfloat* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = program_uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, program, location, count, transpose, value, bytes) != 0;
+    return enqueueClassified<command>(classification, function, program, location, count, transpose, value, bytes) != 0;
 }
 
-template <typename Fn, typename... Args> bool tryUniformCopy(Fn, unsigned, Args...) { return false; }
+template <typename Fn, typename... Args>
+bool tryUniformCopy(Fn, unsigned, backend_command_class, Args...) { return false; }
 
 template <typename Fn, typename... Args> struct owned_pointer_command {
     Fn function;
@@ -435,7 +439,7 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
         if (!mg_ts::availableAndActive()) return function_(args...);
         if constexpr (std::is_void_v<R>) {
             if (policy_ == mg_ts::slot_policy::uniform_copy &&
-                mg_ts::tryUniformCopy(function_, uniform_elements_, args...))
+                mg_ts::tryUniformCopy(function_, uniform_elements_, backend_class_, args...))
                 return;
             if (policy_ == mg_ts::slot_policy::buffer_copy && mg_ts::tryBufferCopy(function_, args...)) return;
 
