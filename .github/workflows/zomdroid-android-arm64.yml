@@ -62,7 +62,7 @@ jobs:
           tools/audit-zomdroid-abi.sh \
             build/zomdroid-arm64/libMobileGluesZomDroid.so
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
-            -d build/zomdroid-arm64/dynamic-section.txt \
+            -d build/zomdroid-arm64/libMobileGluesZomDroid.so \
             > build/zomdroid-arm64/dynamic-section.txt
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
             -D --defined-only build/zomdroid-arm64/libMobileGluesZomDroid.so \
