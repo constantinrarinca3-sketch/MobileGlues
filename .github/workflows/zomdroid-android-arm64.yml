@@ -38,7 +38,7 @@ jobs:
             -B build/zomdroid-arm64 \
             -G Ninja \
             -DCMAKE_MAKE_PROGRAM="$ANDROID_SDK_ROOT/cmake/3.22.1/bin/ninja" \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NK_HOME/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DANDROID_STL=c++_static \
@@ -62,7 +62,7 @@ jobs:
           tools/audit-zomdroid-abi.sh \
             build/zomdroid-arm64/libMobileGluesZomDroid.so
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
-            -d build/zomdroid-arm64/libMobileGluesZomDroid.so \
+            -d build/zomdroid-arm64/dynamic-section.txt \
             > build/zomdroid-arm64/dynamic-section.txt
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
             -D --defined-only build/zomdroid-arm64/libMobileGluesZomDroid.so \
