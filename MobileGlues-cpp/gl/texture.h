@@ -29,9 +29,9 @@ extern "C"
                                          GLsizei height);
     GLAPI GLAPIENTRY void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width,
                                          GLsizei height, GLsizei depth);
-    GLAPI GLAPIENTRY void glCopyTexImage1D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
+    GLAPI GLAPIENTRY void glCopyTexImage1D(GLenum target, GLint level, GLint internalFormat, GLint x, GLint y,
                                            GLsizei width, GLint border);
-    GLAPI GLAPIENTRY void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
+    GLAPI GLAPIENTRY void glCopyTexImage2D(GLenum target, GLint level, GLint internalFormat, GLint x, GLint y,
                                            GLsizei width, GLsizei height, GLint border);
     GLAPI GLAPIENTRY void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x,
                                               GLint y, GLsizei width, GLsizei height);
@@ -111,6 +111,18 @@ public:
     bool runtime_mipmap_generated = false;
     bool runtime_mipmap_fallback_logged = false;
     bool runtime_mipmap_base_only = false;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // V4.8 perf-ceiling state. No GL default is assumed: an entry becomes valid
+    // only after the exact integer value has been submitted for this object+pname.
+    // Alternate glTexParameter* entry points invalidate the table in the threaded
+    // wrapper before they can mutate the same object state.
+    struct pz_integer_param_shadow_entry_t {
+        GLenum pname = 0;
+        GLint param = 0;
+        bool valid = false;
+    };
+    pz_integer_param_shadow_entry_t pz_integer_param_shadow[16]{};
+#endif
 };
 
 // How many texture units this layer can actually track. Anything the driver

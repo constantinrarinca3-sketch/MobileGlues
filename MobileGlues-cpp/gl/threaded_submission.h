@@ -1,9 +1,6 @@
 // MobileGlues - gl/threaded_submission.h
-// V4.5 wrapper around the pre-existing threaded submission layer.
-// V4.4 barrier-name attribution is retained, while valid glDrawRangeElements
-// calls bypass the stale name-only barrier classification and enter the exact
-// draw_elements class used by the Material-Stream router. Invalid ranges remain
-// barriers so fallback/error ordering is preserved.
+// V4.8 performance-ceiling wrapper: retain V4.5 draw-range classification and
+// elide only exact redundant scalar integer texture-parameter submissions.
 
 #ifndef MOBILEGLUES_THREADED_SUBMISSION_V44_WRAPPER_H
 #define MOBILEGLUES_THREADED_SUBMISSION_V44_WRAPPER_H
@@ -13,6 +10,8 @@
 #undef mg_ts_dispatch_slot
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+
+#include "texture.h"
 
 namespace mg_ts {
 
@@ -55,6 +54,101 @@ inline bool v45_dispatch_draw_range(const char* name,
     return true;
 }
 
+inline TextureObject* v48_exact_bound_texture(GLenum target) {
+    const TextureTarget converted = ConvertGLEnumToTextureTarget(target);
+    if (converted == TextureTarget::UNKNWON) return nullptr;
+
+    // Require the driver's tracked binding and the frontend object binding to
+    // agree before using any object-local parameter shadow. This deliberately
+    // disables the optimization when the driver binding shadow is untrustworthy
+    // (for example while FSR1 is enabled) or an internal GLES.* bind bypassed the
+    // frontend. In those cases the original hard-barrier call is preserved.
+    GLuint driver_texture = 0;
+    if (!mg_driver_texture_binding(target, &driver_texture)) return nullptr;
+    TextureObject* texture = mgGetTexObjectByTarget(target);
+    if (texture == nullptr || texture->texture != driver_texture) return nullptr;
+    return texture;
+}
+
+inline void v48_clear_integer_texture_param_shadow(TextureObject* texture) {
+    if (texture == nullptr) return;
+    for (auto& entry : texture->pz_integer_param_shadow) entry.valid = false;
+}
+
+inline void v48_clear_bound_integer_texture_param_shadow(GLenum target) {
+    v48_clear_integer_texture_param_shadow(v48_exact_bound_texture(target));
+}
+
+// Returns true only when this exact texture object has already had the exact
+// effective integer value submitted for this pname. No GL default is assumed.
+// If there is no spare slot, the call stays conservative and is forwarded.
+inline bool v48_texture_parameteri_is_redundant(GLenum target, GLenum pname, GLint param) {
+    TextureObject* texture = v48_exact_bound_texture(target);
+    if (texture == nullptr) return false;
+
+    for (auto& entry : texture->pz_integer_param_shadow) {
+        if (!entry.valid || entry.pname != pname) continue;
+        if (entry.param == param) return true;
+        entry.param = param;
+        return false;
+    }
+
+    for (auto& entry : texture->pz_integer_param_shadow) {
+        if (entry.valid) continue;
+        entry.pname = pname;
+        entry.param = param;
+        entry.valid = true;
+        return false;
+    }
+    return false;
+}
+
+template <typename... Args>
+inline bool v48_dispatch_tex_parameteri(const char*, void (*)(Args...), Args...) {
+    return false;
+}
+
+inline bool v48_dispatch_tex_parameteri(const char* name,
+                                        void (*)(GLenum, GLenum, GLint),
+                                        GLenum target, GLenum pname, GLint param) {
+    if (!availableAndActive() || !nameEquals(name, "glTexParameteri")) return false;
+    // Called by gl/texture.cpp after pname conversion and after the PZ runtime
+    // mipmap path has converted the effective parameter, so this is exactly the
+    // value that would otherwise be submitted to the GLES driver.
+    return v48_texture_parameteri_is_redundant(target, pname, param);
+}
+
+// Alternate texture-parameter entry points can mutate the same object state.
+// Invalidate before forwarding so the next integer call has to re-establish an
+// exact submitted value before it can be elided.
+template <typename... Args>
+inline void v48_note_other_texture_parameter(const char*, void (*)(Args...), Args...) {}
+
+inline void v48_note_other_texture_parameter(const char* name,
+                                             void (*)(GLenum, GLenum, GLfloat),
+                                             GLenum target, GLenum, GLfloat) {
+    if (nameEquals(name, "glTexParameterf")) v48_clear_bound_integer_texture_param_shadow(target);
+}
+
+inline void v48_note_other_texture_parameter(const char* name,
+                                             void (*)(GLenum, GLenum, const GLfloat*),
+                                             GLenum target, GLenum, const GLfloat*) {
+    if (nameEquals(name, "glTexParameterfv")) v48_clear_bound_integer_texture_param_shadow(target);
+}
+
+inline void v48_note_other_texture_parameter(const char* name,
+                                             void (*)(GLenum, GLenum, const GLint*),
+                                             GLenum target, GLenum, const GLint*) {
+    if (nameEquals(name, "glTexParameteriv") || nameEquals(name, "glTexParameterIiv"))
+        v48_clear_bound_integer_texture_param_shadow(target);
+}
+
+inline void v48_note_other_texture_parameter(const char* name,
+                                             void (*)(GLenum, GLenum, const GLuint*),
+                                             GLenum target, GLenum, const GLuint*) {
+    if (nameEquals(name, "glTexParameterIuiv")) v48_clear_bound_integer_texture_param_shadow(target);
+}
+
 } // namespace mg_ts
 
 template <typename Function> class mg_ts_dispatch_slot;
@@ -79,6 +173,8 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     R operator()(Args... args) const {
         if constexpr (std::is_void_v<R>) {
             if (mg_ts::v45_dispatch_draw_range(name_, static_cast<function_type>(base_), args...)) return;
+            if (mg_ts::v48_dispatch_tex_parameteri(name_, static_cast<function_type>(base_), args...)) return;
+            mg_ts::v48_note_other_texture_parameter(name_, static_cast<function_type>(base_), args...);
         }
         if (mg_ts::availableAndActive() && mg_ts::classForName(name_) == mg_ts::backend_command_class::barrier)
             mg_ts::v44_enqueue_barrier_name(name_);
