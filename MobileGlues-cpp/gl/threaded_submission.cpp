@@ -29,6 +29,7 @@ struct packet_entry {
     command_fn execute = nullptr;
     command_fn destroy = nullptr;
     uint32_t payload_offset = 0;
+    backend_command_class classification = backend_command_class::barrier;
 };
 
 struct alignas(std::max_align_t) command_packet {
@@ -54,7 +55,7 @@ class submission_state {
     bool isActive() const { return active_.load(std::memory_order_acquire); }
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
-                               size_t payload_alignment) {
+                               size_t payload_alignment, backend_command_class classification) {
         if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
@@ -71,6 +72,7 @@ class submission_state {
         entry.execute = execute;
         entry.destroy = destroy;
         entry.payload_offset = static_cast<uint32_t>(payload_offset);
+        entry.classification = classification;
         reserved_payload_end_ = payload_offset + payload_size;
         reservation_open_ = true;
         return {packet.payload + payload_offset, producer_head_ + 1};
@@ -336,6 +338,8 @@ class submission_state {
                 for (uint32_t index = 0; index < count; ++index) {
                     packet_entry& entry = packet.entries[index];
                     void* payload = packet.payload + entry.payload_offset;
+                    if (pz_repack_before_backend_command != nullptr)
+                        pz_repack_before_backend_command(entry.classification);
                     entry.execute(payload);
                     entry.destroy(payload);
                 }
@@ -364,11 +368,17 @@ class submission_state {
             if (request == control_request::adopt) {
                 result = binding.bind_api(EGL_OPENGL_ES_API) == EGL_TRUE &&
                          binding.make_current(binding.display, binding.draw, binding.read, binding.context) == EGL_TRUE;
+                if (result && pz_repack_before_backend_command != nullptr)
+                    pz_repack_before_backend_command(backend_command_class::context_adopt);
             } else if (request == control_request::release) {
+                if (pz_repack_before_backend_command != nullptr)
+                    pz_repack_before_backend_command(backend_command_class::context_release);
                 result = binding.make_current(binding.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) ==
                          EGL_TRUE;
                 if (!result && binding.release_thread != nullptr) result = binding.release_thread() == EGL_TRUE;
             } else if (request == control_request::stop) {
+                if (pz_repack_before_backend_command != nullptr)
+                    pz_repack_before_backend_command(backend_command_class::context_release);
                 std::lock_guard<std::mutex> lock(control_mutex_);
                 control_result_ = true;
                 control_done_ = true;
@@ -415,8 +425,6 @@ class submission_state {
         }
     }
 
-    // Allocated only after the feature is enabled and a real context is adopted.
-    // The normal renderer path does not pay the roughly 8.5 MiB queue cost.
     std::unique_ptr<command_packet[]> queue_;
     std::atomic<uint64_t> head_{0};
     std::atomic<uint64_t> tail_{0};
@@ -458,8 +466,6 @@ class submission_state {
 };
 
 submission_state& state() {
-    // Explicit EGL shutdown owns the worker's lifetime. Keeping the state itself
-    // allocated avoids cross-translation-unit destructor ordering with dlclose.
     static submission_state* value = new submission_state();
     return *value;
 }
@@ -492,8 +498,9 @@ struct swap_command {
 } // namespace
 
 bool active() { return state().ownsForCaller(); }
-reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment) {
-    return state().reserveCommand(execute, destroy, payload_size, payload_alignment);
+reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment,
+                    backend_command_class classification) {
+    return state().reserveCommand(execute, destroy, payload_size, payload_alignment, classification);
 }
 void publish(uint64_t sequence) { state().publishCommand(sequence); }
 void wait(uint64_t sequence) { state().waitFor(sequence); }
@@ -537,7 +544,8 @@ bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn ful
 
     EGLBoolean synchronous_value = EGL_FALSE;
     const reservation slot = state().reserveCommand(&swap_command::execute, &swap_command::destroy,
-                                                     sizeof(swap_command), alignof(swap_command));
+                                                     sizeof(swap_command), alignof(swap_command),
+                                                     backend_command_class::barrier);
     if (slot.storage == nullptr) {
         std::free(copied_rects);
         return false;

@@ -26,6 +26,14 @@ constexpr size_t kInlineCopyBytes = 192;
 
 using command_fn = void (*)(void*);
 
+enum class backend_command_class : uint8_t {
+    barrier,
+    geometry_state,
+    draw_elements,
+    context_adopt,
+    context_release,
+};
+
 struct reservation {
     void* storage;
     uint64_t sequence;
@@ -35,11 +43,16 @@ struct reservation {
 // Android library supplies these from threaded_submission.cpp.
 bool active() __attribute__((weak));
 reservation reserve(command_fn execute, command_fn destroy, size_t payload_size,
-                    size_t payload_alignment) __attribute__((weak));
+                    size_t payload_alignment,
+                    backend_command_class classification = backend_command_class::barrier) __attribute__((weak));
 void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
 void flush_pending() __attribute__((weak));
 bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
+// Defined by the isolated repack renderer when that experiment is linked. The
+// worker calls it immediately before a backend command, while its GL context is
+// current, so delayed draws can be flushed at exact ordering boundaries.
+void pz_repack_before_backend_command(backend_command_class classification) __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
 using egl_make_current_fn = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
@@ -61,14 +74,20 @@ inline bool availableAndActive() {
     return active != nullptr && reserve != nullptr && publish != nullptr && wait != nullptr && active();
 }
 
-template <typename Command, typename... Args> uint64_t enqueue(Args&&... args) {
+template <typename Command, typename... Args>
+uint64_t enqueueClassified(backend_command_class classification, Args&&... args) {
     static_assert(sizeof(Command) <= kCommandPayloadBytes, "threaded command is too large");
     static_assert(alignof(Command) <= alignof(std::max_align_t), "threaded command alignment is too large");
-    const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command));
+    const reservation slot =
+        reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command), classification);
     if (slot.storage == nullptr) return 0;
     new (slot.storage) Command(std::forward<Args>(args)...);
     publish(slot.sequence);
     return slot.sequence;
+}
+
+template <typename Command, typename... Args> uint64_t enqueue(Args&&... args) {
+    return enqueueClassified<Command>(backend_command_class::barrier, std::forward<Args>(args)...);
 }
 
 template <typename Fn, typename R, typename... Args> struct call_command {
@@ -99,11 +118,12 @@ template <typename Fn, typename... Args> struct call_command<Fn, void, Args...> 
 };
 
 template <typename R, typename... Args>
-R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
+R dispatch_call_classified(R (*function)(Args...), bool synchronous, backend_command_class classification,
+                           Args... args) {
     if (!availableAndActive()) return function(args...);
     if constexpr (std::is_void_v<R>) {
         using command = call_command<decltype(function), void, Args...>;
-        const uint64_t sequence = enqueue<command>(function, args...);
+        const uint64_t sequence = enqueueClassified<command>(classification, function, args...);
         if (sequence == 0) {
             function(args...);
             return;
@@ -112,11 +132,16 @@ R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
     } else {
         R result{};
         using command = call_command<decltype(function), R, Args...>;
-        const uint64_t sequence = enqueue<command>(function, &result, args...);
+        const uint64_t sequence = enqueueClassified<command>(classification, function, &result, args...);
         if (sequence == 0) return function(args...);
         wait(sequence);
         return result;
     }
+}
+
+template <typename R, typename... Args>
+R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
+    return dispatch_call_classified(function, synchronous, backend_command_class::barrier, args...);
 }
 
 enum class slot_policy : uint8_t {
@@ -137,6 +162,24 @@ inline bool nameStartsWith(const char* value, const char* prefix) {
 inline bool isDrawCommand(const char* name) {
     return nameStartsWith(name, "glDrawArrays") || nameStartsWith(name, "glDrawElements") ||
            nameStartsWith(name, "glDrawRangeElements") || nameStartsWith(name, "glMultiDraw");
+}
+
+inline backend_command_class classForName(const char* name) {
+    // V1 deliberately consumes only the measured hot call. Instanced,
+    // base-vertex, range and indirect draws are barriers and stay byte-for-byte
+    // on their existing paths.
+    if (nameEquals(name, "glDrawElements")) return backend_command_class::draw_elements;
+
+    // These calls only change the source description. A delayed tiny draw has a
+    // complete snapshot of that description and is replayed/repacked through a
+    // private VAO, so this churn may pass without forcing a flush.
+    if (nameEquals(name, "glBindBuffer") || nameEquals(name, "glBindVertexArray") ||
+        nameEquals(name, "glVertexAttribPointer") || nameEquals(name, "glVertexAttribIPointer") ||
+        nameEquals(name, "glEnableVertexAttribArray") || nameEquals(name, "glDisableVertexAttribArray") ||
+        nameEquals(name, "glVertexAttribDivisor"))
+        return backend_command_class::geometry_state;
+
+    return backend_command_class::barrier;
 }
 
 inline slot_policy policyForName(const char* name) {
@@ -372,12 +415,14 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     using function_type = R (*)(Args...);
 
     constexpr explicit mg_ts_dispatch_slot(const char* name = "")
-        : function_(nullptr), name_(name), policy_(mg_ts::slot_policy::automatic), uniform_elements_(0) {}
+        : function_(nullptr), name_(name), policy_(mg_ts::slot_policy::automatic), uniform_elements_(0),
+          backend_class_(mg_ts::backend_command_class::barrier) {}
 
     mg_ts_dispatch_slot& operator=(function_type function) {
         function_ = function;
         policy_ = mg_ts::policyForName(name_);
         uniform_elements_ = policy_ == mg_ts::slot_policy::uniform_copy ? mg_ts::uniformElementsForName(name_) : 0;
+        backend_class_ = mg_ts::classForName(name_);
         return *this;
     }
 
@@ -403,11 +448,11 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
                                      (has_pointer &&
                                       (policy_ != mg_ts::slot_policy::pointer_offset ||
                                        !mg_ts::pointerArgumentsLookLikeOffsets(args...)));
-            mg_ts::dispatch_call(function_, synchronous, args...);
+            mg_ts::dispatch_call_classified(function_, synchronous, backend_class_, args...);
             if (policy_ == mg_ts::slot_policy::packet_flush && mg_ts::flush_pending != nullptr)
                 mg_ts::flush_pending();
         } else {
-            return mg_ts::dispatch_call(function_, true, args...);
+            return mg_ts::dispatch_call_classified(function_, true, backend_class_, args...);
         }
     }
 
@@ -416,6 +461,7 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     const char* name_;
     mg_ts::slot_policy policy_;
     unsigned uniform_elements_;
+    mg_ts::backend_command_class backend_class_;
 };
 
 #endif // ZOMDROID_EXPERIMENTAL
