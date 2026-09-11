@@ -22,6 +22,7 @@ bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
+bool mg_pz_tile_batch_active = false;
 
 namespace {
 
@@ -354,6 +355,8 @@ void mg_pz_census_init(void) {
     const char* threaded_submission_value = std::getenv("MOBILEGLUES_PZ_THREADED_SUBMISSION");
     mg_pz_threaded_submission_active =
         threaded_submission_value != nullptr && std::strcmp(threaded_submission_value, "1") == 0;
+    const char* tile_batch_value = std::getenv("MOBILEGLUES_PZ_TILE_BATCH");
+    mg_pz_tile_batch_active = tile_batch_value != nullptr && std::strcmp(tile_batch_value, "1") == 0;
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -375,6 +378,8 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
         if (mg_pz_threaded_submission_active)
             LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
+        if (mg_pz_tile_batch_active)
+            LOG_I("ZOMDROID_PZ_TILE_BATCH enabled=1 mode=ordered_depth_table max_runs=16")
     }
 #endif
 }

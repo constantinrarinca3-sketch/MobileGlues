@@ -38,6 +38,14 @@ struct pz_alpha_rewrite_result {
     pz_alpha_shader_kind kind = pz_alpha_shader_kind::none;
 };
 
+struct pz_tile_batch_rewrite_result {
+    bool candidate = false;
+    bool contract_matched = false;
+    bool rewritten = false;
+};
+
+constexpr int k_pz_tile_batch_max_runs = 16;
+
 inline const char* pz_alpha_shader_kind_name(pz_alpha_shader_kind kind) {
     switch (kind) {
     case pz_alpha_shader_kind::chunk_composite:
@@ -450,6 +458,53 @@ inline texture_call_rewrite_result rewrite_legacy_texture2d_calls(std::string& g
 
     glsl = std::regex_replace(glsl, texture_2d_call, "texture(");
     result.calls_rewritten = true;
+    return result;
+}
+
+// The PZ default tile shader puts the per-StateRun depth in two uniforms. That
+// makes otherwise identical ranges impossible to submit as one draw. For the
+// dedicated opt-in renderer, add a small ordered run table indexed by
+// gl_VertexID. A zero run count preserves the original shader exactly; the
+// batching path supplies the table only while it emits a combined range.
+inline pz_tile_batch_rewrite_result rewrite_pz_default_tile_batch(std::string& glsl) {
+    pz_tile_batch_rewrite_result result;
+    const bool has_position = glsl.find("layout (location = 0) in vec2 vPos") != std::string::npos ||
+                              glsl.find("layout(location = 0) in vec2 vPos") != std::string::npos;
+    const bool has_uv = glsl.find("in vec2 vUV") != std::string::npos;
+    const bool has_color = glsl.find("in vec4 vCol") != std::string::npos;
+    const bool has_mvp = glsl.find("uniform mat4 ModelViewProjection") != std::string::npos;
+    const bool has_chunk = glsl.find("uniform float chunkDepth") != std::string::npos;
+    const bool has_z = glsl.find("uniform float zDepth") != std::string::npos;
+    const size_t assignment = glsl.find("o.z = chunkDepth + zDepth;");
+    result.candidate = has_chunk && has_z;
+    result.contract_matched = has_position && has_uv && has_color && has_mvp && assignment != std::string::npos;
+    if (!result.candidate || !result.contract_matched ||
+        glsl.find("zomdroidBatchRunCount") != std::string::npos)
+        return result;
+
+    const size_t z_declaration = glsl.find(';', glsl.find("uniform float zDepth"));
+    if (z_declaration == std::string::npos) return result;
+    glsl.insert(z_declaration + 1,
+                "\nuniform int zomdroidBatchRunCount;"
+                "\nuniform int zomdroidBatchRunStart[16];"
+                "\nuniform vec2 zomdroidBatchDepth[16];");
+
+    const size_t shifted_assignment = glsl.find("o.z = chunkDepth + zDepth;");
+    if (shifted_assignment == std::string::npos) return result;
+    const std::string replacement =
+        "float zomdroidDepth = chunkDepth + zDepth;\n"
+        "    if (zomdroidBatchRunCount > 0) {\n"
+        "        zomdroidDepth = zomdroidBatchDepth[0].x + zomdroidBatchDepth[0].y;\n"
+        "        for (int zomdroidRun = 1; zomdroidRun < 16; ++zomdroidRun) {\n"
+        "            if (zomdroidRun >= zomdroidBatchRunCount) break;\n"
+        "            if (gl_VertexID >= zomdroidBatchRunStart[zomdroidRun])\n"
+        "                zomdroidDepth = zomdroidBatchDepth[zomdroidRun].x + "
+        "zomdroidBatchDepth[zomdroidRun].y;\n"
+        "        }\n"
+        "    }\n"
+        "    o.z = zomdroidDepth;";
+    glsl.replace(shifted_assignment, std::strlen("o.z = chunkDepth + zDepth;"), replacement);
+    result.rewritten = true;
     return result;
 }
 

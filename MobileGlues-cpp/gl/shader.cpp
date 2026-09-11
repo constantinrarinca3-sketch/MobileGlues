@@ -14,6 +14,7 @@
 #include <GL/gl.h>
 #include "log.h"
 #include "program.h"
+#include "pz_tile_batch.h"
 #include "../gles/loader.h"
 #include "../includes.h"
 #include "glsl/glsl_for_es.h"
@@ -50,6 +51,7 @@ void mg_shader_deleted(GLuint shader) {
     shader_map_is_sampler_buffer_emulated.erase(shader);
 #if defined(ZOMDROID_EXPERIMENTAL)
     shader_map_pz_alpha_kind.erase(shader);
+    mg_pz_tile_batch_shader_deleted(shader);
 #endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     zomdroid_tile_depth_shader.erase(shader);
@@ -239,6 +241,19 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     GLint shader_type = 0;
     GLES.glGetShaderiv(shader, GL_SHADER_TYPE, &shader_type);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    bool pz_tile_batch_shader = false;
+    if (mg_pz_tile_batch_active && shader_type == GL_VERTEX_SHADER) {
+        const auto batch_rewrite = mg_glsl_compat::rewrite_pz_default_tile_batch(glsl_src);
+        pz_tile_batch_shader = batch_rewrite.rewritten;
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+        if (mg_pz_census_active && batch_rewrite.candidate) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_PZ_TILE_BATCH_SHADER shader=%u contract=%d rewritten=%d",
+                shader, batch_rewrite.contract_matched ? 1 : 0, batch_rewrite.rewritten ? 1 : 0);
+        }
+#endif
+    }
+    mg_pz_tile_batch_note_shader(shader, pz_tile_batch_shader);
     shader_map_pz_alpha_kind.erase(shader);
     mg_glsl_compat::pz_alpha_rewrite_result alpha_rewrite;
     if (shader_type == GL_FRAGMENT_SHADER) {
