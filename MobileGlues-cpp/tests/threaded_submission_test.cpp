@@ -32,6 +32,8 @@ std::vector<int> order;
 unsigned char uploaded[4] = {};
 GLfloat uniform[4] = {};
 std::atomic<uint64_t> counted{0};
+std::atomic<uint64_t> state_calls{0};
+std::atomic<int> state_value{-1};
 
 void expect(bool condition, const char* message) {
     if (condition) return;
@@ -59,6 +61,16 @@ void fakeBlock(GLint value) {
 void fakeNoop(GLint) {}
 
 void fakeCount(GLint) { counted.fetch_add(1, std::memory_order_relaxed); }
+
+void fakeEnable(GLenum) {
+    state_value.store(1, std::memory_order_relaxed);
+    state_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void fakeDisable(GLenum) {
+    state_value.store(0, std::memory_order_relaxed);
+    state_calls.fetch_add(1, std::memory_order_relaxed);
+}
 
 void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -108,6 +120,11 @@ int main() {
     expect(!mg_ts::endsRendererSegment(mg_ts::command_kind::state) &&
                mg_ts::endsRendererSegment(mg_ts::command_kind::draw),
            "only consumers and barriers close a renderer segment");
+    expect(mg_ts::coalesceDomainForName("glEnable") == mg_ts::coalesce_domain::enable &&
+               mg_ts::coalesceDomainForName("glDisable") == mg_ts::coalesce_domain::enable,
+           "opposite writes to one enable state must share a compiler domain");
+    expect(mg_ts::coalesceDomainForName("glBindTexture") == mg_ts::coalesce_domain::none,
+           "binding commands must not be coalesced without dependency tracking");
 
     const std::thread::id producer = std::this_thread::get_id();
     const EGLDisplay display = reinterpret_cast<EGLDisplay>(1);
@@ -132,6 +149,8 @@ int main() {
     mg_ts_dispatch_slot<void (*)(GLint)> block{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLint)> no_op{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLint)> count{"glClear"};
+    mg_ts_dispatch_slot<void (*)(GLenum)> enable{"glEnable"};
+    mg_ts_dispatch_slot<void (*)(GLenum)> disable{"glDisable"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
@@ -140,6 +159,8 @@ int main() {
     block = fakeBlock;
     no_op = fakeNoop;
     count = fakeCount;
+    enable = fakeEnable;
+    disable = fakeDisable;
     buffer_data = fakeBufferData;
     uniform4fv = fakeUniform4fv;
     query = fakeQuery;
@@ -180,6 +201,27 @@ int main() {
     expect(quiet_query() == 88, "a synchronous query must flush a partial packet");
     expect(counted.load(std::memory_order_relaxed) == stress_commands,
            "packet queue must preserve every command across ring reuse");
+
+    // Within one safe segment only the final write to the same state reaches
+    // the backend. A synchronous query closes the segment and makes it visible.
+    enable(GL_BLEND);
+    disable(GL_BLEND);
+    expect(quiet_query() == 88, "a query must flush the compiled state segment");
+    expect(state_calls.load(std::memory_order_relaxed) == 1 && state_value.load(std::memory_order_relaxed) == 0,
+           "the compiler must execute only the final state write in a segment");
+
+    enable(GL_BLEND);
+    expect(quiet_query() == 88, "the first compiler boundary must complete");
+    disable(GL_BLEND);
+    expect(quiet_query() == 88, "the second compiler boundary must complete");
+    expect(state_calls.load(std::memory_order_relaxed) == 3,
+           "state writes separated by barriers must both reach the backend");
+
+    enable(GL_BLEND);
+    disable(GL_DEPTH_TEST);
+    expect(quiet_query() == 88, "different state selectors must complete");
+    expect(state_calls.load(std::memory_order_relaxed) == 5,
+           "different enable capabilities must not overwrite one another");
 
     flush();
     {

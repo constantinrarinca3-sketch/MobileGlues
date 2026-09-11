@@ -31,6 +31,8 @@ struct packet_entry {
     uint32_t payload_offset = 0;
     command_kind kind = command_kind::barrier;
     uint8_t segment = 0;
+    coalesce_key key{};
+    bool superseded = false;
 };
 
 struct alignas(std::max_align_t) command_packet {
@@ -57,7 +59,7 @@ class submission_state {
     bool isActive() const { return active_.load(std::memory_order_acquire); }
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
-                               size_t payload_alignment, command_kind kind) {
+                               size_t payload_alignment, command_kind kind, coalesce_key key) {
         if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
@@ -76,7 +78,10 @@ class submission_state {
         entry.payload_offset = static_cast<uint32_t>(payload_offset);
         entry.kind = kind;
         entry.segment = pending_segment_;
+        entry.key = key;
+        entry.superseded = false;
         reserved_kind_ = kind;
+        reserved_key_ = key;
         reserved_payload_end_ = payload_offset + payload_size;
         reservation_open_ = true;
         return {packet.payload + payload_offset, producer_head_ + 1};
@@ -85,6 +90,19 @@ class submission_state {
     void publishCommand(uint64_t sequence) {
         if (!reservation_open_ || sequence != producer_head_ + 1) return;
         reservation_open_ = false;
+        if (reserved_kind_ == command_kind::state && reserved_key_.valid()) {
+            command_packet& packet = queue_[producer_head_ & kPacketMask];
+            for (size_t index = pending_count_; index-- > 0;) {
+                packet_entry& previous = packet.entries[index];
+                if (previous.segment != pending_segment_) break;
+                if (!previous.superseded && previous.kind == command_kind::state &&
+                    previous.key == reserved_key_) {
+                    previous.superseded = true;
+                    ++state_commands_dropped_;
+                    break;
+                }
+            }
+        }
         pending_payload_bytes_ = reserved_payload_end_;
         ++pending_count_;
         if (endsRendererSegment(reserved_kind_)) ++pending_segment_;
@@ -240,7 +258,7 @@ class submission_state {
               "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
               "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
               "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu "
-              "renderer=segments:%llu/state:%llu/uniform:%llu/resource:%llu/draw:%llu/barrier:%llu",
+              "renderer=segments:%llu/state:%llu/uniform:%llu/resource:%llu/draw:%llu/barrier:%llu/drop:%llu",
               static_cast<unsigned long long>(frames),
               static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
@@ -268,7 +286,8 @@ class submission_state {
               static_cast<unsigned long long>(renderer_uniform_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(renderer_resource_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(renderer_draw_.load(std::memory_order_relaxed)),
-              static_cast<unsigned long long>(renderer_barrier_.load(std::memory_order_relaxed)))
+              static_cast<unsigned long long>(renderer_barrier_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(state_commands_dropped_))
     }
 
   private:
@@ -374,7 +393,7 @@ class submission_state {
                 for (uint32_t index = 0; index < count; ++index) {
                     packet_entry& entry = packet.entries[index];
                     void* payload = packet.payload + entry.payload_offset;
-                    entry.execute(payload);
+                    if (!entry.superseded) entry.execute(payload);
                     entry.destroy(payload);
                 }
                 ++consumer_tail;
@@ -465,6 +484,7 @@ class submission_state {
     size_t reserved_payload_end_ = 0;
     uint8_t pending_segment_ = 0;
     command_kind reserved_kind_ = command_kind::barrier;
+    coalesce_key reserved_key_{};
     bool reservation_open_ = false;
     std::atomic<bool> active_{false};
     std::thread::id owner_;
@@ -501,6 +521,7 @@ class submission_state {
     std::atomic<uint64_t> renderer_resource_{0};
     std::atomic<uint64_t> renderer_draw_{0};
     std::atomic<uint64_t> renderer_barrier_{0};
+    uint64_t state_commands_dropped_ = 0;
 };
 
 submission_state& state() {
@@ -539,8 +560,8 @@ struct swap_command {
 
 bool active() { return state().ownsForCaller(); }
 reservation reserve(command_fn execute, command_fn destroy, size_t payload_size, size_t payload_alignment,
-                    command_kind kind) {
-    return state().reserveCommand(execute, destroy, payload_size, payload_alignment, kind);
+                    command_kind kind, coalesce_key key) {
+    return state().reserveCommand(execute, destroy, payload_size, payload_alignment, kind, key);
 }
 void publish(uint64_t sequence) { state().publishCommand(sequence); }
 void wait(uint64_t sequence) { state().waitFor(sequence); }
@@ -585,7 +606,7 @@ bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn ful
     EGLBoolean synchronous_value = EGL_FALSE;
     const reservation slot = state().reserveCommand(&swap_command::execute, &swap_command::destroy,
                                                      sizeof(swap_command), alignof(swap_command),
-                                                     command_kind::barrier);
+                                                     command_kind::barrier, {});
     if (slot.storage == nullptr) {
         std::free(copied_rects);
         return false;
