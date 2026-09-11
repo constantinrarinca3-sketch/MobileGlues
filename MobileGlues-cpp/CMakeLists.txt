@@ -65,7 +65,6 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-flto=thin)
         add_link_options(-flto=thin)
     else()
-        # ThinLTO is not supported
         message(STATUS "ThinLTO not available, fallback to CMAKE IPO")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
@@ -101,6 +100,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gl/log.cpp
     gl/program.cpp
     gl/pz_census.cpp
+    gl/pz_geometry_arena.cpp
     gl/threaded_submission.cpp
     gl/shader.cpp
     gl/framebuffer.cpp

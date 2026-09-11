@@ -8,6 +8,7 @@ on:
       - zomdroid-optimization
       - zomdroid-threaded-submission-experimental
       - zomdroid-threaded-stable-clean
+      - zomdroid-pz-geometry-arena-exp
 
 permissions:
   contents: read
