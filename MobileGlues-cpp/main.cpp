@@ -16,6 +16,7 @@
 #include "gl/pz_census.h"
 #include "gl/pz_repack_probe.h"
 #include "gl/pz_repack_renderer.h"
+#include "gl/pz_repack_draw_router.h"
 #include "gles/loader.h"
 #include "includes.h"
 #include <cerrno>
@@ -33,7 +34,7 @@ const char* license = "GNU LGPL-2.1 License";
 #if defined(ZOMDROID_EXPERIMENTAL)
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-repack-renderer-1";
+    return "MobileGlues-2.0.0-ZomDroid-repack-renderer-2-route";
 }
 #endif
 
@@ -80,10 +81,12 @@ void proc_init() {
     init_target_gles();
 #if defined(ZOMDROID_EXPERIMENTAL)
     const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
-    if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0)
+    if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
         mg_pz_repack_renderer_install();
-    else
+        mg_pz_repack_draw_router_install();
+    } else {
         mg_pz_repack_probe_install();
+    }
 #else
     mg_pz_repack_probe_install();
 #endif

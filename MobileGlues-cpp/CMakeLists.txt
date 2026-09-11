@@ -103,6 +103,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gl/pz_census.cpp
     gl/pz_repack_probe.cpp
     gl/pz_repack_renderer.cpp
+    gl/pz_repack_draw_router.cpp
     gl/threaded_submission.cpp
     gl/shader.cpp
     gl/framebuffer.cpp
