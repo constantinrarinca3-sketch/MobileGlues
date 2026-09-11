@@ -65,8 +65,8 @@ MOBILEGLUES_PZ_ETC2_CACHE=1  # reuse content-addressed ETC2 blocks across launch
 
 Both switches default to disabled. ETC2 reduces RGB8 storage sixfold and RGBA8 storage fourfold;
 it is intended to reduce texture-memory pressure rather than steady-state draw time. The optional
-disk cache avoids paying the CPU encoding cost after the first run. It defaults to the app-private
-`/data/data/com.zomdroid/files/ngg_etc2cache` directory and a 1536 MiB LRU cap. The launcher may
+disk cache avoids paying the CPU encoding cost after the first run. It defaults to an `etc2-cache`
+directory below the launcher-provided `MG_DIR_PATH` and a 1536 MiB LRU cap. The launcher may
 override these through `MOBILEGLUES_PZ_ETC2_CACHE_DIR` and `MOBILEGLUES_PZ_ETC2_CACHE_MB`.
 
 Mip levels inherit the compressed format selected at level zero. Block-aligned subimage updates are

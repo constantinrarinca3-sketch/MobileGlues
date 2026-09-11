@@ -474,9 +474,22 @@ const void* mg_pz_etc2_cached(uint32_t etc2fmt, int32_t w, int32_t h, const uint
     // hash, same file layout. The launcher passes the real app-data path (it can be
     // /data/user/0/... rather than /data/data/...); the literal is the NG default.
     static const char* dir = NULL;
+    static char dir_from_mg[PATH_MAX];
     if (!dir) {
         const char* e = getenv("MOBILEGLUES_PZ_ETC2_CACHE_DIR");
-        dir = (e && e[0]) ? e : "/data/data/com.zomdroid/files/ngg_etc2cache";
+        if (e && e[0]) {
+            dir = e;
+        } else {
+            // MG_DIR_PATH is supplied by the launcher and already points into
+            // the current package's private storage. Using it avoids baking an
+            // obsolete Android package name into the renderer.
+            const char* mg_dir = getenv("MG_DIR_PATH");
+            if (mg_dir && mg_dir[0]) {
+                const int n = snprintf(dir_from_mg, sizeof(dir_from_mg), "%s/etc2-cache", mg_dir);
+                if (n > 0 && (size_t)n < sizeof(dir_from_mg)) dir = dir_from_mg;
+            }
+            if (!dir) dir = "/data/data/com.zomdroid.macos/files/mobileglues-zomdroid/etc2-cache";
+        }
     }
     if (dir_ok < 0) dir_ok = (mkdir(dir, 0700) == 0 || errno == EEXIST) ? 1 : 0;
     if (!dir_ok) return mg_pz_etc2_encode(etc2fmt, w, h, rgba, stride, out_sz);

@@ -16,7 +16,8 @@ enum { kWidth = 68, kHeight = 68, kStride = 4 };
 int main(void) {
     char cache_dir[] = "/tmp/mg-etc2-XXXXXX";
     assert(mkdtemp(cache_dir) != NULL);
-    assert(setenv("MOBILEGLUES_PZ_ETC2_CACHE_DIR", cache_dir, 1) == 0);
+    assert(unsetenv("MOBILEGLUES_PZ_ETC2_CACHE_DIR") == 0);
+    assert(setenv("MG_DIR_PATH", cache_dir, 1) == 0);
     assert(setenv("MOBILEGLUES_PZ_ETC2_THREADS", "1", 1) == 0);
 
     uint8_t* pixels = malloc((size_t)kWidth * kHeight * kStride);
