@@ -26,6 +26,8 @@ $CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdat
     -o /tmp/mg_runtime_mipmap_skip_test tests/runtime_mipmap_skip_test.cpp gl/texture.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -pthread \
     -o /tmp/mg_threaded_submission_test tests/threaded_submission_test.cpp gl/threaded_submission.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o /tmp/mg_pz_tile_batch_test tests/pz_tile_batch_test.cpp gl/pz_tile_batch.cpp
 /tmp/mg_pixel_test
 echo
 /tmp/mg_fb_test
@@ -47,3 +49,5 @@ echo
 /tmp/mg_runtime_mipmap_skip_test
 echo
 /tmp/mg_threaded_submission_test
+echo
+/tmp/mg_pz_tile_batch_test

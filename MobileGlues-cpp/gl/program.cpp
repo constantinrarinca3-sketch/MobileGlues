@@ -18,6 +18,7 @@
 #include <iostream>
 #include "../config/settings.h"
 #include "drawing.h"
+#include "pz_tile_batch.h"
 #include "../egl/context.h"
 
 #define DEBUG 0
@@ -385,6 +386,7 @@ void glLinkProgram(GLuint program) {
     apply_uniform_defaults(program);
 #if defined(ZOMDROID_EXPERIMENTAL)
     configure_pz_alpha_program(program);
+    mg_pz_tile_batch_program_linked(program);
 #endif
 
     CHECK_GL_ERROR
@@ -437,6 +439,7 @@ void glAttachShader(GLuint program, GLuint shader) {
         defaults_by_shader.erase(shader);
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_tile_batch_attach_shader(program, shader);
     const mg_glsl_compat::pz_alpha_shader_kind alpha_kind = mg_shader_pz_alpha_kind(shader);
     auto& alpha_shaders = program_map_pz_alpha_shaders[program];
     if (alpha_kind == mg_glsl_compat::pz_alpha_shader_kind::none)
@@ -474,6 +477,7 @@ void mg_shader_detached(GLuint program, GLuint shader) {
     const auto program_it = program_map_uniform_defaults.find(program);
     if (program_it != program_map_uniform_defaults.end()) program_it->second.erase(shader);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_tile_batch_detach_shader(program, shader);
     const auto alpha_it = program_map_pz_alpha_shaders.find(program);
     if (alpha_it != program_map_pz_alpha_shaders.end()) {
         alpha_it->second.erase(shader);
@@ -491,6 +495,7 @@ void mg_program_deleted(GLuint program) {
     program_map_should_generate_fs.erase(program);
     g_samplerCacheForSamplerBuffer.erase(program);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_tile_batch_program_deleted(program);
     program_map_pz_alpha_shaders.erase(program);
     program_map_pz_alpha_state.erase(program);
 #endif
@@ -502,6 +507,7 @@ GLuint glCreateProgram() {
     GLuint program = GLES.glCreateProgram();
     program_map_uniform_defaults.erase(program);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_tile_batch_program_deleted(program);
     program_map_pz_alpha_shaders.erase(program);
     program_map_pz_alpha_state.erase(program);
 #endif

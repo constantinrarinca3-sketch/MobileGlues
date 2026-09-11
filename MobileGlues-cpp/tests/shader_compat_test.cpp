@@ -190,6 +190,39 @@ int main() {
         assert(near_miss == original);
     }
 
+    {
+        std::string source =
+            "#version 330\n"
+            "layout (location = 0) in vec2 vPos;\n"
+            "layout (location = 1) in vec2 vUV;\n"
+            "layout (location = 2) in vec4 vCol;\n"
+            "uniform mat4 ModelViewProjection;\n"
+            "uniform float chunkDepth = 0.0;\n"
+            "uniform float zDepth = 0.0;\n"
+            "void main() { vec4 o = ModelViewProjection * vec4(vPos, 0, 1); "
+            "o.z = chunkDepth + zDepth; gl_Position = o; }\n";
+        const auto result = mg_glsl_compat::rewrite_pz_default_tile_batch(source);
+        assert(result.candidate && result.contract_matched && result.rewritten);
+        assert(source.find("uniform int zomdroidBatchRunCount;") != std::string::npos);
+        assert(source.find("uniform int zomdroidBatchRunStart[8];") != std::string::npos);
+        assert(source.find("uniform vec2 zomdroidBatchDepth[8];") != std::string::npos);
+        assert(source.find("gl_VertexID >= zomdroidBatchRunStart[zomdroidRun]") != std::string::npos);
+        assert(source.find("o.z = chunkDepth + zDepth;") == std::string::npos);
+        const std::string once = source;
+        const auto second = mg_glsl_compat::rewrite_pz_default_tile_batch(source);
+        assert(!second.rewritten && source == once);
+    }
+
+    {
+        std::string near_miss =
+            "layout (location = 0) in vec2 vPos; uniform float chunkDepth; uniform float zDepth; "
+            "void main() { gl_Position = vec4(vPos, chunkDepth + zDepth, 1); }";
+        const std::string original = near_miss;
+        const auto result = mg_glsl_compat::rewrite_pz_default_tile_batch(near_miss);
+        assert(result.candidate && !result.contract_matched && !result.rewritten);
+        assert(near_miss == original);
+    }
+
     // Local validation can point at the legally installed game shaders. CI
     // intentionally has no such dependency and skips this block.
     if (const char* shader_dir = std::getenv("PZ_SHADER_DIR")) {

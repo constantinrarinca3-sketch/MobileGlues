@@ -173,6 +173,20 @@ Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, av
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.
 
+The PZ renderer experiment can compile consecutive default-shader `StateRun` ranges into one
+native multi-draw while preserving their original order and per-run depth:
+
+```text
+MOBILEGLUES_PZ_TILE_BATCH=1  # requires threaded submission; disabled by default
+```
+
+Triangle runs may use separate offsets in the same EBO. Broad PZ range hints are resolved from the
+tracked CPU index shadow when necessary. A real state or resource command still closes the group,
+and a group shorter than two uses the original draw. The backend uses `GL_EXT_multi_draw_arrays` or
+`GL_ANGLE_multi_draw`; unsupported drivers replay the exact ordered draw sequence. With census
+enabled, `ZOMDROID_PZ_STATE_RUN_COMPILER` reports scheduled groups, native groups, fallbacks and
+actual draw calls saved.
+
 The separate `zomdroid-pz-renderer-experimental` branch also classifies each queued command as
 state, uniform, resource write, draw or barrier. Draws, resource writes and barriers close a safe
 renderer segment. Execution remains strictly FIFO at this stage; the metadata prepares later
