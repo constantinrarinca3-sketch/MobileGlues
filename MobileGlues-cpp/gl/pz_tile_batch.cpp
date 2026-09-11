@@ -90,10 +90,15 @@ std::atomic<unsigned long long> g_native_batches{0};
 std::atomic<unsigned long long> g_native_runs{0};
 std::atomic<unsigned long long> g_draws_saved{0};
 std::atomic<unsigned long long> g_backend_fallback_runs{0};
+std::atomic<unsigned long long> g_compact_batches{0};
+std::atomic<unsigned long long> g_compact_runs{0};
+std::atomic<unsigned long long> g_compact_draws_saved{0};
+std::atomic<unsigned long long> g_compact_fallback_runs{0};
 
 enum class backend_state : uint8_t { unknown, working, unavailable };
 backend_state g_backend_state = backend_state::unknown; // worker-thread only
 mg_pz_tile_batch_multidraw_fn g_backend_multidraw = nullptr;
+std::atomic<backend_state> g_client_index_state{backend_state::unknown};
 
 #if defined(MOBILEGLUES_TESTING)
 mg_pz_tile_batch_multidraw_fn g_test_multidraw = nullptr;
@@ -226,6 +231,33 @@ bool exact_index_range(GLuint frontend_buffer, uint32_t offset, GLsizei count,
     return true;
 }
 
+bool call_client_index_draw(GLenum mode, GLsizei count, GLenum type, const void* indices,
+                            GLuint original_element_buffer) {
+    backend_state state = g_client_index_state.load(std::memory_order_acquire);
+    if (state == backend_state::unavailable) return false;
+    const bool probing = state == backend_state::unknown;
+    if (probing) drain_backend_errors();
+
+    // GLES explicitly accepts a client pointer when ELEMENT_ARRAY_BUFFER is
+    // zero. The command owns these bytes until this backend call returns.
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    GLES.glDrawElements(mode, count, type, indices);
+    GLES.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, original_element_buffer);
+
+    if (probing) {
+        const GLenum error = GLES.glGetError != nullptr ? GLES.glGetError() : GL_NO_ERROR;
+        if (error != GL_NO_ERROR) {
+            g_client_index_state.store(backend_state::unavailable, std::memory_order_release);
+            LOG_W_FORCE("ZOMDROID_PZ_STATE_RUN_COMPILER backend=client_indices available=0 error=0x%04x "
+                        "fallback=ordered_singles", error)
+            return false;
+        }
+        g_client_index_state.store(backend_state::working, std::memory_order_release);
+        LOG_I("ZOMDROID_PZ_STATE_RUN_COMPILER backend=client_indices available=1")
+    }
+    return true;
+}
+
 void upload_original_depth(const program_state& program, GLfloat z, GLfloat chunk,
                            bool upload_z, bool upload_chunk) {
     if (upload_z) GLES.glUniform1f(program.z_depth, z);
@@ -347,10 +379,159 @@ struct state_run_command {
 static_assert(sizeof(state_run_command) <= mg_ts::kCommandPayloadBytes,
               "PZ StateRun command must remain inline in the packet queue");
 
+struct compacted_state_run_command {
+    GLint z_depth;
+    GLint chunk_depth;
+    GLint run_count_location;
+    GLint run_start_location;
+    GLint run_depth_location;
+    GLenum mode;
+    GLenum type;
+    uint32_t run_count;
+    GLsizei index_count;
+    GLuint original_element_buffer;
+    GLfloat current_z;
+    GLfloat current_chunk;
+    std::array<draw_run, kMaxRuns> runs;
+
+    compacted_state_run_command(const program_state& program, const pending_batch& pending,
+                                const std::array<draw_run, kMaxRuns>& exact_runs,
+                                GLsizei total_indices)
+        : z_depth(program.z_depth), chunk_depth(program.chunk_depth), run_count_location(program.run_count),
+          run_start_location(program.run_start), run_depth_location(program.run_depth), mode(pending.mode),
+          type(pending.type), run_count(static_cast<uint32_t>(pending.count)), index_count(total_indices),
+          original_element_buffer(pending.element_buffer), current_z(pending.current_z),
+          current_chunk(pending.current_chunk), runs(exact_runs) {}
+
+    static void execute(void* storage) {
+        auto* command = static_cast<compacted_state_run_command*>(storage);
+        std::array<GLint, kMaxRuns> starts{};
+        std::array<GLfloat, kMaxRuns * 2> depths{};
+        for (uint32_t index = 0; index < command->run_count; ++index) {
+            const draw_run& run = command->runs[index];
+            starts[index] = static_cast<GLint>(run.start);
+            depths[index * 2] = run.z;
+            depths[index * 2 + 1] = run.chunk;
+        }
+
+        GLES.glUniform1i(command->run_count_location, static_cast<GLint>(command->run_count));
+        GLES.glUniform1iv(command->run_start_location, static_cast<GLsizei>(command->run_count), starts.data());
+        GLES.glUniform2fv(command->run_depth_location, static_cast<GLsizei>(command->run_count), depths.data());
+
+        const void* indices = reinterpret_cast<const unsigned char*>(storage) + sizeof(*command);
+        if (call_client_index_draw(command->mode, command->index_count, command->type, indices,
+                                   command->original_element_buffer)) {
+            if (mg_pz_census_active) {
+                g_compact_batches.fetch_add(1, std::memory_order_relaxed);
+                g_compact_runs.fetch_add(command->run_count, std::memory_order_relaxed);
+                g_compact_draws_saved.fetch_add(command->run_count - 1, std::memory_order_relaxed);
+            }
+        } else {
+            GLES.glUniform1i(command->run_count_location, 0);
+            bool z_known = false;
+            bool chunk_known = false;
+            GLfloat driver_z = 0.0f;
+            GLfloat driver_chunk = 0.0f;
+            for (uint32_t index = 0; index < command->run_count; ++index) {
+                const draw_run& run = command->runs[index];
+                upload_original_depth(command->z_depth, command->chunk_depth, run.z, run.chunk,
+                                      !z_known || !same_bits(driver_z, run.z),
+                                      !chunk_known || !same_bits(driver_chunk, run.chunk));
+                GLES.glDrawRangeElements(command->mode, run.start, run.end, run.count, command->type,
+                                         reinterpret_cast<const void*>(static_cast<uintptr_t>(run.offset)));
+                driver_z = run.z;
+                driver_chunk = run.chunk;
+                z_known = true;
+                chunk_known = true;
+            }
+            if (mg_pz_census_active)
+                g_compact_fallback_runs.fetch_add(command->run_count, std::memory_order_relaxed);
+        }
+
+        GLES.glUniform1i(command->run_count_location, 0);
+        upload_original_depth(command->z_depth, command->chunk_depth,
+                              command->current_z, command->current_chunk, true, true);
+    }
+
+    static void destroy(void* storage) {
+        static_cast<compacted_state_run_command*>(storage)->~compacted_state_run_command();
+    }
+};
+
+static_assert(sizeof(compacted_state_run_command) < mg_ts::kMaximumCommandPayloadBytes,
+              "PZ compacted command must leave room for client indices");
+
+bool enqueue_compacted(const program_state& program) {
+    if (g_client_index_state.load(std::memory_order_acquire) == backend_state::unavailable) return false;
+
+    uint64_t lifetime = 0;
+    uint64_t version = 0;
+    GLsizeiptr data_size = 0;
+    if (!mg_pz_buffer_cache_identity(g_pending.frontend_element_buffer, &lifetime, &version, &data_size))
+        return false;
+    const void* source = mg_pz_buffer_cache_source(g_pending.frontend_element_buffer, lifetime, version, data_size);
+    if (source == nullptr || data_size <= 0) return false;
+
+    size_t total_indices = 0;
+    std::array<draw_run, kMaxRuns> exact_runs = g_pending.runs;
+    GLuint previous_end = 0;
+    bool previous_known = false;
+    for (size_t run_index = 0; run_index < g_pending.count; ++run_index) {
+        draw_run& run = exact_runs[run_index];
+        if (run.count <= 0) return false;
+        const size_t count = static_cast<size_t>(run.count);
+        if (count > static_cast<size_t>(std::numeric_limits<GLsizei>::max()) - total_indices) return false;
+        const uint64_t bytes = static_cast<uint64_t>(count) * sizeof(GLushort);
+        if (static_cast<uint64_t>(run.offset) > static_cast<uint64_t>(data_size) ||
+            bytes > static_cast<uint64_t>(data_size) - static_cast<uint64_t>(run.offset))
+            return false;
+
+        const auto* run_source = static_cast<const unsigned char*>(source) + run.offset;
+        GLuint minimum = std::numeric_limits<GLuint>::max();
+        GLuint maximum = 0;
+        for (size_t index = 0; index < count; ++index) {
+            GLushort value = 0;
+            std::memcpy(&value, run_source + index * sizeof(value), sizeof(value));
+            minimum = value < minimum ? value : minimum;
+            maximum = value > maximum ? value : maximum;
+        }
+        if (previous_known && minimum <= previous_end) return false;
+        run.start = minimum;
+        run.end = maximum;
+        previous_end = maximum;
+        previous_known = true;
+        total_indices += count;
+    }
+
+    const size_t index_bytes = total_indices * sizeof(GLushort);
+    const size_t payload_bytes = sizeof(compacted_state_run_command) + index_bytes;
+    if (total_indices > static_cast<size_t>(std::numeric_limits<GLsizei>::max()) ||
+        payload_bytes > mg_ts::kMaximumCommandPayloadBytes)
+        return false;
+
+    const mg_ts::reservation slot =
+        mg_ts::reserve(&compacted_state_run_command::execute, &compacted_state_run_command::destroy,
+                       payload_bytes, alignof(compacted_state_run_command), mg_ts::command_kind::draw);
+    if (slot.storage == nullptr) return false;
+    new (slot.storage) compacted_state_run_command(program, g_pending, exact_runs,
+                                                    static_cast<GLsizei>(total_indices));
+    auto* destination = static_cast<unsigned char*>(slot.storage) + sizeof(compacted_state_run_command);
+    for (size_t run_index = 0; run_index < g_pending.count; ++run_index) {
+        const draw_run& run = exact_runs[run_index];
+        const size_t bytes = static_cast<size_t>(run.count) * sizeof(GLushort);
+        std::memcpy(destination, static_cast<const unsigned char*>(source) + run.offset, bytes);
+        destination += bytes;
+    }
+    mg_ts::publish(slot.sequence);
+    return true;
+}
+
 bool enqueue_combined(const program_state& program) {
-    const uint64_t sequence =
-        mg_ts::enqueueAs<state_run_command>(mg_ts::command_kind::draw, program, g_pending);
-    if (sequence == 0) return false;
+    if (!enqueue_compacted(program)) {
+        const uint64_t sequence =
+            mg_ts::enqueueAs<state_run_command>(mg_ts::command_kind::draw, program, g_pending);
+        if (sequence == 0) return false;
+    }
     if (mg_pz_census_active) {
         ++g_stats.scheduled_batches;
         g_stats.scheduled_runs += g_pending.count;
@@ -581,13 +762,18 @@ void mg_pz_tile_batch_present() {
     if (!mg_pz_census_active) return;
     ++g_stats.frames;
     if (g_stats.frames != 60 && g_stats.frames % 300 != 0) return;
+    const unsigned long long compact_saved = g_compact_draws_saved.load(std::memory_order_relaxed);
+    const unsigned long long native_saved = g_draws_saved.load(std::memory_order_relaxed);
     LOG_I("ZOMDROID_PZ_STATE_RUN_COMPILER frames=%llu candidates=%llu scheduled=%llu/%llu "
-          "native=%llu/%llu saved=%llu fallback=%llu single=%llu incompatible=%llu "
+          "compact=%llu/%llu native=%llu/%llu saved=%llu fallback=%llu/%llu single=%llu incompatible=%llu "
           "range=%llu/%llu max_run=%llu",
           g_stats.frames, g_stats.candidates, g_stats.scheduled_batches, g_stats.scheduled_runs,
+          g_compact_batches.load(std::memory_order_relaxed),
+          g_compact_runs.load(std::memory_order_relaxed),
           g_native_batches.load(std::memory_order_relaxed),
           g_native_runs.load(std::memory_order_relaxed),
-          g_draws_saved.load(std::memory_order_relaxed),
+          compact_saved + native_saved,
+          g_compact_fallback_runs.load(std::memory_order_relaxed),
           g_backend_fallback_runs.load(std::memory_order_relaxed),
           g_stats.single_fallbacks, g_stats.incompatible,
           g_stats.ranges_recovered, g_stats.ranges_rejected, g_stats.max_run)

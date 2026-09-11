@@ -25,6 +25,10 @@ void mg_pz_tile_batch_flush() __attribute__((weak));
 namespace mg_ts {
 
 constexpr size_t kCommandPayloadBytes = 256;
+// A packet keeps the same fixed 8 KiB payload, but a PZ compiler command may
+// consume a larger variable slice when it carries compacted client indices.
+// Ordinary GL commands remain below kCommandPayloadBytes.
+constexpr size_t kMaximumCommandPayloadBytes = 4096;
 constexpr size_t kInlineCopyBytes = 192;
 
 using command_fn = void (*)(void*);
@@ -80,7 +84,7 @@ inline bool availableAndActive() {
 }
 
 template <typename Command, typename... Args> uint64_t enqueueAs(command_kind kind, Args&&... args) {
-    static_assert(sizeof(Command) <= kCommandPayloadBytes, "threaded command is too large");
+    static_assert(sizeof(Command) <= kMaximumCommandPayloadBytes, "threaded command is too large");
     static_assert(alignof(Command) <= alignof(std::max_align_t), "threaded command alignment is too large");
     const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command), kind);
     if (slot.storage == nullptr) return 0;

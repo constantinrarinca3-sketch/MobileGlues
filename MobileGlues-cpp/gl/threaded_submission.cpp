@@ -58,7 +58,7 @@ class submission_state {
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
                                size_t payload_alignment, command_kind kind) {
-        if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
+        if (payload_size > kMaximumCommandPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
 

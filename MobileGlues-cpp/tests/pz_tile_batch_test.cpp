@@ -48,8 +48,15 @@ struct multidraw_call {
     std::vector<uintptr_t> offsets;
 };
 
+struct client_draw_call {
+    GLsizei count;
+    std::vector<GLushort> indices;
+};
+
 std::vector<draw_call> draws;
 std::vector<multidraw_call> multidraws;
+std::vector<client_draw_call> client_draws;
+std::vector<GLuint> element_bindings;
 std::vector<GLint> run_counts;
 std::vector<GLint> run_starts;
 std::vector<GLfloat> run_depths;
@@ -68,6 +75,14 @@ void fake_uniform2fv(GLint location, GLsizei count, const GLfloat* values) {
 }
 void fake_draw_range(GLenum, GLuint start, GLuint end, GLsizei count, GLenum, const void* indices) {
     draws.push_back({start, end, count, reinterpret_cast<uintptr_t>(indices)});
+}
+void fake_draw_elements(GLenum, GLsizei count, GLenum type, const void* indices) {
+    assert(type == GL_UNSIGNED_SHORT);
+    const auto* values = static_cast<const GLushort*>(indices);
+    client_draws.push_back({count, std::vector<GLushort>(values, values + count)});
+}
+void fake_bind_buffer(GLenum target, GLuint buffer) {
+    if (target == GL_ELEMENT_ARRAY_BUFFER) element_bindings.push_back(buffer);
 }
 void GLAPIENTRY fake_multidraw(GLenum, const GLsizei* counts, GLenum, const void* const* indices,
                                GLsizei draw_count) {
@@ -88,7 +103,7 @@ GLint fake_get_location(GLuint, const GLchar* name) {
     return -1;
 }
 
-alignas(std::max_align_t) std::array<unsigned char, mg_ts::kCommandPayloadBytes> command_storage{};
+alignas(std::max_align_t) std::array<unsigned char, mg_ts::kMaximumCommandPayloadBytes> command_storage{};
 mg_ts::command_fn command_execute = nullptr;
 mg_ts::command_fn command_destroy = nullptr;
 uint64_t command_sequence = 0;
@@ -100,6 +115,8 @@ void setup_program() {
     GLES.glUniform1iv = fake_uniform1iv;
     GLES.glUniform2fv = fake_uniform2fv;
     GLES.glDrawRangeElements = fake_draw_range;
+    GLES.glDrawElements = fake_draw_elements;
+    GLES.glBindBuffer = fake_bind_buffer;
     GLES.glGetError = fake_get_error;
     GLES.glGetProgramiv = fake_get_program;
     GLES.glGetUniformLocation = fake_get_location;
@@ -185,6 +202,8 @@ int main() {
     assert(run_depths.size() == 6 && run_depths[0] == 0.1f && run_depths[5] == 0.03f);
 
     multidraws.clear();
+    client_draws.clear();
+    element_bindings.clear();
     run_counts.clear();
     depth(1.0f, 0.1f);
     assert(mg_pz_tile_batch_draw_range(GL_TRIANGLES, 10, 12, 3, GL_UNSIGNED_SHORT,
@@ -213,7 +232,11 @@ int main() {
     assert(mg_pz_tile_batch_draw_range(GL_TRIANGLES, 0, 100, 3, GL_UNSIGNED_SHORT,
                                        reinterpret_cast<const void*>(6)));
     mg_pz_tile_batch_flush();
-    assert(multidraws.size() == 1);
+    assert(multidraws.empty());
+    assert(client_draws.size() == 1);
+    assert(client_draws[0].count == 6);
+    assert((client_draws[0].indices == std::vector<GLushort>{40, 41, 42, 50, 51, 52}));
+    assert((element_bindings == std::vector<GLuint>{0, 99}));
     assert((run_starts == std::vector<GLint>{40, 50}));
     index_shadow.clear();
 

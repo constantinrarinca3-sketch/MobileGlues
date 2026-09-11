@@ -379,7 +379,7 @@ void mg_pz_census_init(void) {
         if (mg_pz_threaded_submission_active)
             LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
         if (mg_pz_tile_batch_active)
-            LOG_I("ZOMDROID_PZ_STATE_RUN_COMPILER enabled=1 mode=native_multidraw max_runs=8")
+            LOG_I("ZOMDROID_PZ_STATE_RUN_COMPILER enabled=1 mode=client_indices+native_multidraw max_runs=8")
     }
 #endif
 }
