@@ -61,7 +61,8 @@ static bool pz_etc2_tightly_packed(GLsizei width, GLenum format, GLenum type, bo
     const GLsizei bytes_per_pixel = pixel_sizeof(format, type);
     if (width <= 0 || bytes_per_pixel <= 0) return false;
     mg_unpack_state_t unpack;
-    if (!mg_unpack_state(&unpack) || unpack.skip_rows != 0 || unpack.skip_pixels != 0 || unpack.skip_images != 0)
+    mg_upload_unpack_state(&unpack);
+    if (unpack.skip_rows != 0 || unpack.skip_pixels != 0 || unpack.skip_images != 0)
         return false;
     const GLint row_pixels = unpack.row_length > 0 ? unpack.row_length : width;
     if (row_pixels != width) return false;

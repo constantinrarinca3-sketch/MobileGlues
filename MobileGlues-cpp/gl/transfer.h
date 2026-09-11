@@ -104,6 +104,12 @@ struct mg_upload_fix_t {
     GLint prev_img_h_ = 0, prev_skip_img_ = 0;
 };
 
+struct mg_unpack_state_t;
+
+// Returns the unpack state used by an upload, querying and adopting the driver
+// state only when the per-context mirror is not yet valid.
+void mg_upload_unpack_state(mg_unpack_state_t* out);
+
 // The same predicate mg_upload_fix_t::has_data() answers, asked before the
 // conversion exists. internal_convert() in gl/texture.cpp has to know whether a
 // call carries bytes -- an allocation's `type` describes nothing, so nothing may

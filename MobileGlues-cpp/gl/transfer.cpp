@@ -267,6 +267,10 @@ bool mg_upload_has_data(const void* pixels) {
     return mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0;
 }
 
+void mg_upload_unpack_state(mg_unpack_state_t* out) {
+    if (out != nullptr) *out = current_unpack_state();
+}
+
 mg_upload_fix_t::mg_upload_fix_t(GLsizei width, GLsizei height, GLsizei depth, GLenum format_in, GLenum type_in,
                                  const void* pixels_in, GLenum want_format, bool three_d)
     : format(format_in), type(type_in), pixels(pixels_in) {
