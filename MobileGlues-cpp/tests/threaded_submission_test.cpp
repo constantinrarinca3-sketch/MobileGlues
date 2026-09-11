@@ -34,6 +34,10 @@ GLfloat uniform[4] = {};
 std::atomic<uint64_t> counted{0};
 std::atomic<uint64_t> state_calls{0};
 std::atomic<int> state_value{-1};
+std::atomic<uint64_t> uniform_calls{0};
+std::atomic<int> uniform_value{-1};
+std::atomic<uint64_t> uniform_vector_calls{0};
+std::atomic<int> uniform_vector_value{-1};
 
 void expect(bool condition, const char* message) {
     if (condition) return;
@@ -72,6 +76,18 @@ void fakeDisable(GLenum) {
     state_calls.fetch_add(1, std::memory_order_relaxed);
 }
 
+void fakeUniform1i(GLint, GLint value) {
+    uniform_value.store(value, std::memory_order_relaxed);
+    uniform_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void fakeUniform2iv(GLint, GLsizei count, const GLint* value) {
+    if (count == 1 && value != nullptr) uniform_vector_value.store(value[1], std::memory_order_relaxed);
+    uniform_vector_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void fakeUseProgram(GLuint) {}
+
 void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(2);
@@ -107,8 +123,9 @@ EGLBoolean fakeSwap(EGLDisplay, EGLSurface) {
 } // namespace
 
 int main() {
-    expect(mg_ts::classifyCommand("glUseProgram") == mg_ts::command_kind::state,
-           "program changes are renderer state");
+    expect(mg_ts::classifyCommand("glUseProgram") == mg_ts::command_kind::program_state &&
+               mg_ts::endsRendererSegment(mg_ts::command_kind::program_state),
+           "program changes must terminate uniform compiler segments");
     expect(mg_ts::classifyCommand("glUniform4fv") == mg_ts::command_kind::uniform,
            "uniform writes stay inside a renderer segment");
     expect(mg_ts::classifyCommand("glBufferSubData") == mg_ts::command_kind::resource_write,
@@ -151,6 +168,9 @@ int main() {
     mg_ts_dispatch_slot<void (*)(GLint)> count{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLenum)> enable{"glEnable"};
     mg_ts_dispatch_slot<void (*)(GLenum)> disable{"glDisable"};
+    mg_ts_dispatch_slot<void (*)(GLint, GLint)> uniform1i{"glUniform1i"};
+    mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLint*)> uniform2iv{"glUniform2iv"};
+    mg_ts_dispatch_slot<void (*)(GLuint)> use_program{"glUseProgram"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
@@ -161,6 +181,9 @@ int main() {
     count = fakeCount;
     enable = fakeEnable;
     disable = fakeDisable;
+    uniform1i = fakeUniform1i;
+    uniform2iv = fakeUniform2iv;
+    use_program = fakeUseProgram;
     buffer_data = fakeBufferData;
     uniform4fv = fakeUniform4fv;
     query = fakeQuery;
@@ -222,6 +245,30 @@ int main() {
     expect(quiet_query() == 88, "different state selectors must complete");
     expect(state_calls.load(std::memory_order_relaxed) == 5,
            "different enable capabilities must not overwrite one another");
+
+    uniform1i(7, 10);
+    uniform1i(7, 20);
+    expect(quiet_query() == 88, "a query must flush the compiled uniform segment");
+    expect(uniform_calls.load(std::memory_order_relaxed) == 1 &&
+               uniform_value.load(std::memory_order_relaxed) == 20,
+           "the compiler must execute only the final uniform write in a segment");
+
+    GLint first_vector[2] = {1, 2};
+    GLint final_vector[2] = {3, 4};
+    uniform2iv(9, 1, first_vector);
+    uniform2iv(9, 1, final_vector);
+    expect(quiet_query() == 88, "a query must flush copied uniform vectors");
+    expect(uniform_vector_calls.load(std::memory_order_relaxed) == 1 &&
+               uniform_vector_value.load(std::memory_order_relaxed) == 4,
+           "copied uniform vectors must also keep only the final write");
+
+    uniform1i(7, 30);
+    use_program(4);
+    uniform1i(7, 40);
+    expect(quiet_query() == 88, "uniforms around a program change must complete");
+    expect(uniform_calls.load(std::memory_order_relaxed) == 3 &&
+               uniform_value.load(std::memory_order_relaxed) == 40,
+           "uniform writes must never coalesce across a program change");
 
     flush();
     {

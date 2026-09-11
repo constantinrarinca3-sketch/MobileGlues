@@ -32,6 +32,7 @@ using command_fn = void (*)(void*);
 enum class command_kind : uint8_t {
     state,
     uniform,
+    program_state,
     resource_write,
     draw,
     barrier,
@@ -55,20 +56,27 @@ enum class coalesce_domain : uint16_t {
     clear_depth,
     clear_depth_f,
     clear_stencil,
+    uniform_current,
+    uniform_program,
 };
 
 struct coalesce_key {
     coalesce_domain domain = coalesce_domain::none;
     uint32_t selector = 0;
+    uint32_t owner = 0;
+    uint32_t extent = 0;
+    const char* signature = nullptr;
 
     bool valid() const { return domain != coalesce_domain::none; }
     bool operator==(const coalesce_key& other) const {
-        return domain == other.domain && selector == other.selector;
+        return domain == other.domain && selector == other.selector && owner == other.owner &&
+               extent == other.extent && signature == other.signature;
     }
 };
 
 inline bool endsRendererSegment(command_kind kind) {
-    return kind == command_kind::resource_write || kind == command_kind::draw || kind == command_kind::barrier;
+    return kind == command_kind::program_state || kind == command_kind::resource_write ||
+           kind == command_kind::draw || kind == command_kind::barrier;
 }
 
 struct reservation {
@@ -212,6 +220,9 @@ inline command_kind classifyCommand(const char* name) {
         nameStartsWith(name, "glBufferData") || nameStartsWith(name, "glBufferSubData") ||
         nameStartsWith(name, "glBufferStorage") || nameEquals(name, "glGenerateMipmap"))
         return command_kind::resource_write;
+    if (nameEquals(name, "glUseProgram") || nameEquals(name, "glActiveShaderProgram") ||
+        nameEquals(name, "glBindProgramPipeline") || nameEquals(name, "glUseProgramStages"))
+        return command_kind::program_state;
     if (nameStartsWith(name, "glBind") || nameStartsWith(name, "glUseProgram") ||
         nameStartsWith(name, "glActiveTexture") || nameStartsWith(name, "glEnable") ||
         nameStartsWith(name, "glDisable") || nameStartsWith(name, "glBlend") ||
@@ -262,6 +273,57 @@ coalesce_key makeCoalesceKey(coalesce_domain domain, First first, Rest...) {
 
 inline coalesce_key makeCoalesceKey(coalesce_domain domain) {
     return coalesceDomainUsesFirstArgument(domain) ? coalesce_key{} : coalesce_key{domain, 0};
+}
+
+inline bool isUniformValueCommand(const char* name) {
+    const char* uniform = std::strstr(name, "Uniform");
+    if (uniform == nullptr) return false;
+    uniform += 7;
+    return (uniform[0] >= '1' && uniform[0] <= '4') || std::strncmp(uniform, "Matrix", 6) == 0;
+}
+
+template <typename... Args>
+coalesce_key makeScalarUniformCoalesceKey(bool program_uniform, const char* signature, Args... args) {
+    if (signature == nullptr || !isUniformValueCommand(signature)) return {};
+    const auto arguments = std::tuple<Args...>(args...);
+    if (program_uniform) {
+        if constexpr (sizeof...(Args) >= 2) {
+            using Program = std::decay_t<decltype(std::get<0>(arguments))>;
+            using Location = std::decay_t<decltype(std::get<1>(arguments))>;
+            if constexpr ((std::is_integral_v<Program> || std::is_enum_v<Program>) &&
+                          (std::is_integral_v<Location> || std::is_enum_v<Location>)) {
+                return {coalesce_domain::uniform_program, static_cast<uint32_t>(std::get<1>(arguments)),
+                        static_cast<uint32_t>(std::get<0>(arguments)), 1, signature};
+            }
+        }
+        return {};
+    }
+    if constexpr (sizeof...(Args) >= 1) {
+        using Location = std::decay_t<decltype(std::get<0>(arguments))>;
+        if constexpr (std::is_integral_v<Location> || std::is_enum_v<Location>) {
+            return {coalesce_domain::uniform_current, static_cast<uint32_t>(std::get<0>(arguments)), 0, 1,
+                    signature};
+        }
+    }
+    return {};
+}
+
+inline uint32_t uniformExtent(GLsizei count, GLboolean transpose = GL_FALSE) {
+    return (static_cast<uint32_t>(count) << 1U) | (transpose == GL_FALSE ? 0U : 1U);
+}
+
+inline coalesce_key makeUniformCopyKey(const char* signature, GLint location, GLsizei count,
+                                       GLboolean transpose = GL_FALSE) {
+    if (signature == nullptr || !isUniformValueCommand(signature)) return {};
+    return {coalesce_domain::uniform_current, static_cast<uint32_t>(location), 0,
+            uniformExtent(count, transpose), signature};
+}
+
+inline coalesce_key makeProgramUniformCopyKey(const char* signature, GLuint program, GLint location,
+                                              GLsizei count, GLboolean transpose = GL_FALSE) {
+    if (signature == nullptr || !isUniformValueCommand(signature)) return {};
+    return {coalesce_domain::uniform_program, static_cast<uint32_t>(location), program,
+            uniformExtent(count, transpose), signature};
 }
 
 inline slot_policy policyForName(const char* name) {
@@ -399,42 +461,51 @@ inline bool validCopySize(GLsizei count, unsigned elements, size_t element_size,
 }
 
 template <typename T>
-bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned elements, GLint location, GLsizei count,
-                    const T* value) {
+bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned elements, const char* signature,
+                    GLint location, GLsizei count, const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = uniform_vector_command<decltype(function), T>;
-    return enqueueAs<command>(command_kind::uniform, function, location, count, value, bytes) != 0;
+    return enqueueKeyed<command>(command_kind::uniform, makeUniformCopyKey(signature, location, count), function,
+                                 location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
-                           GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) {
+                           const char* signature, GLint location, GLsizei count, GLboolean transpose,
+                           const GLfloat* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = uniform_matrix_command<decltype(function)>;
-    return enqueueAs<command>(command_kind::uniform, function, location, count, transpose, value, bytes) != 0;
+    return enqueueKeyed<command>(command_kind::uniform,
+                                 makeUniformCopyKey(signature, location, count, transpose), function, location,
+                                 count, transpose, value, bytes) != 0;
 }
 
 template <typename T>
-bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned elements, GLuint program,
-                    GLint location, GLsizei count, const T* value) {
+bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned elements, const char* signature,
+                    GLuint program, GLint location, GLsizei count, const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
     using command = program_uniform_vector_command<decltype(function), T>;
-    return enqueueAs<command>(command_kind::uniform, function, program, location, count, value, bytes) != 0;
+    return enqueueKeyed<command>(command_kind::uniform,
+                                 makeProgramUniformCopyKey(signature, program, location, count), function, program,
+                                 location, count, value, bytes) != 0;
 }
 
 inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
-                           GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat* value) {
+                           const char* signature, GLuint program, GLint location, GLsizei count,
+                           GLboolean transpose, const GLfloat* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
     using command = program_uniform_matrix_command<decltype(function)>;
-    return enqueueAs<command>(command_kind::uniform, function, program, location, count, transpose, value, bytes) != 0;
+    return enqueueKeyed<command>(command_kind::uniform,
+                                 makeProgramUniformCopyKey(signature, program, location, count, transpose), function,
+                                 program, location, count, transpose, value, bytes) != 0;
 }
 
-template <typename Fn, typename... Args> bool tryUniformCopy(Fn, unsigned, Args...) { return false; }
+template <typename Fn, typename... Args> bool tryUniformCopy(Fn, unsigned, const char*, Args...) { return false; }
 
 template <typename Fn, typename... Args> struct owned_pointer_command {
     Fn function;
@@ -521,7 +592,7 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
         if (!mg_ts::availableAndActive()) return function_(args...);
         if constexpr (std::is_void_v<R>) {
             if (policy_ == mg_ts::slot_policy::uniform_copy &&
-                mg_ts::tryUniformCopy(function_, uniform_elements_, args...))
+                mg_ts::tryUniformCopy(function_, uniform_elements_, name_, args...))
                 return;
             if (policy_ == mg_ts::slot_policy::buffer_copy && mg_ts::tryBufferCopy(function_, args...)) return;
 
@@ -535,8 +606,13 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
                                       (policy_ != mg_ts::slot_policy::pointer_offset ||
                                        !mg_ts::pointerArgumentsLookLikeOffsets(args...)));
             const mg_ts::command_kind dispatched_kind = synchronous ? mg_ts::command_kind::barrier : kind_;
-            const mg_ts::coalesce_key key =
-                synchronous ? mg_ts::coalesce_key{} : mg_ts::makeCoalesceKey(coalesce_domain_, args...);
+            mg_ts::coalesce_key key{};
+            if (!synchronous) {
+                key = kind_ == mg_ts::command_kind::uniform
+                          ? mg_ts::makeScalarUniformCoalesceKey(
+                                mg_ts::nameStartsWith(name_, "glProgramUniform"), name_, args...)
+                          : mg_ts::makeCoalesceKey(coalesce_domain_, args...);
+            }
             mg_ts::dispatch_call_as(dispatched_kind, key, function_, synchronous, args...);
             if (policy_ == mg_ts::slot_policy::packet_flush && mg_ts::flush_pending != nullptr)
                 mg_ts::flush_pending();

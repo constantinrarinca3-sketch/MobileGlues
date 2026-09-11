@@ -90,15 +90,19 @@ class submission_state {
     void publishCommand(uint64_t sequence) {
         if (!reservation_open_ || sequence != producer_head_ + 1) return;
         reservation_open_ = false;
-        if (reserved_kind_ == command_kind::state && reserved_key_.valid()) {
+        if ((reserved_kind_ == command_kind::state || reserved_kind_ == command_kind::uniform) &&
+            reserved_key_.valid()) {
             command_packet& packet = queue_[producer_head_ & kPacketMask];
             for (size_t index = pending_count_; index-- > 0;) {
                 packet_entry& previous = packet.entries[index];
                 if (previous.segment != pending_segment_) break;
-                if (!previous.superseded && previous.kind == command_kind::state &&
+                if (!previous.superseded && previous.kind == reserved_kind_ &&
                     previous.key == reserved_key_) {
                     previous.superseded = true;
-                    ++state_commands_dropped_;
+                    if (reserved_kind_ == command_kind::state)
+                        ++state_commands_dropped_;
+                    else
+                        ++uniform_commands_dropped_;
                     break;
                 }
             }
@@ -258,7 +262,8 @@ class submission_state {
               "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
               "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
               "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu "
-              "renderer=segments:%llu/state:%llu/uniform:%llu/resource:%llu/draw:%llu/barrier:%llu/drop:%llu",
+              "renderer=segments:%llu/state:%llu/uniform:%llu/resource:%llu/draw:%llu/barrier:%llu/"
+              "drop_s:%llu/drop_u:%llu",
               static_cast<unsigned long long>(frames),
               static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
@@ -287,7 +292,8 @@ class submission_state {
               static_cast<unsigned long long>(renderer_resource_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(renderer_draw_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(renderer_barrier_.load(std::memory_order_relaxed)),
-              static_cast<unsigned long long>(state_commands_dropped_))
+              static_cast<unsigned long long>(state_commands_dropped_),
+              static_cast<unsigned long long>(uniform_commands_dropped_))
     }
 
   private:
@@ -377,6 +383,9 @@ class submission_state {
                             break;
                         case command_kind::uniform:
                             renderer_uniform_.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        case command_kind::program_state:
+                            renderer_state_.fetch_add(1, std::memory_order_relaxed);
                             break;
                         case command_kind::resource_write:
                             renderer_resource_.fetch_add(1, std::memory_order_relaxed);
@@ -522,6 +531,7 @@ class submission_state {
     std::atomic<uint64_t> renderer_draw_{0};
     std::atomic<uint64_t> renderer_barrier_{0};
     uint64_t state_commands_dropped_ = 0;
+    uint64_t uniform_commands_dropped_ = 0;
 };
 
 submission_state& state() {
