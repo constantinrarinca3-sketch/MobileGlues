@@ -10,7 +10,6 @@
 #include "glcorearb.h"
 #include "log.h"
 #include "program.h"
-#include "pz_tile_batch.h"
 #include "shader.h"
 #include "server_attrib.h"
 #include "texture.h"
@@ -580,14 +579,7 @@ NATIVE_FUNCTION_HEAD(void, glTexParameterfv, GLenum target, GLenum pname, const 
 //NATIVE_FUNCTION_HEAD(void, glTexParameteri, GLenum target, GLenum pname, GLint param) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteri, target,pname,param)
 //NATIVE_FUNCTION_HEAD(void, glTexParameteriv, GLenum target, GLenum pname, const GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteriv, target,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glTexSubImage2D, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) NATIVE_FUNCTION_END_NO_RETURN(void, glTexSubImage2D, target,level,xoffset,yoffset,width,height,format,type,pixels)
-NATIVE_FUNCTION_HEAD(void, glUniform1f, GLint location, GLfloat v0)
-#if defined(ZOMDROID_EXPERIMENTAL)
-    const bool redundant = (mg_pz_census_active || mg_pz_uniform_fastpath_active) &&
-                           uniform_scalars_should_skip(gl_state->current_program, location, 0x301U, v0);
-    if (mg_pz_tile_batch_uniform1f(gl_state->current_program, location, v0)) return;
-    if (redundant) return;
-#endif
-NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1f, location, v0)
+MG_UNIFORM_SCALAR1(glUniform1f, GLfloat, 0x301U)
 MG_UNIFORM_VECTOR(glUniform1fv, GLfloat, 1, 0x301U)
 //NATIVE_FUNCTION_HEAD(void, glUniform1i, GLint location, GLint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1i, location,v0)
 MG_UNIFORM_VECTOR(glUniform1iv, GLint, 1, 0x101U)

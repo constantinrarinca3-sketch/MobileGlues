@@ -19,16 +19,9 @@
 #include <type_traits>
 #include <utility>
 
-void mg_pz_tile_batch_before_backend(const char* command) __attribute__((weak));
-void mg_pz_tile_batch_flush() __attribute__((weak));
-
 namespace mg_ts {
 
 constexpr size_t kCommandPayloadBytes = 256;
-// A packet keeps the same fixed 8 KiB payload, but a PZ compiler command may
-// consume a larger variable slice when it carries compacted client indices.
-// Ordinary GL commands remain below kCommandPayloadBytes.
-constexpr size_t kMaximumCommandPayloadBytes = 4096;
 constexpr size_t kInlineCopyBytes = 192;
 
 using command_fn = void (*)(void*);
@@ -84,7 +77,7 @@ inline bool availableAndActive() {
 }
 
 template <typename Command, typename... Args> uint64_t enqueueAs(command_kind kind, Args&&... args) {
-    static_assert(sizeof(Command) <= kMaximumCommandPayloadBytes, "threaded command is too large");
+    static_assert(sizeof(Command) <= kCommandPayloadBytes, "threaded command is too large");
     static_assert(alignof(Command) <= alignof(std::max_align_t), "threaded command alignment is too large");
     const reservation slot = reserve(&Command::execute, &Command::destroy, sizeof(Command), alignof(Command), kind);
     if (slot.storage == nullptr) return 0;
@@ -445,7 +438,6 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
     bool operator!=(std::nullptr_t) const { return function_ != nullptr; }
 
     R operator()(Args... args) const {
-        if (mg_pz_tile_batch_before_backend != nullptr) mg_pz_tile_batch_before_backend(name_);
         if (!mg_ts::availableAndActive()) return function_(args...);
         if constexpr (std::is_void_v<R>) {
             if (policy_ == mg_ts::slot_policy::uniform_copy &&

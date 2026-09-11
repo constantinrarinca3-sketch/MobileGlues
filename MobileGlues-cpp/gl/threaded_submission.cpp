@@ -58,7 +58,7 @@ class submission_state {
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
                                size_t payload_alignment, command_kind kind) {
-        if (payload_size > kMaximumCommandPayloadBytes || payload_alignment == 0 ||
+        if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
 
@@ -548,18 +548,11 @@ void flush_pending() { state().flushPending(); }
 
 bool adopt_context(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context,
                    egl_bind_api_fn bind_api, egl_make_current_fn make_current, egl_release_thread_fn release_thread) {
-    if (mg_pz_tile_batch_flush != nullptr) mg_pz_tile_batch_flush();
     return state().adopt({display, draw, read, context, bind_api, make_current, release_thread});
 }
 
-bool release_context() {
-    if (mg_pz_tile_batch_flush != nullptr) mg_pz_tile_batch_flush();
-    return state().release();
-}
-void shutdown() {
-    if (mg_pz_tile_batch_flush != nullptr) mg_pz_tile_batch_flush();
-    state().stopWorker();
-}
+bool release_context() { return state().release(); }
+void shutdown() { state().stopWorker(); }
 bool owns_context_for_caller() { return state().ownsForCaller(); }
 
 bool submit_swap(EGLDisplay display, EGLSurface surface, egl_swap_buffers_fn full_swap,

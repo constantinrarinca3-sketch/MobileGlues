@@ -442,8 +442,7 @@ static void erase_buffer_index_shadow(GLuint buffer) {
 }
 
 static void replace_buffer_index_shadow(GLenum target, GLuint buffer, const void* data, GLsizeiptr size) {
-    if (!(mg_pz_quad_index_cache_active || mg_pz_tile_batch_active) || target != GL_ELEMENT_ARRAY_BUFFER ||
-        buffer == 0 || !has_buffer(buffer) ||
+    if (!mg_pz_quad_index_cache_active || target != GL_ELEMENT_ARRAY_BUFFER || buffer == 0 || !has_buffer(buffer) ||
         data == nullptr || size <= 0 || static_cast<size_t>(size) > kIndexShadowMaxBufferBytes ||
         g_bg->multiple_contexts_seen || buffer >= g_buffer_lifetimes.size() ||
         buffer >= g_buffer_content_versions.size() || buffer >= g_buffer_index_shadow_watched.size() ||
@@ -488,8 +487,7 @@ static void replace_buffer_index_shadow(GLenum target, GLuint buffer, const void
 
 static void patch_buffer_index_shadow(GLenum target, GLuint buffer, GLintptr offset, GLsizeiptr size,
                                       const void* data) {
-    if (!(mg_pz_quad_index_cache_active || mg_pz_tile_batch_active) || target != GL_ELEMENT_ARRAY_BUFFER ||
-        buffer == 0 || !has_buffer(buffer) ||
+    if (!mg_pz_quad_index_cache_active || target != GL_ELEMENT_ARRAY_BUFFER || buffer == 0 || !has_buffer(buffer) ||
         offset < 0 || size < 0 || (size > 0 && data == nullptr)) {
         erase_buffer_index_shadow(buffer);
         return;
@@ -1097,16 +1095,13 @@ bool mg_pz_buffer_cache_identity(GLuint buffer, uint64_t* lifetime, uint64_t* co
     *lifetime = g_buffer_lifetimes[buffer];
     *content_version = g_buffer_content_versions[buffer];
     *data_size = static_cast<GLsizeiptr>(tracked_size);
-    if ((mg_pz_quad_index_cache_active || mg_pz_tile_batch_active) && !g_bg->multiple_contexts_seen)
-        g_buffer_index_shadow_watched[buffer] = 1;
+    if (mg_pz_quad_index_cache_active && !g_bg->multiple_contexts_seen) g_buffer_index_shadow_watched[buffer] = 1;
     return true;
 }
 
 const void* mg_pz_buffer_cache_source(GLuint buffer, uint64_t lifetime, uint64_t content_version,
                                       GLsizeiptr data_size) {
-    if (!(mg_pz_quad_index_cache_active || mg_pz_tile_batch_active) || data_size <= 0 ||
-        g_bg->multiple_contexts_seen)
-        return nullptr;
+    if (!mg_pz_quad_index_cache_active || data_size <= 0 || g_bg->multiple_contexts_seen) return nullptr;
     const auto found = g_buffer_index_shadows.find(buffer);
     if (found == g_buffer_index_shadows.end()) return nullptr;
     const buffer_index_shadow_t& shadow = found->second;

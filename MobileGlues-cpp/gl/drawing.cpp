@@ -13,7 +13,6 @@
 #include "mg.h"
 #include "program.h"
 #include "pz_census.h"
-#include "pz_tile_batch.h"
 #include "quad_indices.h"
 #include "texture.h"
 #include "../egl/context.h"
@@ -1168,11 +1167,6 @@ void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, G
     // longer describe it. They are only a promise about the index range, and
     // dropping the promise is allowed; drawing the wrong primitives is not.
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
-#if defined(ZOMDROID_EXPERIMENTAL)
-    if (!mg_restart_needs_driver_fixed(type) &&
-        mg_pz_tile_batch_draw_range(mode, start, end, count, type, indices))
-        return;
-#endif
     restart_guard_t guard(type);
     GLES.glDrawRangeElements(mode, start, end, count, type, indices);
     CHECK_GL_ERROR
