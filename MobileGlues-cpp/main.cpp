@@ -79,26 +79,28 @@ void proc_init() {
     load_libs();
     init_target_egl();
     init_target_gles();
-    mg_pz_buffer_streaming_install();
-    mg_pz_repack_renderer_install();
-    mg_pz_repack_draw_router_install();
-    init_target_gl();
-}
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
+    if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
+        mg_pz_repack_renderer_install();
+        mg_pz_repack_draw_router_install();
+    } else {
+        mg_pz_repack_probe_install();
+    }
+#else
+    mg_pz_repack_probe_install();
+#endif
+    set_multidraw_setting();
 
-__attribute__((constructor)) static void init() {
+    init_settings_post();
+
 #if PROFILING
     init_perfetto();
 #endif
-    proc_init();
-}
 
-__attribute__((destructor)) static void deinit() {
-    // Stop the experimental worker while the backend EGL/GLES libraries are
-    // still loaded and while every command function pointer it may execute is
-    // valid. Static-destruction order across translation units is unspecified;
-    // relying on the worker object's destructor was a use-after-dlclose hazard.
-    mg_pz_threaded_submission_shutdown();
-#if PROFILING
-    perfetto::TrackEvent::Flush();
+    // Cleanup
+#ifndef __APPLE__
+    destroy_temp_egl_ctx();
 #endif
+    g_initialized = 1;
 }
