@@ -56,6 +56,24 @@ counts uploads already sourced from an unpack PBO; `tex_drop` counts rejected co
 `tex_frames=any/over20/over33/over50/over100` shows exactly how many frames carrying texture data
 also fell into each frame-time bucket.
 
+Large Project Zomboid RGB/RGBA atlases can be stored at full resolution in ETC2:
+
+```text
+MOBILEGLUES_PZ_ETC2=1        # compress eligible 2D atlases of at least 512x512
+MOBILEGLUES_PZ_ETC2_CACHE=1  # reuse content-addressed ETC2 blocks across launches
+```
+
+Both switches default to disabled. ETC2 reduces RGB8 storage sixfold and RGBA8 storage fourfold;
+it is intended to reduce texture-memory pressure rather than steady-state draw time. The optional
+disk cache avoids paying the CPU encoding cost after the first run. It defaults to the app-private
+`/data/data/com.zomdroid/files/ngg_etc2cache` directory and a 1536 MiB LRU cap. The launcher may
+override these through `MOBILEGLUES_PZ_ETC2_CACHE_DIR` and `MOBILEGLUES_PZ_ETC2_CACHE_MB`.
+
+Mip levels inherit the compressed format selected at level zero. Block-aligned subimage updates are
+encoded and submitted with `glCompressedTexSubImage2D`; an incompatible update is rejected instead
+of writing uncompressed bytes into compressed storage. With Census enabled, `ZOMDROID_PZ_ETC2`
+reports encoded uploads, cache hits, byte reduction, rejected updates and cumulative encode/I/O time.
+
 The independent VAO optimization is selected through the renderer environment:
 
 ```text

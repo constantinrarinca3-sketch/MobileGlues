@@ -111,6 +111,12 @@ public:
     bool runtime_mipmap_generated = false;
     bool runtime_mipmap_fallback_logged = false;
     bool runtime_mipmap_base_only = false;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Driver-side format and base dimensions for the opt-in ETC2 path.
+    GLenum pz_etc2_format = 0;
+    GLsizei pz_etc2_width = 0;
+    GLsizei pz_etc2_height = 0;
+#endif
 };
 
 // How many texture units this layer can actually track. Anything the driver

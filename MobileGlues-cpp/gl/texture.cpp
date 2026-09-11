@@ -34,6 +34,9 @@
 #include "transfer.h"
 #include "pixel.h"
 #include "mg.h"
+#if defined(ZOMDROID_EXPERIMENTAL)
+#include "pz_etc2_runtime.h"
+#endif
 #include <GL/gl.h>
 
 #define DEBUG 0
@@ -50,6 +53,40 @@ static size_t pz_texture_upload_bytes(GLsizei width, GLsizei height, GLsizei dep
     }
     return result;
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+static bool pz_etc2_tightly_packed(GLsizei width, GLenum format, GLenum type, bool converted) {
+    if (converted) return true;
+    if (mg_driver_bound_buffer(GL_PIXEL_UNPACK_BUFFER) != 0) return false;
+    const GLsizei bytes_per_pixel = pixel_sizeof(format, type);
+    if (width <= 0 || bytes_per_pixel <= 0) return false;
+    mg_unpack_state_t unpack;
+    if (!mg_unpack_state(&unpack) || unpack.skip_rows != 0 || unpack.skip_pixels != 0 || unpack.skip_images != 0)
+        return false;
+    const GLint row_pixels = unpack.row_length > 0 ? unpack.row_length : width;
+    if (row_pixels != width) return false;
+    const size_t row_bytes = static_cast<size_t>(width) * static_cast<size_t>(bytes_per_pixel);
+    return widthalign(row_bytes, static_cast<size_t>(unpack.alignment)) == row_bytes;
+}
+
+static bool pz_etc2_subimage_block_aligned(const TextureObject* tex, GLint level, GLint xoffset, GLint yoffset,
+                                            GLsizei width, GLsizei height) {
+    if (!tex || level < 0 || xoffset < 0 || yoffset < 0 || width <= 0 || height <= 0 ||
+        (xoffset & 3) != 0 || (yoffset & 3) != 0)
+        return false;
+    GLsizei level_width = tex->pz_etc2_width;
+    GLsizei level_height = tex->pz_etc2_height;
+    for (GLint i = 0; i < level; ++i) {
+        if (level_width > 1) level_width /= 2;
+        if (level_height > 1) level_height /= 2;
+    }
+    if (width > level_width || height > level_height || xoffset > level_width - width ||
+        yoffset > level_height - height)
+        return false;
+    return ((width & 3) == 0 || xoffset + width == level_width) &&
+           ((height & 3) == 0 || yoffset + height == level_height);
+}
+#endif
 
 #define TX_WARN_ONCE(...)                                                                                              \
     do {                                                                                                               \
@@ -1059,7 +1096,12 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
 
     GET_TEXTURE_OBJECT(target);
 #if defined(ZOMDROID_EXPERIMENTAL)
-    if (level == 0) reset_runtime_mipmap_learning(tex);
+    if (level == 0) {
+        reset_runtime_mipmap_learning(tex);
+        tex->pz_etc2_format = 0;
+        tex->pz_etc2_width = 0;
+        tex->pz_etc2_height = 0;
+    }
 #endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
@@ -1072,6 +1114,33 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
     tex->swizzle_param[3] = GL_ALPHA;
 
     tex->format = format;
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (mg_pz_etc2_active && g_gles_caps.major >= 3) {
+        mg_pz_etc2_upload_t etc2;
+        const bool tightly_packed = pz_etc2_tightly_packed(width, format, type, fix.converted());
+        if (mg_pz_etc2_try_encode(target, level, internalFormat, width, height, border, format, type, fix.pixels,
+                                  tightly_packed, tex->pz_etc2_format, /*subimage=*/false, &etc2)) {
+            if (level == 0) {
+                tex->pz_etc2_format = etc2.format;
+                tex->pz_etc2_width = width;
+                tex->pz_etc2_height = height;
+            }
+            GLES.glCompressedTexImage2D(target, level, etc2.format, width, height, border, etc2.size, etc2.blocks);
+            CHECK_GL_ERROR
+            return;
+        }
+        // A mip chain whose base was replaced with ETC2 cannot safely mix an
+        // uncompressed definition into that chain. Treat an unencodable mip as
+        // an explicit failure instead of making the texture silently incomplete.
+        if (level > 0 && tex->pz_etc2_format != 0) {
+            mg_set_gl_error(GL_INVALID_OPERATION);
+            mg_pz_etc2_rejected_update();
+            CHECK_GL_ERROR
+            return;
+        }
+    }
+#endif
 
     GLES.glTexImage2D(target, level, internalFormat, width, height, border, format, type, fix.pixels);
 
@@ -1180,6 +1249,9 @@ void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalFormat, GLsize
     GET_TEXTURE_OBJECT(target);
 #if defined(ZOMDROID_EXPERIMENTAL)
     reset_runtime_mipmap_learning(tex);
+    tex->pz_etc2_format = 0;
+    tex->pz_etc2_width = 0;
+    tex->pz_etc2_height = 0;
 #endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
@@ -1373,6 +1445,13 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x
     }
 
     GET_TEXTURE_OBJECT(target);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (level == 0) {
+        tex->pz_etc2_format = 0;
+        tex->pz_etc2_width = 0;
+        tex->pz_etc2_height = 0;
+    }
+#endif
     tex->target = ConvertGLEnumToTextureTarget(target);
     tex->internal_format = internalFormat;
     tex->width = width;
@@ -1623,6 +1702,29 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
         CHECK_GL_ERROR
         return;
     }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    TextureObject* etc2_tex = ConvertGLEnumToTextureTarget(target) != TextureTarget::UNKNWON
+                                  ? mgGetTexObjectByTarget(target)
+                                  : nullptr;
+    if (mg_pz_etc2_active && g_gles_caps.major >= 3 && etc2_tex && etc2_tex->pz_etc2_format != 0) {
+        mg_pz_etc2_upload_t etc2;
+        const bool tightly_packed = pz_etc2_tightly_packed(width, fix.format, fix.type, fix.converted());
+        if (pz_etc2_subimage_block_aligned(etc2_tex, level, xoffset, yoffset, width, height) &&
+            mg_pz_etc2_try_encode(target, level, etc2_tex->internal_format, width, height, /*border=*/0, fix.format,
+                                  fix.type, fix.pixels, tightly_packed, etc2_tex->pz_etc2_format,
+                                  /*subimage=*/true, &etc2)) {
+            GLES.glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, etc2.format, etc2.size,
+                                           etc2.blocks);
+            CHECK_GL_ERROR
+            return;
+        }
+        mg_pz_etc2_rejected_update();
+        mg_set_gl_error(GL_INVALID_OPERATION);
+        CHECK_GL_ERROR
+        return;
+    }
+#endif
 
     GLES.glTexSubImage2D(target, level, xoffset, yoffset, width, height, fix.format, fix.type, fix.pixels);
 

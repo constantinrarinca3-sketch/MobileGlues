@@ -137,6 +137,13 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 )
 
 if (ZOMDROID_EXPERIMENTAL)
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        gl/pz_etc2.c
+        gl/pz_etc2_runtime.cpp
+    )
+    # The encoder uses C11 atomics for its persistent worker pool. The project
+    # retains gnu99 for its other C sources.
+    set_source_files_properties(gl/pz_etc2.c PROPERTIES COMPILE_OPTIONS "-std=gnu11")
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
         ZOMDROID_EXPERIMENTAL=1
         ZOMDROID_GL_BREADCRUMBS=1
