@@ -9,6 +9,7 @@ on:
       - zomdroid-threaded-submission-experimental
       - zomdroid-threaded-stable-clean
       - zomdroid-pz-instance-renderer-exp
+      - zomdroid-pz-material-world-only-exp
 
 permissions:
   contents: read

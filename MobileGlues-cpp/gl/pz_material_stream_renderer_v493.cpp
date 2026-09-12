@@ -28,9 +28,45 @@ struct v493_wrapped_t {
     glDeleteProgram_PTR delete_program = nullptr;
 };
 
+struct v493_stats_t {
+    unsigned long long tile_depth_draws = 0;
+    unsigned long long no_depth_passthrough = 0;
+};
+
 thread_local std::unordered_map<GLuint, v493_program_t> g_v493_programs;
+thread_local v493_stats_t g_v493_stats;
 v493_wrapped_t g_v493_wrapped;
 bool g_v493_enabled = false;
+
+void v493_maybe_report_world_only() {
+    const unsigned long long total = g_v493_stats.tile_depth_draws + g_v493_stats.no_depth_passthrough;
+    if (total == 1 || total == 65536 || (total != 0 && total % 250000ULL == 0))
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493_WORLD_ONLY tile_depth=%llu no_depth_passthrough=%llu",
+              g_v493_stats.tile_depth_draws, g_v493_stats.no_depth_passthrough)
+}
+
+void v493_passthrough_no_depth(GLenum mode, GLsizei count, GLenum type, const void* indices) {
+    // V4.9.3 is the first layer with the exact PZ tile-depth shader contract.
+    // A miss here must not fall through to V4.8, which would capture the broad
+    // no-depth family (predominantly menus/UI in the measured workload).
+    // Flush an existing world collector first to preserve draw ordering, then
+    // submit the application draw through the original renderer path.
+    v491_sync_collector_state();
+    if (v44_collector_pending()) {
+        v49_hard_flush_restore("v493:world_only_passthrough", false);
+        v491_sync_collector_state();
+    }
+
+    ++g_material.stats.draws_seen;
+    ++g_material.stats.fallback_draws;
+    ++g_material.stats.backend_draws;
+    ++g_v493_stats.no_depth_passthrough;
+    g_v44_wrapped.raw_draw_elements(mode, count, type, indices);
+    v41_maybe_report();
+    v44_maybe_report();
+    v49_maybe_report();
+    v493_maybe_report_world_only();
+}
 
 void v493_reject(GLuint program, const char* stage, const char* reason) {
     LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493_PROGRAM program=%u result=reject stage=%s reason=%s",
@@ -389,12 +425,11 @@ void v493_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* in
     v493_program_t* own = nullptr;
     v49_program_t* meta = v493_ensure_depth_program(g_state.program, &extra, &own);
     if (!meta || !meta->compatible || !extra || !extra->compatible || !own || !own->compatible) {
-        g_v493_wrapped.draw_elements(mode, count, type, indices);
-        v491_sync_collector_state();
-        v49_maybe_report();
+        v493_passthrough_no_depth(mode, count, type, indices);
         return;
     }
 
+    ++g_v493_stats.tile_depth_draws;
     ++g_material.stats.draws_seen;
     material_program_t* program = v41_find_local_program(g_state.program);
     if (!program || !program->compatible || program->diffuse_unit < 0 || !ensure_limits() ||
@@ -518,6 +553,7 @@ void v493_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* in
     v41_maybe_report();
     v44_maybe_report();
     v49_maybe_report();
+    v493_maybe_report_world_only();
 }
 
 void v493_glLinkProgram(GLuint program) {
@@ -555,9 +591,10 @@ void v493_install_impl() {
     GLES.glLinkProgram = v493_glLinkProgram;
     GLES.glDeleteProgram = v493_glDeleteProgram;
 
-    LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493 enabled=1 revision=4.9.3 mode=perf_ceiling base=v492 "
+    LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493 enabled=1 revision=4.9.3-world-only mode=perf_ceiling base=v492 "
           "depth_aux=ssbo_sidecar inputs=loc3_vec2+optional_loc4_vec2 mask_contract=aux2 "
-          "no_depth_layout=272B depth_aux=96B ordering=preserved stable_untouched=1")
+          "capture=tile_depth_only no_depth=passthrough no_depth_layout=unused depth_aux=96B "
+          "ordering=preserved stable_untouched=1")
 }
 
 } // namespace
