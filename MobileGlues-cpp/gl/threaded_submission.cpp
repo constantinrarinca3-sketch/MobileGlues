@@ -21,8 +21,6 @@ namespace {
 
 constexpr uint64_t kPacketCapacity = 1024;
 constexpr uint64_t kPacketMask = kPacketCapacity - 1;
-constexpr size_t kCommandsPerPacket = 32;
-constexpr size_t kPacketPayloadBytes = kCommandsPerPacket * kCommandPayloadBytes;
 static_assert((kPacketCapacity & kPacketMask) == 0);
 
 struct packet_entry {
@@ -55,7 +53,7 @@ class submission_state {
 
     reservation reserveCommand(command_fn execute, command_fn destroy, size_t payload_size,
                                size_t payload_alignment) {
-        if (payload_size > kCommandPayloadBytes || payload_alignment == 0 ||
+        if (payload_size > kPacketPayloadBytes || payload_alignment == 0 ||
             payload_alignment > alignof(std::max_align_t) || (payload_alignment & (payload_alignment - 1)) != 0)
             return {nullptr, 0};
 
@@ -218,6 +216,17 @@ class submission_state {
         if (!succeeded) swap_failures_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void recordBufferCopy(bool packet_inline, size_t bytes) {
+        if (!mg_pz_census_active) return;
+        if (packet_inline) {
+            inline_buffer_copies_.fetch_add(1, std::memory_order_relaxed);
+            inline_buffer_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        } else {
+            heap_buffer_copies_.fetch_add(1, std::memory_order_relaxed);
+            heap_buffer_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        }
+    }
+
     uint64_t nextSwapNumber() {
         return mg_pz_census_active ? swaps_submitted_.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     }
@@ -232,7 +241,8 @@ class submission_state {
         LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION frames=%llu submitted=%llu executed=%llu packets=%llu "
               "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
               "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
-              "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu swap_done=%llu swap_fail=%llu",
+              "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu "
+              "upload_inline=%llu/%lluB upload_heap=%llu/%lluB swap_done=%llu swap_fail=%llu",
               static_cast<unsigned long long>(frames),
               static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
@@ -253,6 +263,10 @@ class submission_state {
               static_cast<double>(frame_wait_max_us_.load(std::memory_order_relaxed)) / 1000.0,
               static_cast<unsigned long long>(queue_highwater_),
               static_cast<unsigned long long>(packet_highwater_),
+              static_cast<unsigned long long>(inline_buffer_copies_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(inline_buffer_bytes_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(heap_buffer_copies_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(heap_buffer_bytes_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(swaps_completed_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(swap_failures_.load(std::memory_order_relaxed)))
     }
@@ -450,6 +464,10 @@ class submission_state {
     std::atomic<uint64_t> producer_wait_max_us_{0};
     std::atomic<uint64_t> frame_wait_us_{0};
     std::atomic<uint64_t> frame_wait_max_us_{0};
+    std::atomic<uint64_t> inline_buffer_copies_{0};
+    std::atomic<uint64_t> inline_buffer_bytes_{0};
+    std::atomic<uint64_t> heap_buffer_copies_{0};
+    std::atomic<uint64_t> heap_buffer_bytes_{0};
     uint64_t queue_highwater_ = 0;
     uint64_t packet_highwater_ = 0;
     std::atomic<uint64_t> swaps_submitted_{0};
@@ -498,6 +516,8 @@ reservation reserve(command_fn execute, command_fn destroy, size_t payload_size,
 void publish(uint64_t sequence) { state().publishCommand(sequence); }
 void wait(uint64_t sequence) { state().waitFor(sequence); }
 void flush_pending() { state().flushPending(); }
+void record_buffer_copy(bool packet_inline, size_t bytes) { state().recordBufferCopy(packet_inline, bytes); }
+bool buffer_inline_copy_active() { return mg_pz_zbetterfps_fastpath_active; }
 
 bool adopt_context(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context,
                    egl_bind_api_fn bind_api, egl_make_current_fn make_current, egl_release_thread_fn release_thread) {

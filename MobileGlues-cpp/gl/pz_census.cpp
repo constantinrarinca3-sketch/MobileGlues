@@ -22,6 +22,7 @@ bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
+bool mg_pz_zbetterfps_fastpath_active = false;
 bool mg_pz_etc2_active = false;
 bool mg_pz_etc2_cache_active = false;
 
@@ -353,6 +354,7 @@ void mg_pz_census_init(void) {
     mg_pz_runtime_mipmap_skip_active = default_on_switch("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
     mg_pz_quad_index_cache_active = default_on_switch("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
     mg_pz_threaded_submission_active = default_on_switch("MOBILEGLUES_PZ_THREADED_SUBMISSION");
+    mg_pz_zbetterfps_fastpath_active = opt_in_switch("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
     mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     g_census = {};
@@ -376,6 +378,8 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
         if (mg_pz_threaded_submission_active)
             LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
+        if (mg_pz_zbetterfps_fastpath_active)
+            LOG_I("ZOMDROID_PZ_ZBETTERFPS_FASTPATH enabled=1 mode=packet_inline_upload max_bytes=1024")
         if (mg_pz_etc2_active)
             LOG_I("ZOMDROID_PZ_ETC2 enabled=1 cache=%d min_pixels=262144", mg_pz_etc2_cache_active ? 1 : 0)
     }

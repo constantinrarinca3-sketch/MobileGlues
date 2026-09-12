@@ -3,6 +3,7 @@
 #include "gl/threaded_submission.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <vector>
 
 bool mg_pz_threaded_submission_active = true;
+bool mg_pz_zbetterfps_fastpath_active = true;
 bool mg_pz_census_active = false;
 
 extern "C" void write_log(const char*, ...) {}
@@ -30,8 +32,10 @@ bool flush_executed = false;
 std::thread::id worker_id;
 std::vector<int> order;
 unsigned char uploaded[4] = {};
+std::array<unsigned char, 576> fusion_upload{};
 GLfloat uniform[4] = {};
 std::atomic<uint64_t> counted{0};
+bool extended_payload_executed = false;
 
 void expect(bool condition, const char* message) {
     if (condition) return;
@@ -66,6 +70,12 @@ void fakeBufferData(GLenum, GLsizeiptr size, const void* data, GLenum) {
     if (size == 4 && data != nullptr) std::memcpy(uploaded, data, 4);
 }
 
+void fakeBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
+    if (target == GL_ARRAY_BUFFER && offset == 0 && size == static_cast<GLsizeiptr>(fusion_upload.size()) &&
+        data != nullptr)
+        std::memcpy(fusion_upload.data(), data, fusion_upload.size());
+}
+
 void fakeUniform4fv(GLint, GLsizei count, const GLfloat* value) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(3);
@@ -85,6 +95,13 @@ void fakeFlush() {
     flush_executed = true;
     entered_cv.notify_one();
 }
+
+void fakeExtendedPayload(void* storage) {
+    const auto* bytes = static_cast<const unsigned char*>(storage);
+    extended_payload_executed = bytes[0] == 0x5a && bytes[575] == 0xa5;
+}
+
+void destroyExtendedPayload(void*) {}
 
 EGLBoolean fakeSwap(EGLDisplay, EGLSurface) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -106,6 +123,20 @@ int main() {
     expect(mg_ts::active(), "submission must be active for the producer");
     expect(worker_id != producer, "backend context must live on a different thread");
 
+    // ZBBetterFPS chunk fusion uploads 8 * 18 floats (576 bytes). The packet
+    // queue must own that payload directly instead of forcing a heap copy.
+    const mg_ts::reservation extended =
+        mg_ts::reserve(fakeExtendedPayload, destroyExtendedPayload, 576, alignof(std::max_align_t));
+    expect(extended.storage != nullptr, "a 576-byte fusion upload must fit directly in a command packet");
+    if (extended.storage != nullptr) {
+        std::memset(extended.storage, 0, 576);
+        static_cast<unsigned char*>(extended.storage)[0] = 0x5a;
+        static_cast<unsigned char*>(extended.storage)[575] = 0xa5;
+        mg_ts::publish(extended.sequence);
+        mg_ts::wait(extended.sequence);
+    }
+    expect(extended_payload_executed, "the worker must execute the packet-owned fusion payload");
+
     bool second_adopted = true;
     std::thread second_context([&] {
         second_adopted = mg_ts::adopt_context(display, surface, surface, reinterpret_cast<EGLContext>(4),
@@ -119,6 +150,7 @@ int main() {
     mg_ts_dispatch_slot<void (*)(GLint)> no_op{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLint)> count{"glClear"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
+    mg_ts_dispatch_slot<void (*)(GLenum, GLintptr, GLsizeiptr, const void*)> buffer_sub_data{"glBufferSubData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
     mg_ts_dispatch_slot<GLint (*)()> quiet_query{"glGetError"};
@@ -127,6 +159,7 @@ int main() {
     no_op = fakeNoop;
     count = fakeCount;
     buffer_data = fakeBufferData;
+    buffer_sub_data = fakeBufferSubData;
     uniform4fv = fakeUniform4fv;
     query = fakeQuery;
     quiet_query = fakeQuietQuery;
@@ -142,9 +175,14 @@ int main() {
 
     unsigned char source[4] = {1, 2, 3, 4};
     GLfloat source_uniform[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::array<unsigned char, 576> fusion_source{};
+    fusion_source.front() = 0x31;
+    fusion_source.back() = 0x79;
     buffer_data(GL_ARRAY_BUFFER, 4, source, GL_STREAM_DRAW);
+    buffer_sub_data(GL_ARRAY_BUFFER, 0, fusion_source.size(), fusion_source.data());
     uniform4fv(9, 1, source_uniform);
     std::memset(source, 9, sizeof(source));
+    fusion_source.fill(0xff);
     for (float& value : source_uniform) value = 9.0f;
 
     {
@@ -156,6 +194,8 @@ int main() {
     expect(query() == 77, "a value-returning command must wait for preceding work");
     expect(uploaded[0] == 1 && uploaded[1] == 2 && uploaded[2] == 3 && uploaded[3] == 4,
            "buffer bytes must be copied before returning to the caller");
+    expect(fusion_upload.front() == 0x31 && fusion_upload.back() == 0x79,
+           "a 576-byte fusion upload must remain packet-owned until backend execution");
     expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
            "uniform bytes must be copied before returning to the caller");
 

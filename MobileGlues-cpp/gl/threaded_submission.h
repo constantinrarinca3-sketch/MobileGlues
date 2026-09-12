@@ -23,6 +23,9 @@ namespace mg_ts {
 
 constexpr size_t kCommandPayloadBytes = 256;
 constexpr size_t kInlineCopyBytes = 192;
+constexpr size_t kCommandsPerPacket = 32;
+constexpr size_t kPacketPayloadBytes = kCommandsPerPacket * kCommandPayloadBytes;
+constexpr size_t kInlineBufferCopyBytes = 1024;
 
 using command_fn = void (*)(void*);
 
@@ -40,6 +43,8 @@ void publish(uint64_t sequence) __attribute__((weak));
 void wait(uint64_t sequence) __attribute__((weak));
 void flush_pending() __attribute__((weak));
 bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
+void record_buffer_copy(bool packet_inline, size_t bytes) __attribute__((weak));
+bool buffer_inline_copy_active() __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
 using egl_make_current_fn = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
@@ -328,12 +333,72 @@ template <typename Fn, typename... Args> struct owned_pointer_command {
     }
 };
 
+template <typename Fn, typename Last> struct inline_buffer_data_command {
+    Fn function;
+    GLenum target;
+    GLsizeiptr size;
+    Last last;
+    const void* data;
+
+    inline_buffer_data_command(Fn fn, GLenum dst, GLsizeiptr bytes, Last tail, const void* copy)
+        : function(fn), target(dst), size(bytes), last(tail), data(copy) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<inline_buffer_data_command*>(storage);
+        command->function(command->target, command->size, command->data, command->last);
+    }
+    static void destroy(void* storage) {
+        static_cast<inline_buffer_data_command*>(storage)->~inline_buffer_data_command();
+    }
+};
+
+template <typename Fn> struct inline_buffer_sub_data_command {
+    Fn function;
+    GLenum target;
+    GLintptr offset;
+    GLsizeiptr size;
+    const void* data;
+
+    inline_buffer_sub_data_command(Fn fn, GLenum dst, GLintptr at, GLsizeiptr bytes, const void* copy)
+        : function(fn), target(dst), offset(at), size(bytes), data(copy) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<inline_buffer_sub_data_command*>(storage);
+        command->function(command->target, command->offset, command->size, command->data);
+    }
+    static void destroy(void* storage) {
+        static_cast<inline_buffer_sub_data_command*>(storage)->~inline_buffer_sub_data_command();
+    }
+};
+
+inline size_t alignPayload(size_t value, size_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+template <typename Command, typename... Args>
+bool enqueueInlineBufferCopy(size_t bytes, const void* source, Args&&... args) {
+    if (source == nullptr || bytes == 0 || bytes > kInlineBufferCopyBytes) return false;
+    const size_t data_offset = alignPayload(sizeof(Command), alignof(std::max_align_t));
+    if (data_offset + bytes > kPacketPayloadBytes) return false;
+    const reservation slot = reserve(&Command::execute, &Command::destroy, data_offset + bytes, alignof(Command));
+    if (slot.storage == nullptr) return false;
+    void* copy = static_cast<unsigned char*>(slot.storage) + data_offset;
+    std::memcpy(copy, source, bytes);
+    new (slot.storage) Command(std::forward<Args>(args)..., copy);
+    publish(slot.sequence);
+    if (record_buffer_copy != nullptr) record_buffer_copy(true, bytes);
+    return true;
+}
+
 constexpr size_t kMaximumOwnedUpload = 32U * 1024U * 1024U;
 
 template <typename Last>
 bool tryBufferCopy(void (*function)(GLenum, GLsizeiptr, const void*, Last), GLenum target, GLsizeiptr size,
                    const void* data, Last last) {
     if (!availableAndActive() || size < 0 || static_cast<uint64_t>(size) > kMaximumOwnedUpload) return false;
+    using inline_command = inline_buffer_data_command<decltype(function), Last>;
+    if (buffer_inline_copy_active != nullptr && buffer_inline_copy_active() && size > 0 &&
+        static_cast<uint64_t>(size) <= kInlineBufferCopyBytes &&
+        enqueueInlineBufferCopy<inline_command>(static_cast<size_t>(size), data, function, target, size, last))
+        return true;
     void* copy = nullptr;
     if (data != nullptr && size > 0) {
         copy = std::malloc(static_cast<size_t>(size));
@@ -343,12 +408,18 @@ bool tryBufferCopy(void (*function)(GLenum, GLsizeiptr, const void*, Last), GLen
     using command = owned_pointer_command<decltype(function), GLenum, GLsizeiptr, const void*, Last>;
     const uint64_t sequence = enqueue<command>(function, copy, target, size, copy, last);
     if (sequence == 0) std::free(copy);
+    else if (record_buffer_copy != nullptr) record_buffer_copy(false, static_cast<size_t>(size));
     return sequence != 0;
 }
 
 inline bool tryBufferCopy(void (*function)(GLenum, GLintptr, GLsizeiptr, const void*), GLenum target, GLintptr offset,
                           GLsizeiptr size, const void* data) {
     if (!availableAndActive() || size < 0 || static_cast<uint64_t>(size) > kMaximumOwnedUpload) return false;
+    using inline_command = inline_buffer_sub_data_command<decltype(function)>;
+    if (buffer_inline_copy_active != nullptr && buffer_inline_copy_active() && size > 0 &&
+        static_cast<uint64_t>(size) <= kInlineBufferCopyBytes &&
+        enqueueInlineBufferCopy<inline_command>(static_cast<size_t>(size), data, function, target, offset, size))
+        return true;
     void* copy = nullptr;
     if (data != nullptr && size > 0) {
         copy = std::malloc(static_cast<size_t>(size));
@@ -358,6 +429,7 @@ inline bool tryBufferCopy(void (*function)(GLenum, GLintptr, GLsizeiptr, const v
     using command = owned_pointer_command<decltype(function), GLenum, GLintptr, GLsizeiptr, const void*>;
     const uint64_t sequence = enqueue<command>(function, copy, target, offset, size, copy);
     if (sequence == 0) std::free(copy);
+    else if (record_buffer_copy != nullptr) record_buffer_copy(false, static_cast<size_t>(size));
     return sequence != 0;
 }
 

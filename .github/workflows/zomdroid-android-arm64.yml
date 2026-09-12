@@ -9,6 +9,7 @@ on:
       - zomdroid-threaded-submission-experimental
       - zomdroid-threaded-stable-clean
       - zomdroid-pz-stable-clean-final
+      - zomdroid-zbetterfps-fastpath-exp
 
 permissions:
   contents: read
@@ -74,7 +75,7 @@ jobs:
       - name: Upload stable renderer
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-ZomDroid-stable-clean-arm64
+          name: MobileGlues-ZomDroid-${{ github.ref_name }}-arm64
           path: |
             build/zomdroid-arm64/libMobileGluesZomDroid.so
             build/zomdroid-arm64/exported-symbols.txt

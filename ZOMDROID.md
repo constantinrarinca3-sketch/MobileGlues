@@ -28,6 +28,19 @@ runtime-mipmap, quad-index-cache and threaded-submission paths default to enable
 individual switch to `0` to disable it. ETC2, the ETC2 disk cache and Census remain disabled
 until explicitly set to `1`.
 
+The ZBBetterFPS packet-inline upload fast path is also an explicit opt-in:
+
+```text
+MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH=1  # inline uploads up to 1024 bytes in submission packets
+MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH=0  # original heap-owned upload commands
+```
+
+It targets the 576-byte instance uploads produced by ZBBetterFPS Cached Chunk
+Multi-Texture, while remaining safe for any buffer upload within the size limit.
+The packet owns a byte-for-byte copy until worker execution. Larger uploads retain
+the existing heap-owned path. With Census enabled, the threaded-submission report
+adds `upload_inline=calls/bytes` and `upload_heap=calls/bytes`.
+
 The diagnostic census is controlled only through the renderer environment:
 
 ```text
