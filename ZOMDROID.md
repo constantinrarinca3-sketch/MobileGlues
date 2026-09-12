@@ -149,6 +149,18 @@ fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling r
 Other sizes, texture targets and textures that have not taken the fallback remain on the normal
 driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.
 
+The experimental chunk-composite shader can reject transparent FBO pixels before fetching the
+matching depth texture:
+
+```text
+MOBILEGLUES_PZ_CHUNK_EARLY_DISCARD=1  # alpha test before the chunk depth fetch
+MOBILEGLUES_PZ_CHUNK_EARLY_DISCARD=0  # original ordering (default)
+```
+
+This applies only to the exact B42 chunk-composite shader contract. It preserves the existing
+alpha-test function and reference value; only the order of the already-required discard and depth
+fetch changes. `ZOMDROID_PZ_CHUNK_EARLY_DISCARD ... applied=1` confirms that the rewrite matched.
+
 ## Dedicated GL submission thread (high-risk experiment)
 
 The separate `zomdroid-threaded-submission-experimental` branch can move backend GL submission to

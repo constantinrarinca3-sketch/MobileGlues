@@ -35,6 +35,7 @@ struct pz_alpha_rewrite_result {
     bool candidate = false;
     bool contract_matched = false;
     bool rewritten = false;
+    bool chunk_early_discard = false;
     pz_alpha_shader_kind kind = pz_alpha_shader_kind::none;
 };
 
@@ -211,7 +212,8 @@ inline bool regex_present(const std::string& source, const std::regex& pattern) 
 // contracts, not filenames (GL never receives those) and not a global alpha
 // heuristic. A changed game shader therefore stays untouched instead of being
 // approximately rewritten.
-inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
+inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl,
+                                                             bool enable_chunk_early_discard = false) {
     pz_alpha_rewrite_result result;
     const std::string clean = strip_glsl_comments(glsl); // length-preserving; offsets remain valid
 
@@ -233,7 +235,8 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
     static const std::regex chunk_color(R"(\bgl_FragColor\s*=\s*c\s*\*\s*col\s*;)");
     static const std::regex chunk_depth_uniform(R"(\buniform\s+float\s+chunkDepth(?:\s*=\s*[^;]+)?\s*;)");
     static const std::regex use_texture_uniform(R"(\buniform\s+int\s+useTexture(?:\s*=\s*[^;]+)?\s*;)");
-    static const std::regex depth_texel(R"(\bfloat\s+depthTexel\s*=)");
+    static const std::regex depth_texel(
+        R"(\bfloat\s+depthTexel\s*=\s*texture2D\s*\(\s*DEPTH\b[^;]*;)");
 
     const unique_regex_match chunk_depth_write = find_unique_regex(clean, chunk_depth);
     const unique_regex_match chunk_color_write = find_unique_regex(clean, chunk_color);
@@ -292,14 +295,32 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
     result.contract_matched = result.kind != pz_alpha_shader_kind::none && replace.found;
     if (!result.contract_matched) return result;
 
-    const std::string replacement =
-        replace_final_color
-            ? "vec4 zomdroidAlphaFinalColor = c * col;\n"
-              "    if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(zomdroidAlphaFinalColor.a)) discard;\n"
-              "    gl_FragColor = zomdroidAlphaFinalColor;"
-            : "if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(c.a)) discard;\n"
-              "        gl_FragDepth = calcDepthZ;";
-    glsl.replace(replace.position, replace.length, replacement);
+    if (replace_final_color && enable_chunk_early_discard) {
+        // The stock chunk compositor samples DEPTH before applying the emulated
+        // desktop alpha test.  Its large mostly-transparent FBO rectangles then
+        // pay for a second texture fetch and a gl_FragDepth path for pixels that
+        // are discarded a few instructions later.  Move the exact same alpha
+        // decision in front of the DEPTH fetch; no threshold or state semantics
+        // change, and non-chunk shader families keep their existing rewrite.
+        const unique_regex_match depth_fetch = find_unique_regex(clean, depth_texel);
+        if (!depth_fetch.found) return result;
+        glsl.replace(replace.position, replace.length, "gl_FragColor = zomdroidAlphaFinalColor;");
+        const std::string early =
+            "vec4 zomdroidAlphaFinalColor = c * col;\n"
+            "    if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(zomdroidAlphaFinalColor.a)) discard;\n"
+            "    ";
+        glsl.insert(depth_fetch.position, early);
+        result.chunk_early_discard = true;
+    } else {
+        const std::string replacement =
+            replace_final_color
+                ? "vec4 zomdroidAlphaFinalColor = c * col;\n"
+                  "    if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(zomdroidAlphaFinalColor.a)) discard;\n"
+                  "    gl_FragColor = zomdroidAlphaFinalColor;"
+                : "if (zomdroidAlphaEnabled != 0 && !zomdroidAlphaPass(c.a)) discard;\n"
+                  "        gl_FragDepth = calcDepthZ;";
+        glsl.replace(replace.position, replace.length, replacement);
+    }
 
     static constexpr const char* declarations =
         "uniform int zomdroidAlphaEnabled;\n"

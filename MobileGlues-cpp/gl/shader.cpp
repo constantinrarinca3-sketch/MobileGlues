@@ -242,13 +242,17 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, c
     shader_map_pz_alpha_kind.erase(shader);
     mg_glsl_compat::pz_alpha_rewrite_result alpha_rewrite;
     if (shader_type == GL_FRAGMENT_SHADER) {
-        alpha_rewrite = mg_glsl_compat::rewrite_pz_alpha_test_family(glsl_src);
+        alpha_rewrite =
+            mg_glsl_compat::rewrite_pz_alpha_test_family(glsl_src, mg_pz_chunk_early_discard_active);
         if (alpha_rewrite.rewritten) {
             shader_map_pz_alpha_kind[shader] = alpha_rewrite.kind;
 #if defined(ZOMDROID_GL_BREADCRUMBS)
             ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_ALPHA_SHADER_REWRITE shader=%u family=%s semantic_applied=1", shader,
                                     mg_glsl_compat::pz_alpha_shader_kind_name(alpha_rewrite.kind));
 #endif
+            if (alpha_rewrite.chunk_early_discard) {
+                LOG_I("ZOMDROID_PZ_CHUNK_EARLY_DISCARD shader=%u applied=1", shader)
+            }
         } else if (alpha_rewrite.candidate) {
 #if defined(ZOMDROID_GL_BREADCRUMBS)
             if (mg_pz_census_active) {

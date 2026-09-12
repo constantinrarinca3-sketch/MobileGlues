@@ -151,6 +151,22 @@ int main() {
         "gl_FragDepth = chunkDepth + depthTexel; gl_FragColor = c * col; }\n",
         pz_alpha_shader_kind::chunk_composite, false);
 
+    {
+        std::string source =
+            "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH;\n"
+            "uniform int useTexture = 1; uniform float chunkDepth = 0.0; varying vec4 col;\n"
+            "void main() { vec4 c = texture2D(DIFFUSE, vec2(0));\n"
+            "float depthTexel = texture2D(DEPTH, vec2(0)).r;\n"
+            "gl_FragDepth = chunkDepth + depthTexel; gl_FragColor = c * col; }\n";
+        const auto result = mg_glsl_compat::rewrite_pz_alpha_test_family(source, true);
+        assert(result.rewritten && result.chunk_early_discard);
+        const size_t color_fetch = source.find("texture2D(DIFFUSE");
+        const size_t discard = source.find("!zomdroidAlphaPass(");
+        const size_t depth_fetch = source.find("texture2D(DEPTH");
+        assert(color_fetch < discard && discard < depth_fetch);
+        assert(source.find("gl_FragColor = zomdroidAlphaFinalColor;") != std::string::npos);
+    }
+
     expect_alpha_rewrite(
         "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
         "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"

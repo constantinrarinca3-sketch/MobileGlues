@@ -8,6 +8,7 @@ on:
       - zomdroid-optimization
       - zomdroid-threaded-submission-experimental
       - zomdroid-threaded-stable-clean
+      - zomdroid-pz-chunk-early-discard-exp
 
 permissions:
   contents: read
@@ -73,7 +74,7 @@ jobs:
       - name: Upload optimization renderer
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-ZomDroid-optimization-arm64
+          name: MobileGlues-ZomDroid-chunk-early-discard-arm64
           path: |
             build/zomdroid-arm64/libMobileGluesZomDroid.so
             build/zomdroid-arm64/exported-symbols.txt
