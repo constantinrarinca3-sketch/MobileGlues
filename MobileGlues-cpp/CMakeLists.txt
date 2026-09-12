@@ -65,12 +65,11 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-flto=thin)
         add_link_options(-flto=thin)
     else()
-        # ThinLTO is not supported
         message(STATUS "ThinLTO not available, fallback to CMAKE IPO")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
     else()
-    message(STATUS "IPO not supported: ${LTOError}")
+        message(STATUS "IPO not supported: ${LTOError}")
     endif()
 endif()
 
@@ -91,6 +90,26 @@ endif()
 
 set(PROFILING OFF)
 
+# V4.9.2 needs one experimental-only frontend guard in texture.cpp. Generate a
+# copy from an exact source anchor so the normal/stable build continues to use
+# the repository file verbatim and configure fails closed if that anchor changes.
+set(MOBILEGLUES_TEXTURE_SOURCE gl/texture.cpp)
+if (ZOMDROID_EXPERIMENTAL)
+    set(_zomdroid_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/zomdroid-generated")
+    file(MAKE_DIRECTORY "${_zomdroid_generated_dir}")
+    set(MOBILEGLUES_TEXTURE_SOURCE "${_zomdroid_generated_dir}/texture_v492.cpp")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/gl/texture.cpp"
+            "-DOUTPUT=${MOBILEGLUES_TEXTURE_SOURCE}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/zomdroid_v492_texture_patch.cmake"
+        RESULT_VARIABLE _zomdroid_texture_patch_result
+    )
+    if (NOT _zomdroid_texture_patch_result EQUAL 0)
+        message(FATAL_ERROR "Failed to generate V4.9.2 texture overflow guard")
+    endif()
+endif()
+
 add_library(${CMAKE_PROJECT_NAME} SHARED
     init.cpp
     main.cpp
@@ -102,12 +121,12 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     gl/program.cpp
     gl/pz_census.cpp
     gl/pz_repack_probe.cpp
-    gl/pz_material_stream_renderer_v491.cpp
+    gl/pz_material_stream_renderer_v492.cpp
     gl/pz_repack_draw_router.cpp
     gl/threaded_submission.cpp
     gl/shader.cpp
     gl/framebuffer.cpp
-    gl/texture.cpp
+    ${MOBILEGLUES_TEXTURE_SOURCE}
     gl/drawing.cpp
     gl/multidraw.cpp
     bench/multidraw_bench.cpp
@@ -151,7 +170,8 @@ endif()
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ./includes
-    ./3rdparty/xxhash)
+    ./3rdparty/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/gl)
 target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
