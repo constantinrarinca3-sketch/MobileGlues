@@ -8,6 +8,7 @@ on:
       - zomdroid-optimization
       - zomdroid-threaded-submission-experimental
       - zomdroid-threaded-stable-clean
+      - zomdroid-pz-stable-clean-final
 
 permissions:
   contents: read
@@ -70,10 +71,10 @@ jobs:
             sha256sum libMobileGluesZomDroid.so > SHA256SUMS.txt)
           cp LICENSE ZOMDROID.md build/zomdroid-arm64/
 
-      - name: Upload optimization renderer
+      - name: Upload stable renderer
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-ZomDroid-optimization-arm64
+          name: MobileGlues-ZomDroid-stable-clean-arm64
           path: |
             build/zomdroid-arm64/libMobileGluesZomDroid.so
             build/zomdroid-arm64/exported-symbols.txt

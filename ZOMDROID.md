@@ -21,7 +21,12 @@ GLES 3.2. Test cold start, credits, menu, world load, zoom, lighting/weather, wo
 five-minute driving route. Any black world, missing texture, shader failure, delayed world or crash
 rejects the renderer without changing another route.
 
-## Project Zomboid census (optimization branch)
+## Stable defaults and diagnostic census
+
+The validated VAO, attribute, uniform, buffer-streaming, discard-coalescing, state-shadow,
+runtime-mipmap, quad-index-cache and threaded-submission paths default to enabled. Set any
+individual switch to `0` to disable it. ETC2, the ETC2 disk cache and Census remain disabled
+until explicitly set to `1`.
 
 The diagnostic census is controlled only through the renderer environment:
 
@@ -78,27 +83,27 @@ The independent VAO optimization is selected through the renderer environment:
 
 ```text
 MOBILEGLUES_PZ_VAO_FASTPATH=1  # enabled
-MOBILEGLUES_PZ_VAO_FASTPATH=0  # disabled (default)
+MOBILEGLUES_PZ_VAO_FASTPATH=0  # disabled override
 ```
 
 It skips a repeated bind only when both MobileGlues' frontend VAO and the real driver VAO are known
 to match. Internal renderer binds update the same per-context shadow. Every other case reaches GLES.
 
-The first vertex-attrib fast path is independently opt-in:
+The vertex-attrib fast path can be overridden independently:
 
 ```text
 MOBILEGLUES_PZ_ATTRIB_FASTPATH=1  # enabled
-MOBILEGLUES_PZ_ATTRIB_FASTPATH=0  # disabled (default)
+MOBILEGLUES_PZ_ATTRIB_FASTPATH=0  # disabled override
 ```
 
 It currently removes only exact repeated `glEnableVertexAttribArray` and
 `glDisableVertexAttribArray` calls, and only while the real driver VAO is confirmed.
 
-The uniform fast path is independently opt-in:
+The uniform fast path can be overridden independently:
 
 ```text
 MOBILEGLUES_PZ_UNIFORM_FASTPATH=1  # enabled
-MOBILEGLUES_PZ_UNIFORM_FASTPATH=0  # disabled (default)
+MOBILEGLUES_PZ_UNIFORM_FASTPATH=0  # disabled override
 ```
 
 Only valid, single-value writes with an identical program, location, type and bit-exact payload are
@@ -109,11 +114,11 @@ Whole-buffer write maps reuse MobileGlues' tracked allocation size instead of is
 `GL_BUFFER_SIZE` driver query before every `glMapBuffer`. Buffers whose size is unknown still use the
 driver query, so pass-through names and unusual allocation paths retain the previous behavior.
 
-The experimental dynamic-buffer streaming path is independently opt-in:
+The dynamic-buffer streaming path can be overridden independently:
 
 ```text
 MOBILEGLUES_PZ_BUFFER_STREAMING=1  # CPU staging + automatic persistent mapping
-MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping (default)
+MOBILEGLUES_PZ_BUFFER_STREAMING=0  # direct driver mapping override
 ```
 
 It intercepts only complete write-only invalidating maps of mutable, tracked buffers. Whole-buffer
@@ -132,7 +137,7 @@ Repeated discard-then-map cycles can additionally be coalesced:
 
 ```text
 MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=1  # remove the redundant discard call
-MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=0  # submit it directly (default)
+MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE=0  # submit it directly
 ```
 
 After a buffer has completed one qualifying CPU-staged upload, a same-size, same-usage
@@ -142,11 +147,11 @@ This applies only to streamed array and element buffers and requires
 `MOBILEGLUES_PZ_BUFFER_STREAMING=1`. Milestones are reported as
 `ZOMDROID_PZ_BUFFER_DISCARD_COALESCE`.
 
-The fixed-state shadow is independently opt-in:
+The fixed-state shadow can be overridden independently:
 
 ```text
 MOBILEGLUES_PZ_STATE_SHADOW=1  # redundant fixed-state calls skipped
-MOBILEGLUES_PZ_STATE_SHADOW=0  # direct driver calls (default)
+MOBILEGLUES_PZ_STATE_SHADOW=0  # direct driver calls
 ```
 
 It tracks blend equations/functions, blend color, color mask, cull/front face, depth function/mask
@@ -158,7 +163,7 @@ Runtime mipmap generation for Project Zomboid's chunk render targets can be redu
 
 ```text
 MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP=1  # skip learned level-0-only regeneration
-MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP=0  # submit every generation (default)
+MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP=0  # submit every generation
 ```
 
 The first generation for each texture always reaches GLES. Once a measured 1024x1024 chunk texture
@@ -167,14 +172,13 @@ fallback, later `glGenerateMipmap` calls are skipped because ordinary sampling r
 Other sizes, texture targets and textures that have not taken the fallback remain on the normal
 driver path. Skip milestones are logged as `ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP`.
 
-## Dedicated GL submission thread (high-risk experiment)
+## Dedicated GL submission thread
 
-The separate `zomdroid-threaded-submission-experimental` branch can move backend GL submission to
-a worker thread:
+The stable build moves backend GL submission to a worker thread by default:
 
 ```text
 MOBILEGLUES_PZ_THREADED_SUBMISSION=1  # worker owns the EGL context and submits GL
-MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission on the render thread (default)
+MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission override
 ```
 
 The application thread retains MobileGlues state translation and records ordered backend commands
@@ -186,7 +190,6 @@ copied before returning so those calls can remain asynchronous. Draws remain asy
 the element and enabled vertex inputs are backed by GL buffers. Presentation drains the frame and
 returns the backend `eglSwapBuffers` result so surface loss is reported on the calling thread.
 
-This path changes EGL context ownership and is deliberately isolated from the frozen stable branch.
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.

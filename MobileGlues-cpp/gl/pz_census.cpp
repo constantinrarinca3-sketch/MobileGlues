@@ -27,6 +27,16 @@ bool mg_pz_etc2_cache_active = false;
 
 namespace {
 
+bool default_on_switch(const char* name) {
+    const char* value = std::getenv(name);
+    return value == nullptr || std::strcmp(value, "1") == 0;
+}
+
+bool opt_in_switch(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
 constexpr uint32_t kReportFrames = 300;
 using count_t = unsigned long long;
 
@@ -333,34 +343,18 @@ void report(const census_state_t& state) {
 
 void mg_pz_census_init(void) {
 #if defined(ZOMDROID_EXPERIMENTAL)
-    const char* value = std::getenv("MOBILEGLUES_PZ_CENSUS");
-    mg_pz_census_active = value != nullptr && std::strcmp(value, "1") == 0;
-    const char* vao_value = std::getenv("MOBILEGLUES_PZ_VAO_FASTPATH");
-    mg_pz_vao_fastpath_active = vao_value != nullptr && std::strcmp(vao_value, "1") == 0;
-    const char* attrib_value = std::getenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH");
-    mg_pz_attrib_fastpath_active = attrib_value != nullptr && std::strcmp(attrib_value, "1") == 0;
-    const char* uniform_value = std::getenv("MOBILEGLUES_PZ_UNIFORM_FASTPATH");
-    mg_pz_uniform_fastpath_active = uniform_value != nullptr && std::strcmp(uniform_value, "1") == 0;
-    const char* streaming_value = std::getenv("MOBILEGLUES_PZ_BUFFER_STREAMING");
-    mg_pz_buffer_streaming_active = streaming_value != nullptr && std::strcmp(streaming_value, "1") == 0;
-    const char* discard_coalesce_value = std::getenv("MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE");
-    mg_pz_buffer_discard_coalesce_active =
-        discard_coalesce_value != nullptr && std::strcmp(discard_coalesce_value, "1") == 0;
-    const char* state_shadow_value = std::getenv("MOBILEGLUES_PZ_STATE_SHADOW");
-    mg_pz_state_shadow_active = state_shadow_value != nullptr && std::strcmp(state_shadow_value, "1") == 0;
-    const char* runtime_mipmap_value = std::getenv("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
-    mg_pz_runtime_mipmap_skip_active =
-        runtime_mipmap_value != nullptr && std::strcmp(runtime_mipmap_value, "1") == 0;
-    const char* quad_cache_value = std::getenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
-    mg_pz_quad_index_cache_active = quad_cache_value != nullptr && std::strcmp(quad_cache_value, "1") == 0;
-    const char* threaded_submission_value = std::getenv("MOBILEGLUES_PZ_THREADED_SUBMISSION");
-    mg_pz_threaded_submission_active =
-        threaded_submission_value != nullptr && std::strcmp(threaded_submission_value, "1") == 0;
-    const char* etc2_value = std::getenv("MOBILEGLUES_PZ_ETC2");
-    mg_pz_etc2_active = etc2_value != nullptr && std::strcmp(etc2_value, "1") == 0;
-    const char* etc2_cache_value = std::getenv("MOBILEGLUES_PZ_ETC2_CACHE");
-    mg_pz_etc2_cache_active = mg_pz_etc2_active && etc2_cache_value != nullptr &&
-                              std::strcmp(etc2_cache_value, "1") == 0;
+    mg_pz_census_active = opt_in_switch("MOBILEGLUES_PZ_CENSUS");
+    mg_pz_vao_fastpath_active = default_on_switch("MOBILEGLUES_PZ_VAO_FASTPATH");
+    mg_pz_attrib_fastpath_active = default_on_switch("MOBILEGLUES_PZ_ATTRIB_FASTPATH");
+    mg_pz_uniform_fastpath_active = default_on_switch("MOBILEGLUES_PZ_UNIFORM_FASTPATH");
+    mg_pz_buffer_streaming_active = default_on_switch("MOBILEGLUES_PZ_BUFFER_STREAMING");
+    mg_pz_buffer_discard_coalesce_active = default_on_switch("MOBILEGLUES_PZ_BUFFER_DISCARD_COALESCE");
+    mg_pz_state_shadow_active = default_on_switch("MOBILEGLUES_PZ_STATE_SHADOW");
+    mg_pz_runtime_mipmap_skip_active = default_on_switch("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
+    mg_pz_quad_index_cache_active = default_on_switch("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
+    mg_pz_threaded_submission_active = default_on_switch("MOBILEGLUES_PZ_THREADED_SUBMISSION");
+    mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
+    mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();

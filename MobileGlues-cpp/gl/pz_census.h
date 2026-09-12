@@ -13,8 +13,9 @@
 // pacing hot spots. Exactly MOBILEGLUES_PZ_CENSUS=1 enables them; 0, an absent
 // variable, and every other value leave the hot-path branches off.
 extern bool mg_pz_census_active;
-// Independent optimization switch. Exactly MOBILEGLUES_PZ_VAO_FASTPATH=1
-// enables it; it remains usable with the diagnostic census disabled.
+// Independent optimization switches. The validated fast paths default on and
+// remain usable with the diagnostic census disabled. Setting a switch to 0
+// disables it. ETC2 and its disk cache remain explicit opt-ins.
 extern bool mg_pz_vao_fastpath_active;
 extern bool mg_pz_attrib_fastpath_active;
 extern bool mg_pz_uniform_fastpath_active;
