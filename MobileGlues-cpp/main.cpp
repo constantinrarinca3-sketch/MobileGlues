@@ -32,11 +32,11 @@ __attribute__((used))
 const char* license = "GNU LGPL-2.1 License";
 
 #if defined(ZOMDROID_EXPERIMENTAL)
-void mg_pz_material_stream_v492_install(void);
+void mg_pz_material_stream_v493_install(void);
 
 extern "C" __attribute__((visibility("default"), used))
 const char* mg_zomdroid_build_id(void) {
-    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.9.2-depth-vs-probe";
+    return "MobileGlues-2.0.0-ZomDroid-material-stream-4.9.3-depth-aux-sidecar";
 }
 #endif
 
@@ -85,11 +85,12 @@ void proc_init() {
     const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
     if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
         mg_pz_repack_renderer_install();
-        mg_pz_material_stream_v492_install();
+        mg_pz_material_stream_v493_install();
         mg_pz_repack_draw_router_install();
-        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V492_ROUTE enabled=1 revision=4.9.2 mode=perf_ceiling "
-              "base=v491 texture_guard=uint32_overflow_band depth_probe=vs_contract "
-              "depth_behavior=unchanged ui_guard=none stable_untouched=1")
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493_ROUTE enabled=1 revision=4.9.3 mode=perf_ceiling "
+              "base=v492 texture_guard=uint32_overflow_band depth_aux=ssbo_sidecar "
+              "inputs=loc3_vec2+optional_loc4_vec2 mask_contract=aux2 ordering=preserved "
+              "ui_guard=none stable_untouched=1")
     } else {
         mg_pz_repack_probe_install();
     }

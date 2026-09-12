@@ -57,3 +57,8 @@ endif()
 
 string(REPLACE "${_old}" "${_new}" _src "${_src}")
 file(WRITE "${OUTPUT}" "${_src}")
+
+# V4.9.3 adds a depth-only auxiliary-UV sidecar to the material emitter. The
+# historical source stays verbatim in Git; this included script patches only the
+# experimental build checkout and verifies every source anchor before writing.
+include("${CMAKE_CURRENT_LIST_DIR}/zomdroid_v493_material_patch.cmake")
