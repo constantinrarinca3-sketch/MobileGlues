@@ -28,6 +28,7 @@ extern bool mg_pz_threaded_submission_active;
 extern bool mg_pz_zbetterfps_fastpath_active;
 extern bool mg_pz_etc2_active;
 extern bool mg_pz_etc2_cache_active;
+extern int mg_pz_texture_memory_mode;
 
 enum class mg_pz_attrib_kind : uint8_t {
     enable,

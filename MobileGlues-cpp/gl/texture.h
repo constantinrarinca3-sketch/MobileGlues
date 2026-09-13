@@ -116,6 +116,9 @@ public:
     GLenum pz_etc2_format = 0;
     GLsizei pz_etc2_width = 0;
     GLsizei pz_etc2_height = 0;
+    uint8_t pz_texture_memory_shift = 0;
+    GLsizei pz_texture_memory_width = 0;
+    GLsizei pz_texture_memory_height = 0;
 #endif
 };
 

@@ -82,7 +82,7 @@ void report_if_needed(uint64_t uploads) {
 
 bool mg_pz_etc2_try_encode(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height,
                            GLint border, GLenum source_format, GLenum source_type, const void* pixels,
-                           bool tightly_packed, GLenum existing_format, bool subimage,
+                           bool tightly_packed, GLenum existing_format, bool subimage, bool memory_reduced,
                            mg_pz_etc2_upload_t* out) {
     if (!out) return false;
     *out = {};
@@ -94,7 +94,9 @@ bool mg_pz_etc2_try_encode(GLenum target, GLint level, GLint internal_format, GL
     if (compressed_format == 0) {
         if (level != 0 || subimage) return false;
         size_t pixels_count = 0;
-        if (!checked_source_size(width, height, 1, &pixels_count) || pixels_count < kMinBasePixels) return false;
+        if (!checked_source_size(width, height, 1, &pixels_count) ||
+            (!memory_reduced && pixels_count < kMinBasePixels))
+            return false;
         compressed_format = base_format(internal_format, source_format);
     }
     if (!format_matches(compressed_format, source_format)) return false;

@@ -20,7 +20,7 @@ struct mg_pz_etc2_upload_t {
 // selected for level zero when encoding a mip or subimage.
 bool mg_pz_etc2_try_encode(GLenum target, GLint level, GLint internal_format, GLsizei width, GLsizei height,
                            GLint border, GLenum source_format, GLenum source_type, const void* pixels,
-                           bool tightly_packed, GLenum existing_format, bool subimage,
+                           bool tightly_packed, GLenum existing_format, bool subimage, bool memory_reduced,
                            mg_pz_etc2_upload_t* out);
 
 // Records an update which could not legally be expressed as ETC2 blocks.

@@ -25,6 +25,7 @@ bool mg_pz_threaded_submission_active = false;
 bool mg_pz_zbetterfps_fastpath_active = false;
 bool mg_pz_etc2_active = false;
 bool mg_pz_etc2_cache_active = false;
+int mg_pz_texture_memory_mode = 0;
 
 namespace {
 
@@ -36,6 +37,15 @@ bool default_on_switch(const char* name) {
 bool opt_in_switch(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+int clamped_int_switch(const char* name, int low, int high) {
+    const char* value = std::getenv(name);
+    if (!value || !value[0]) return low;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end != '\0') return low;
+    return static_cast<int>(std::max<long>(low, std::min<long>(high, parsed)));
 }
 
 constexpr uint32_t kReportFrames = 300;
@@ -354,9 +364,10 @@ void mg_pz_census_init(void) {
     mg_pz_runtime_mipmap_skip_active = default_on_switch("MOBILEGLUES_PZ_RUNTIME_MIPMAP_SKIP");
     mg_pz_quad_index_cache_active = default_on_switch("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
     mg_pz_threaded_submission_active = default_on_switch("MOBILEGLUES_PZ_THREADED_SUBMISSION");
-    mg_pz_zbetterfps_fastpath_active = opt_in_switch("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
+    mg_pz_zbetterfps_fastpath_active = default_on_switch("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
     mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
+    mg_pz_texture_memory_mode = clamped_int_switch("MOBILEGLUES_PZ_TEXTURE_MEMORY", 0, 2);
     g_census = {};
     g_uniform_values.clear();
     g_attrib_values.clear();
@@ -382,6 +393,9 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_ZBETTERFPS_FASTPATH enabled=1 mode=packet_inline_upload max_bytes=1024")
         if (mg_pz_etc2_active)
             LOG_I("ZOMDROID_PZ_ETC2 enabled=1 cache=%d min_pixels=262144", mg_pz_etc2_cache_active ? 1 : 0)
+        if (mg_pz_texture_memory_mode != 0)
+            LOG_I("ZOMDROID_PZ_TEXTURE_MEMORY enabled=1 mode=%d thresholds=1024/4096(low),1024/2048(ultra)",
+                  mg_pz_texture_memory_mode)
     }
 #endif
 }
