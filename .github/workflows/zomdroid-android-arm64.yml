@@ -10,6 +10,7 @@ on:
       - zomdroid-threaded-stable-clean
       - zomdroid-pz-stable-clean-final
       - zomdroid-zbetterfps-fastpath-exp
+      - zomdroid-texture-memory-saver-exp
 
 permissions:
   contents: read

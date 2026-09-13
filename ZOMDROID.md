@@ -28,7 +28,7 @@ runtime-mipmap, quad-index-cache and threaded-submission paths default to enable
 individual switch to `0` to disable it. ETC2, the ETC2 disk cache and Census remain disabled
 until explicitly set to `1`.
 
-The ZBBetterFPS packet-inline upload fast path is also an explicit opt-in:
+The ZBBetterFPS packet-inline upload fast path defaults to enabled:
 
 ```text
 MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH=1  # inline uploads up to 1024 bytes in submission packets
@@ -40,6 +40,27 @@ Multi-Texture, while remaining safe for any buffer upload within the size limit.
 The packet owns a byte-for-byte copy until worker execution. Larger uploads retain
 the existing heap-owned path. With Census enabled, the threaded-submission report
 adds `upload_inline=calls/bytes` and `upload_heap=calls/bytes`.
+
+Large static RGB/RGBA textures can be reduced before either an ordinary GLES
+upload or ETC2 encoding:
+
+```text
+MOBILEGLUES_PZ_TEXTURE_MEMORY=0  # off (default)
+MOBILEGLUES_PZ_TEXTURE_MEMORY=1  # Low: half at 1024+, quarter at 4096+
+MOBILEGLUES_PZ_TEXTURE_MEMORY=2  # Ultra: half at 1024+, quarter at 2048+
+```
+
+Only data-backed, tightly packed `GL_TEXTURE_2D` level-zero uploads are eligible;
+allocation-only render targets, PBO uploads, 3D/cube textures and small UI/font
+textures retain their original storage. RGB is box filtered and RGBA uses an
+alpha-aware box filter. Existing mip levels are shifted onto the reduced driver
+chain, while logical level-zero size queries continue to report the application's
+dimensions.
+
+This path runs before ETC2. When both are enabled, ETC2 encodes and caches the
+reduced pixels; its content-addressed key already includes the resulting dimensions
+and bytes. With Census enabled, `ZOMDROID_PZ_TEXTURE_MEMORY` reports image count,
+input/output bytes, saved bytes, dropped source mip levels and incompatible updates.
 
 The diagnostic census is controlled only through the renderer environment:
 
