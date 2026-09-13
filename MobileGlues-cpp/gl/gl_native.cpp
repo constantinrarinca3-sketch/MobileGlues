@@ -67,6 +67,25 @@ struct fixed_state_shadow_t {
 
 thread_local fixed_state_shadow_t g_fixed_state_shadow;
 
+struct requested_color_mask_t {
+    unsigned long long context_id = 0;
+    GLboolean value[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+};
+thread_local requested_color_mask_t g_requested_color_mask;
+
+requested_color_mask_t& requested_color_mask() {
+    const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
+    if (g_requested_color_mask.context_id != context) {
+        g_requested_color_mask = {};
+        g_requested_color_mask.context_id = context;
+        g_requested_color_mask.value[0] = GL_TRUE;
+        g_requested_color_mask.value[1] = GL_TRUE;
+        g_requested_color_mask.value[2] = GL_TRUE;
+        g_requested_color_mask.value[3] = GL_TRUE;
+    }
+    return g_requested_color_mask;
+}
+
 fixed_state_shadow_t* fixed_state_shadow() {
     if (!mg_pz_state_shadow_active || !g_current_ctx) return nullptr;
     if (g_fixed_state_shadow.context_id != g_current_ctx->id) {
@@ -162,6 +181,12 @@ bool fixed_blend_func(GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum d
 }
 
 bool fixed_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    requested_color_mask_t& requested = requested_color_mask();
+    requested.value[0] = red != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[1] = green != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[2] = blue != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[3] = alpha != GL_FALSE ? GL_TRUE : GL_FALSE;
+
     fixed_state_shadow_t* state = fixed_state_shadow();
     if (!state) return false;
     const bool exact = state->color_mask_known && state->color_mask[0] == red && state->color_mask[1] == green &&
@@ -297,6 +322,23 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
     mg_pz_census_attrib_value(index, signature, values, sizeof(values));
 }
 } // namespace
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+bool mg_pz_push_color_mask_suppression() {
+    requested_color_mask_t& requested = requested_color_mask();
+    if (requested.value[0] == GL_FALSE && requested.value[1] == GL_FALSE &&
+        requested.value[2] == GL_FALSE && requested.value[3] == GL_FALSE)
+        return false;
+    GLES.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    return true;
+}
+
+void mg_pz_pop_color_mask_suppression(bool restore) {
+    if (!restore) return;
+    const requested_color_mask_t& requested = requested_color_mask();
+    GLES.glColorMask(requested.value[0], requested.value[1], requested.value[2], requested.value[3]);
+}
+#endif
 
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_STATE_RETURN_IF_REDUNDANT(call)                                                                             \

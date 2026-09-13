@@ -8,6 +8,7 @@ on:
       - zomdroid-pz-stable-clean-final
       - zomdroid-zbetterfps-fastpath-exp
       - zomdroid-texture-memory-saver-exp
+      - zomdroid-tiledepth-drawpixels-fix
   workflow_dispatch:
 jobs:
   build-ios:

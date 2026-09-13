@@ -49,6 +49,8 @@ struct pz_alpha_program_state {
     GLint enabled_location = -1;
     GLint function_location = -1;
     GLint reference_location = -1;
+    GLint draw_pixels_location = -1;
+    GLint draw_pixels_value = 1;
     unsigned long long last_context = 0;
     GLboolean last_enabled = GL_FALSE;
     GLenum last_function = GL_ALWAYS;
@@ -56,6 +58,9 @@ struct pz_alpha_program_state {
     bool last_values_valid = false;
 };
 UnorderedMap<GLuint, pz_alpha_program_state> program_map_pz_alpha_state;
+
+bool mg_pz_push_color_mask_suppression();
+void mg_pz_pop_color_mask_suppression(bool restore);
 #endif
 
 namespace {
@@ -190,6 +195,7 @@ void configure_pz_alpha_program(GLuint program) {
     state.enabled_location = GLES.glGetUniformLocation(program, "zomdroidAlphaEnabled");
     state.function_location = GLES.glGetUniformLocation(program, "zomdroidAlphaFunc");
     state.reference_location = GLES.glGetUniformLocation(program, "zomdroidAlphaRef");
+    state.draw_pixels_location = GLES.glGetUniformLocation(program, "drawPixels");
     if (state.enabled_location < 0 || state.function_location < 0 || state.reference_location < 0) return;
     program_map_pz_alpha_state[program] = state;
 
@@ -199,9 +205,9 @@ void configure_pz_alpha_program(GLuint program) {
         const unsigned int hit = links.fetch_add(1, std::memory_order_relaxed) + 1;
         if (hit <= 8) {
             ZOMDROID_DIAGNOSTIC_LOG(
-                "ZOMDROID_ALPHA_PROGRAM program=%u family=%s locations=%d,%d,%d semantic_ready=1 hit=%u",
+                "ZOMDROID_ALPHA_PROGRAM program=%u family=%s locations=%d,%d,%d drawPixels=%d semantic_ready=1 hit=%u",
                 program, mg_glsl_compat::pz_alpha_shader_kind_name(kind), state.enabled_location,
-                state.function_location, state.reference_location, hit);
+                state.function_location, state.reference_location, state.draw_pixels_location, hit);
         }
     }
 #endif
@@ -258,6 +264,34 @@ void mg_prepare_pz_alpha_test(GLuint program) {
     }
 #endif
 }
+
+void mg_pz_note_draw_pixels(GLuint program, GLint location, GLint value) {
+    const auto it = program_map_pz_alpha_state.find(program);
+    if (it == program_map_pz_alpha_state.end() || it->second.draw_pixels_location != location) return;
+    it->second.draw_pixels_value = value;
+}
+
+bool mg_pz_begin_draw_pixels(GLuint program) {
+    const auto it = program_map_pz_alpha_state.find(program);
+    if (it == program_map_pz_alpha_state.end() || it->second.draw_pixels_location < 0 ||
+        it->second.draw_pixels_value != 0)
+        return false;
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (mg_pz_census_active) {
+        static std::atomic<unsigned long long> hits{0};
+        const unsigned long long hit = hits.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (hit == 1 || hit == 1024 || hit == 65536) {
+            ZOMDROID_DIAGNOSTIC_LOG(
+                "ZOMDROID_TILEDEPTH_DRAWPIXELS_MASK program=%u family=%s hit=%llu", program,
+                mg_glsl_compat::pz_alpha_shader_kind_name(it->second.kind), hit);
+        }
+    }
+#endif
+    return mg_pz_push_color_mask_suppression();
+}
+
+void mg_pz_end_draw_pixels(bool restore) { mg_pz_pop_color_mask_suppression(restore); }
 #endif
 
 std::string updateLayoutLocation(const std::string& esslSource, GLuint color, const char* name) {

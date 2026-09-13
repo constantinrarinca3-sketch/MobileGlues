@@ -34,6 +34,8 @@ static int blend_func_separate_calls = 0;
 static int stencil_func_calls = 0;
 static int stencil_func_separate_calls = 0;
 static int depth_func_calls = 0;
+static int color_mask_calls = 0;
+static GLboolean last_color_mask[4] = {};
 
 static void expect(bool condition, const char* message) {
     if (condition) return;
@@ -48,6 +50,13 @@ static void fake_blend_func_separate(GLenum, GLenum, GLenum, GLenum) { ++blend_f
 static void fake_stencil_func(GLenum, GLint, GLuint) { ++stencil_func_calls; }
 static void fake_stencil_func_separate(GLenum, GLenum, GLint, GLuint) { ++stencil_func_separate_calls; }
 static void fake_depth_func(GLenum) { ++depth_func_calls; }
+static void fake_color_mask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    ++color_mask_calls;
+    last_color_mask[0] = r;
+    last_color_mask[1] = g;
+    last_color_mask[2] = b;
+    last_color_mask[3] = a;
+}
 
 extern "C" void glBlendEquation(GLenum mode);
 extern "C" void glBlendEquationSeparate(GLenum mode_rgb, GLenum mode_alpha);
@@ -56,6 +65,9 @@ extern "C" void glBlendFuncSeparate(GLenum src_rgb, GLenum dst_rgb, GLenum src_a
 extern "C" void glStencilFunc(GLenum func, GLint reference, GLuint mask);
 extern "C" void glStencilFuncSeparate(GLenum face, GLenum func, GLint reference, GLuint mask);
 extern "C" void glDepthFunc(GLenum func);
+extern "C" void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a);
+bool mg_pz_push_color_mask_suppression();
+void mg_pz_pop_color_mask_suppression(bool restore);
 
 int main() {
     GLES.glBlendEquation = fake_blend_equation;
@@ -65,6 +77,7 @@ int main() {
     GLES.glStencilFunc = fake_stencil_func;
     GLES.glStencilFuncSeparate = fake_stencil_func_separate;
     GLES.glDepthFunc = fake_depth_func;
+    GLES.glColorMask = fake_color_mask;
 
     MGContext first{};
     first.id = 1;
@@ -102,6 +115,22 @@ int main() {
     glDepthFunc(0xdead);
     glDepthFunc(0xdead);
     expect(depth_func_calls == 3, "repeated invalid enums must always reach the driver");
+
+    glColorMask(GL_TRUE, GL_FALSE, GL_TRUE, GL_FALSE);
+    const bool restore_mask = mg_pz_push_color_mask_suppression();
+    expect(restore_mask && color_mask_calls == 2 && last_color_mask[0] == GL_FALSE &&
+               last_color_mask[1] == GL_FALSE && last_color_mask[2] == GL_FALSE &&
+               last_color_mask[3] == GL_FALSE,
+           "a draw-local suppression must disable all color channels");
+    mg_pz_pop_color_mask_suppression(restore_mask);
+    expect(color_mask_calls == 3 && last_color_mask[0] == GL_TRUE && last_color_mask[1] == GL_FALSE &&
+               last_color_mask[2] == GL_TRUE && last_color_mask[3] == GL_FALSE,
+           "draw-local suppression must restore the application's exact color mask");
+
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    const bool already_suppressed = mg_pz_push_color_mask_suppression();
+    expect(!already_suppressed && color_mask_calls == 4,
+           "an already disabled application mask must not cause redundant driver calls");
 
     MGContext second{};
     second.id = 2;

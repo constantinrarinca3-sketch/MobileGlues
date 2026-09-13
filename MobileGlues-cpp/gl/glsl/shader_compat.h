@@ -238,6 +238,7 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
     const unique_regex_match chunk_depth_write = find_unique_regex(clean, chunk_depth);
     const unique_regex_match chunk_color_write = find_unique_regex(clean, chunk_color);
     unique_regex_match replace;
+    unique_regex_match draw_pixels_color;
     bool replace_final_color = false;
     if (chunk_depth_write.found && chunk_color_write.found && regex_present(clean, chunk_depth_uniform) &&
         regex_present(clean, use_texture_uniform) && regex_present(clean, depth_texel)) {
@@ -253,6 +254,8 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
         static const std::regex multiply_color_a(R"(\bc\s*\.\s*rgb\s*\*=\s*col\s*\.\s*a\s*;)");
         static const std::regex multiply_color(R"(\bc\s*\*=\s*col\s*;)");
         static const std::regex multiply_opaque(R"(\bvec4\s+c\s*=\s*c0\s*\*\s*col\s*;)");
+        static const std::regex draw_pixels_decl(
+            R"(\buniform\s+int\s+drawPixels(?:\s*=\s*[^;]+)?\s*;)");
 
         const unique_regex_match producer_color_write = find_unique_regex(clean, producer_color);
         const unique_regex_match producer_depth_write = find_unique_regex(clean, producer_depth);
@@ -285,12 +288,23 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
                               : opaque   ? pz_alpha_shader_kind::opaque_with_depth
                                          : pz_alpha_shader_kind::tile_with_depth;
                 replace = producer_depth_write;
+                if (regex_present(clean, draw_pixels_decl)) draw_pixels_color = producer_color_write;
             }
         }
     }
 
     result.contract_matched = result.kind != pz_alpha_shader_kind::none && replace.found;
     if (!result.contract_matched) return result;
+
+    // B42 supplies drawPixels for the depth-producing tile families, but its
+    // desktop shaders leave it unused and rely solely on glColorMask. Keeping
+    // the uniform live gives the GLES compatibility layer a draw-local signal;
+    // transparent output is also a safe fallback if a driver leaks a masked
+    // colour write while the depth result must still be preserved.
+    if (draw_pixels_color.found) {
+        glsl.replace(draw_pixels_color.position, draw_pixels_color.length,
+                     "gl_FragColor = drawPixels != 0 ? c : vec4(0.0);");
+    }
 
     const std::string replacement =
         replace_final_color

@@ -31,6 +31,16 @@ UnorderedMap<GLuint, SamplerInfo> g_samplerCacheForSamplerBuffer;
 
 namespace {
 
+#if defined(ZOMDROID_EXPERIMENTAL)
+struct pz_draw_pixels_scope_t {
+    bool restore;
+    explicit pz_draw_pixels_scope_t(GLuint program) : restore(mg_pz_begin_draw_pixels(program)) {}
+    ~pz_draw_pixels_scope_t() { mg_pz_end_draw_pixels(restore); }
+    pz_draw_pixels_scope_t(const pz_draw_pixels_scope_t&) = delete;
+    pz_draw_pixels_scope_t& operator=(const pz_draw_pixels_scope_t&) = delete;
+};
+#endif
+
 // The unit gl/texture.cpp parks the emulated buffer texture on. Kept in step with
 // MG_TEXTURE_BUFFER_EMULATION_UNIT there and with gl/buffer.cpp's glTexBuffer,
 // which borrows the same one.
@@ -864,7 +874,6 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, 1));
     if (mode == GL_QUADS) {
         prepareForDraw();
-        if (draw_arrays_as_triangles(first, count, -1)) return;
 #if defined(ZOMDROID_EXPERIMENTAL)
     } else {
         mg_pz_persistent_buffer_note_draw();
@@ -873,6 +882,10 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         mg_prepare_pz_alpha_test(gl_state->current_program);
 #endif
     }
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
+    if (mode == GL_QUADS && draw_arrays_as_triangles(first, count, -1)) return;
     GLES.glDrawArrays(mode, first, count);
     CHECK_GL_ERROR
 }
@@ -882,13 +895,16 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst
     MG_PZ_CENSUS(mg_pz_census_draw(false, mode, count, instancecount));
     if (mode == GL_QUADS) {
         prepareForDraw();
-        if (draw_arrays_as_triangles(first, count, instancecount)) return;
 #if defined(ZOMDROID_EXPERIMENTAL)
     } else {
         mg_pz_persistent_buffer_note_draw();
         mg_prepare_pz_alpha_test(gl_state->current_program);
 #endif
     }
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
+    if (mode == GL_QUADS && draw_arrays_as_triangles(first, count, instancecount)) return;
     GLES.glDrawArraysInstanced(mode, first, count, instancecount);
     CHECK_GL_ERROR
 }
@@ -899,6 +915,9 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
     LOG_D("glDrawElementsInstanced, mode: %d, count: %d, type: %d, indices: %p, primcount: %d", mode, count, type,
           indices, primcount)
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, primcount)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, primcount)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
@@ -915,6 +934,9 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices
                                        !mg_restart_needs_driver_fixed(type)));
     LOG_D("glDrawElements, mode: %d, count: %d, type: %d, indices: %p", mode, count, type, indices)
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, 0, -1)) return;
     const bool restart_fixed = mg_restart_needs_driver_fixed(type);
@@ -939,6 +961,7 @@ void glUniform1i(GLint location, GLint v0) {
     LOG()
     LOG_D("glUniform1i, location: %d, v0: %d", location, v0)
 #if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_note_draw_pixels(gl_state->current_program, location, v0);
     if ((mg_pz_census_active || mg_pz_uniform_fastpath_active) &&
         mg_pz_uniform_call(gl_state->current_program, location, 0x101U, 1, &v0, sizeof(v0)))
         return;
@@ -1009,6 +1032,9 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const voi
     LOG_D("glDrawElementsBaseVertex, mode: %d, count: %d, type: %d, indices: %p, basevertex: %d", mode, count, type,
           indices, basevertex);
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, -1)) return;
     // The rewrite applies the base vertex itself, so it covers both the emulated
     // and the driver-supported branch below.
@@ -1162,6 +1188,9 @@ void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, G
     MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawRangeElements, mode: %d, start: %u, end: %u, count: %d, type: %d", mode, start, end, count, type)
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, 0, -1)) return;
     // The rewritten stream is 32-bit with 0xFFFFFFFF sentinels, so start/end no
     // longer describe it. They are only a promise about the index range, and
@@ -1178,6 +1207,9 @@ void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsize
     MG_PZ_CENSUS(mg_pz_census_draw(true, mode, count, 1));
     LOG_D("glDrawRangeElementsBaseVertex, mode: %d, count: %d, type: %d, basevertex: %d", mode, count, type, basevertex)
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, -1)) return;
     if (mg_restart_needs_rewrite(type) && mg_draw_elements_restart(mode, count, type, indices, basevertex, -1)) return;
     restart_guard_t guard(type);
@@ -1198,6 +1230,9 @@ void glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, 
     LOG_D("glDrawElementsInstancedBaseVertex, mode: %d, count: %d, type: %d, instancecount: %d, basevertex: %d", mode,
           count, type, instancecount, basevertex)
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_elements_as_triangles(count, type, indices, basevertex, instancecount)) return;
     if (mg_restart_needs_rewrite(type) &&
         mg_draw_elements_restart(mode, count, type, indices, basevertex, instancecount))
@@ -1240,6 +1275,9 @@ void glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, 
                      baseinstance);
     }
     prepareForDraw();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    pz_draw_pixels_scope_t draw_pixels_scope(gl_state->current_program);
+#endif
     if (mode == GL_QUADS && draw_arrays_as_triangles(first, count, instancecount)) return;
     GLES.glDrawArraysInstanced(mode, first, count, instancecount);
     CHECK_GL_ERROR

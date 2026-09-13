@@ -38,6 +38,7 @@ void expect_alpha_rewrite(std::string source, pz_alpha_shader_kind expected_kind
         const size_t depth = source.find("gl_FragDepth = calcDepthZ;", discard);
         assert(depth != std::string::npos);
         assert(discard < depth);
+        assert(source.find("gl_FragColor = drawPixels != 0 ? c : vec4(0.0);") != std::string::npos);
     } else {
         assert(source.find("zomdroidAlphaFinalColor = c * col") != std::string::npos);
     }
@@ -153,7 +154,7 @@ int main() {
 
     expect_alpha_rewrite(
         "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
-        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0; uniform int drawPixels = 1;\n"
         "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
         "c *= col; c.rgb *= col.a; if (d > 0) { float calcDepthZ = zDepthBlendZ + d * zDepthBlendToZ;\n"
         "gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
@@ -161,7 +162,7 @@ int main() {
 
     expect_alpha_rewrite(
         "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
-        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0; uniform int drawPixels = 1;\n"
         "void main() { vec4 c0 = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
         "vec4 c = c0 * col; c.rgb *= col.a; if (c0.a > 0.8 && d > 0.0) {\n"
         "float calcDepthZ = zDepthBlendZ; gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
@@ -169,7 +170,7 @@ int main() {
 
     expect_alpha_rewrite(
         "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; uniform sampler2D MASK; varying vec4 col;\n"
-        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0; uniform int drawPixels = 1;\n"
         "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
         "vec4 m = texture2D(MASK, vec2(0)); c *= col; c.rgb *= col.a; if (d * m.a > 0) {\n"
         "float calcDepthZ = zDepthBlendZ; gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
