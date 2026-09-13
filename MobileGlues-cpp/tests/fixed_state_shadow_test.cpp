@@ -34,6 +34,8 @@ static int blend_func_separate_calls = 0;
 static int stencil_func_calls = 0;
 static int stencil_func_separate_calls = 0;
 static int depth_func_calls = 0;
+static int color_mask_calls = 0;
+static GLboolean last_color_mask[4] = {};
 
 static void expect(bool condition, const char* message) {
     if (condition) return;
@@ -48,6 +50,13 @@ static void fake_blend_func_separate(GLenum, GLenum, GLenum, GLenum) { ++blend_f
 static void fake_stencil_func(GLenum, GLint, GLuint) { ++stencil_func_calls; }
 static void fake_stencil_func_separate(GLenum, GLenum, GLint, GLuint) { ++stencil_func_separate_calls; }
 static void fake_depth_func(GLenum) { ++depth_func_calls; }
+static void fake_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    ++color_mask_calls;
+    last_color_mask[0] = red;
+    last_color_mask[1] = green;
+    last_color_mask[2] = blue;
+    last_color_mask[3] = alpha;
+}
 
 extern "C" void glBlendEquation(GLenum mode);
 extern "C" void glBlendEquationSeparate(GLenum mode_rgb, GLenum mode_alpha);
@@ -56,6 +65,8 @@ extern "C" void glBlendFuncSeparate(GLenum src_rgb, GLenum dst_rgb, GLenum src_a
 extern "C" void glStencilFunc(GLenum func, GLint reference, GLuint mask);
 extern "C" void glStencilFuncSeparate(GLenum face, GLenum func, GLint reference, GLuint mask);
 extern "C" void glDepthFunc(GLenum func);
+extern "C" void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
+extern "C" void mg_reassert_depth_only_color_mask_for_draw();
 
 int main() {
     GLES.glBlendEquation = fake_blend_equation;
@@ -65,6 +76,7 @@ int main() {
     GLES.glStencilFunc = fake_stencil_func;
     GLES.glStencilFuncSeparate = fake_stencil_func_separate;
     GLES.glDepthFunc = fake_depth_func;
+    GLES.glColorMask = fake_color_mask;
 
     MGContext first{};
     first.id = 1;
@@ -112,6 +124,26 @@ int main() {
     mg_pz_state_shadow_active = false;
     glDepthFunc(GL_LEQUAL);
     expect(depth_func_calls == 5, "disabling the optimization must restore direct calls");
+
+    // PZ renders depth-only placeholders with its 1x1 white texture between an
+    // all-false colour mask and the restoring all-true mask.  Reassert that
+    // mask at the draw boundary even when the optional state shadow is off: a
+    // leaked colour write here becomes the solid black/red tile seen in cached
+    // chunks at distant zoom levels.
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    const int before_reassert = color_mask_calls;
+    mg_reassert_depth_only_color_mask_for_draw();
+    expect(color_mask_calls == before_reassert + 1,
+           "a depth-only draw must reassert the all-false driver colour mask");
+    expect(last_color_mask[0] == GL_FALSE && last_color_mask[1] == GL_FALSE &&
+               last_color_mask[2] == GL_FALSE && last_color_mask[3] == GL_FALSE,
+           "the reasserted depth-only mask must disable every colour channel");
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    const int before_colour_draw = color_mask_calls;
+    mg_reassert_depth_only_color_mask_for_draw();
+    expect(color_mask_calls == before_colour_draw,
+           "ordinary colour draws must not receive an extra colour-mask call");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "fixed-state shadow checks passed", failures);
     return failures != 0;

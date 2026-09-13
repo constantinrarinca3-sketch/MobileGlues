@@ -67,6 +67,25 @@ struct fixed_state_shadow_t {
 
 thread_local fixed_state_shadow_t g_fixed_state_shadow;
 
+// The fixed-state shadow is optional, but the requested colour mask is also a
+// correctness input for PZ's depth-only tile pass. Keep that one small piece of
+// frontend state even when state-shadow optimization is disabled.
+struct requested_color_mask_t {
+    unsigned long long context_id = 0;
+    bool known = false;
+    GLboolean value[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+};
+thread_local requested_color_mask_t g_requested_color_mask;
+
+requested_color_mask_t& requested_color_mask() {
+    const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
+    if (g_requested_color_mask.context_id != context) {
+        g_requested_color_mask = {};
+        g_requested_color_mask.context_id = context;
+    }
+    return g_requested_color_mask;
+}
+
 fixed_state_shadow_t* fixed_state_shadow() {
     if (!mg_pz_state_shadow_active || !g_current_ctx) return nullptr;
     if (g_fixed_state_shadow.context_id != g_current_ctx->id) {
@@ -162,6 +181,13 @@ bool fixed_blend_func(GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum d
 }
 
 bool fixed_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    requested_color_mask_t& requested = requested_color_mask();
+    requested.known = true;
+    requested.value[0] = red != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[1] = green != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[2] = blue != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[3] = alpha != GL_FALSE ? GL_TRUE : GL_FALSE;
+
     fixed_state_shadow_t* state = fixed_state_shadow();
     if (!state) return false;
     const bool exact = state->color_mask_known && state->color_mask[0] == red && state->color_mask[1] == green &&
@@ -297,6 +323,26 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
     mg_pz_census_attrib_value(index, signature, values, sizeof(values));
 }
 } // namespace
+
+void mg_reassert_depth_only_color_mask_for_draw() {
+    requested_color_mask_t& requested = requested_color_mask();
+    if (!requested.known || requested.value[0] != GL_FALSE || requested.value[1] != GL_FALSE ||
+        requested.value[2] != GL_FALSE || requested.value[3] != GL_FALSE)
+        return;
+
+    // PZ emits an all-false mask immediately before its white-texture depth
+    // placeholder. Reissue it at the actual draw boundary so renderer-internal
+    // state work cannot leak that placeholder into an FBO chunk's colour plane.
+    GLES.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (mg_pz_census_active) {
+        static thread_local unsigned long long reasserts = 0;
+        ++reasserts;
+        if (reasserts == 1 || reasserts == 1024 || reasserts == 65536)
+            ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_DEPTH_ONLY_COLOR_MASK_REASSERT hit=%llu", reasserts);
+    }
+#endif
+}
 
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_STATE_RETURN_IF_REDUNDANT(call)                                                                             \

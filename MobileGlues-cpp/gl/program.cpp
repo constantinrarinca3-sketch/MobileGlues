@@ -216,6 +216,8 @@ void mg_prepare_pz_alpha_test(GLuint program) {
     if (it == program_map_pz_alpha_state.end()) return;
     pz_alpha_program_state& target = it->second;
 
+    mg_reassert_depth_only_color_mask_for_draw();
+
     GLboolean enabled = GL_FALSE;
     GLenum function = GL_ALWAYS;
     GLfloat reference = 0.0f;
