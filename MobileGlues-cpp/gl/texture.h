@@ -162,4 +162,9 @@ bool mg_driver_texture_binding_at_unit(int unit, GLenum target, GLuint* out);
 // for its own work; this is the one that is right inside them too.
 int mg_driver_active_texture_unit(void);
 
+// The generic renderer may trust its per-context texture shadow to remove
+// repeated driver calls.  ZomDroid keeps the calls because PZ also changes
+// texture state through paths outside that shadow's complete visibility.
+bool mg_texture_bind_elision_allowed(bool shadow_redundant);
+
 #endif

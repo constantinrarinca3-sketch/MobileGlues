@@ -56,7 +56,7 @@ int main() {
                mg_pz_threaded_submission_active,
            "validated renderer paths must default on");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active, "ETC2 and its cache must remain opt-in");
-    expect(!mg_pz_zbetterfps_fastpath_active, "ZBBetterFPS packet fast path must remain opt-in");
+    expect(mg_pz_zbetterfps_fastpath_active, "validated ZBBetterFPS packet fast path must default on");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);

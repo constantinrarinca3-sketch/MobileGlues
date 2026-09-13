@@ -514,6 +514,20 @@ static inline bool driver_texture_shadow_trustworthy() {
     return driver_shadow_tracks_this_context() && global_settings.fsr1_setting == FSR1_Quality_Preset::Disabled;
 }
 
+bool mg_texture_bind_elision_allowed(bool shadow_redundant) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // PZ has renderer-owned paths which can move texture state without passing
+    // through this frontend.  A stale "redundant" result then suppresses the
+    // corrective bind and the draw samples whichever texture was used last.
+    // Forwarding the state call is the conservative correctness contract for
+    // the dedicated build; Java-side batching still removes most duplicates.
+    (void)shadow_redundant;
+    return false;
+#else
+    return shadow_redundant;
+#endif
+}
+
 int mg_driver_active_texture_unit(void) {
     if (driver_active_unit_shadow_trustworthy()) return DriverActiveTextureUnit;
     // Every caller uses this to put the active unit back after borrowing one, so
@@ -1923,6 +1937,7 @@ void glBindTexture(GLenum target, GLuint texture) {
         redundant = bound != nullptr && bound->texture == texture &&
                     get_driver_texture_binding(driver_unit, driver_target) == texture;
     }
+    redundant = mg_texture_bind_elision_allowed(redundant);
     MG_PZ_CENSUS(mg_pz_census_bind_texture(redundant));
 
     if (!redundant) {
@@ -2003,7 +2018,8 @@ void glActiveTexture(GLenum texture) {
     // relying on that. So the shadow is only ever consulted where the driver
     // agrees with it -- as long as it describes this context at all, which for the
     // shared fallback record it does not, hence the gate.
-    const bool redundant = driver_active_unit_shadow_trustworthy() && DriverActiveTextureUnit == unit;
+    const bool redundant = mg_texture_bind_elision_allowed(
+        driver_active_unit_shadow_trustworthy() && DriverActiveTextureUnit == unit);
     MG_PZ_CENSUS(mg_pz_census_active_texture(redundant));
     if (!redundant) {
         GLES.glActiveTexture(texture);
