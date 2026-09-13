@@ -34,6 +34,7 @@ std::vector<int> order;
 unsigned char uploaded[4] = {};
 std::array<unsigned char, 576> fusion_upload{};
 GLfloat uniform[4] = {};
+GLenum draw_buffers_seen[2] = {};
 std::atomic<uint64_t> counted{0};
 bool extended_payload_executed = false;
 
@@ -80,6 +81,10 @@ void fakeUniform4fv(GLint, GLsizei count, const GLfloat* value) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(3);
     if (count == 1 && value != nullptr) std::memcpy(uniform, value, sizeof(uniform));
+}
+
+void fakeDrawBuffers(GLsizei count, const GLenum* buffers) {
+    if (count == 2 && buffers != nullptr) std::memcpy(draw_buffers_seen, buffers, sizeof(draw_buffers_seen));
 }
 
 GLint fakeQuery() {
@@ -152,6 +157,7 @@ int main() {
     mg_ts_dispatch_slot<void (*)(GLenum, GLsizeiptr, const void*, GLenum)> buffer_data{"glBufferData"};
     mg_ts_dispatch_slot<void (*)(GLenum, GLintptr, GLsizeiptr, const void*)> buffer_sub_data{"glBufferSubData"};
     mg_ts_dispatch_slot<void (*)(GLint, GLsizei, const GLfloat*)> uniform4fv{"glUniform4fv"};
+    mg_ts_dispatch_slot<void (*)(GLsizei, const GLenum*)> draw_buffers{"glDrawBuffers"};
     mg_ts_dispatch_slot<GLint (*)()> query{"glGetError"};
     mg_ts_dispatch_slot<GLint (*)()> quiet_query{"glGetError"};
     mg_ts_dispatch_slot<void (*)()> flush{"glFlush"};
@@ -161,6 +167,7 @@ int main() {
     buffer_data = fakeBufferData;
     buffer_sub_data = fakeBufferSubData;
     uniform4fv = fakeUniform4fv;
+    draw_buffers = fakeDrawBuffers;
     query = fakeQuery;
     quiet_query = fakeQuietQuery;
     flush = fakeFlush;
@@ -181,9 +188,13 @@ int main() {
     buffer_data(GL_ARRAY_BUFFER, 4, source, GL_STREAM_DRAW);
     buffer_sub_data(GL_ARRAY_BUFFER, 0, fusion_source.size(), fusion_source.data());
     uniform4fv(9, 1, source_uniform);
+    GLenum source_draw_buffers[2] = {GL_NONE, GL_COLOR_ATTACHMENT0};
+    draw_buffers(2, source_draw_buffers);
     std::memset(source, 9, sizeof(source));
     fusion_source.fill(0xff);
     for (float& value : source_uniform) value = 9.0f;
+    source_draw_buffers[0] = GL_COLOR_ATTACHMENT1;
+    source_draw_buffers[1] = GL_NONE;
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -198,6 +209,8 @@ int main() {
            "a 576-byte fusion upload must remain packet-owned until backend execution");
     expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
            "uniform bytes must be copied before returning to the caller");
+    expect(draw_buffers_seen[0] == GL_NONE && draw_buffers_seen[1] == GL_COLOR_ATTACHMENT0,
+           "draw-buffer enums must be copied before returning to the caller");
 
     // Cross the packet-ring boundary and make a partial final packet visible
     // through the following synchronous query.

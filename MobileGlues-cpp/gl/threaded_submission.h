@@ -131,6 +131,7 @@ enum class slot_policy : uint8_t {
     pointer_offset,
     uniform_copy,
     buffer_copy,
+    draw_buffers_copy,
 };
 
 inline bool nameEquals(const char* lhs, const char* rhs) { return std::strcmp(lhs, rhs) == 0; }
@@ -150,6 +151,7 @@ inline slot_policy policyForName(const char* name) {
     if (nameEquals(name, "glBufferData") || nameEquals(name, "glBufferSubData") ||
         nameEquals(name, "glBufferStorageEXT"))
         return slot_policy::buffer_copy;
+    if (nameEquals(name, "glDrawBuffers")) return slot_policy::draw_buffers_copy;
     if ((nameStartsWith(name, "glUniform") || nameStartsWith(name, "glProgramUniform")) &&
         name[std::strlen(name) - 1] == 'v')
         return slot_policy::uniform_copy;
@@ -435,6 +437,31 @@ inline bool tryBufferCopy(void (*function)(GLenum, GLintptr, GLsizeiptr, const v
 
 template <typename Fn, typename... Args> bool tryBufferCopy(Fn, Args...) { return false; }
 
+template <typename Fn> struct draw_buffers_command {
+    Fn function;
+    GLsizei count;
+    GLenum buffers[kInlineCopyBytes / sizeof(GLenum)];
+
+    draw_buffers_command(Fn fn, GLsizei n, const GLenum* source) : function(fn), count(n) {
+        std::memcpy(buffers, source, static_cast<size_t>(n) * sizeof(GLenum));
+    }
+    static void execute(void* storage) {
+        auto* command = static_cast<draw_buffers_command*>(storage);
+        command->function(command->count, command->buffers);
+    }
+    static void destroy(void* storage) { static_cast<draw_buffers_command*>(storage)->~draw_buffers_command(); }
+};
+
+inline bool tryDrawBuffersCopy(void (*function)(GLsizei, const GLenum*), GLsizei count, const GLenum* buffers) {
+    if (!availableAndActive() || count < 0 || buffers == nullptr ||
+        static_cast<size_t>(count) > kInlineCopyBytes / sizeof(GLenum))
+        return false;
+    using command = draw_buffers_command<decltype(function)>;
+    return enqueue<command>(function, count, buffers) != 0;
+}
+
+template <typename Fn, typename... Args> bool tryDrawBuffersCopy(Fn, Args...) { return false; }
+
 } // namespace mg_ts
 
 template <typename Function> class mg_ts_dispatch_slot;
@@ -465,6 +492,9 @@ template <typename R, typename... Args> class mg_ts_dispatch_slot<R (*)(Args...)
                 mg_ts::tryUniformCopy(function_, uniform_elements_, args...))
                 return;
             if (policy_ == mg_ts::slot_policy::buffer_copy && mg_ts::tryBufferCopy(function_, args...)) return;
+            if (policy_ == mg_ts::slot_policy::draw_buffers_copy &&
+                mg_ts::tryDrawBuffersCopy(function_, args...))
+                return;
 
             constexpr bool has_pointer = (std::is_pointer_v<std::decay_t<Args>> || ... || false);
             const bool draw_must_wait = mg_ts::isDrawCommand(name_) &&

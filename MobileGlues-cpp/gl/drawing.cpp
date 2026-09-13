@@ -322,6 +322,7 @@ void prepareForDraw() {
     LOG_D("prepareForDraw...")
 #if defined(ZOMDROID_EXPERIMENTAL)
     mg_pz_persistent_buffer_note_draw();
+    mg_prepare_pz_depth_only_output();
     mg_prepare_pz_alpha_test(gl_state->current_program);
 #endif
     if (hardware->emulate_texture_buffer) {

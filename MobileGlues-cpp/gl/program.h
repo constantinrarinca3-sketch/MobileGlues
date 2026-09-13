@@ -25,6 +25,7 @@ extern "C"
     void mg_program_deleted(GLuint program);
 #if defined(ZOMDROID_EXPERIMENTAL)
     void mg_prepare_pz_alpha_test(GLuint program);
+    void mg_prepare_pz_depth_only_output();
 #endif
     GLAPI GLAPIENTRY GLuint glCreateShader(GLenum shaderType);
     GLAPI GLAPIENTRY void glGetActiveUniformName(GLuint program, GLuint uniformIndex, GLsizei bufSize, GLsizei* length,

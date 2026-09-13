@@ -102,6 +102,7 @@ bool mg_draw_framebuffer_all_none() {
     const auto it = framebuffers.find(current_draw_fbo);
     return it != framebuffers.end() && it->second->color_attachments_all_none;
 }
+
 void ensure_max_attachments() {
     // The fallback is used but no longer cached. A query made with no context
     // current answers nothing, and writing 8 into the static then meant 8 for the
@@ -165,6 +166,34 @@ void init_framebuffer(framebuffer_t& fbo) {
     // a heap write past the end.
     if (fbo.color_attachments.size() < want) fbo.color_attachments.resize(want, attachment_t{});
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+bool mg_pz_depth_only_color_output(bool suppress) {
+    // The broken PZ path is an offscreen chunk FBO with the default one-buffer
+    // routing. Avoid touching the window or an MRT/shuffled framebuffer whose
+    // logical draw-buffer list cannot be reconstructed from COLOR_ATTACHMENT0.
+    if (current_draw_fbo == 0) return false;
+    framebuffer_t& fbo = get_framebuffer(current_draw_fbo);
+    init_framebuffer(fbo);
+    if (fbo.color_attachments_all_none || !fbo.draw_buffer_map.empty()) return false;
+    if (fbo.pz_depth_only_color_suppressed == suppress) return true;
+
+    const GLenum buffer = suppress ? GL_NONE : GL_COLOR_ATTACHMENT0;
+    GLES.glDrawBuffers(1, &buffer);
+    fbo.pz_depth_only_color_suppressed = suppress;
+
+#if defined(ZOMDROID_GL_BREADCRUMBS)
+    if (mg_pz_census_active) {
+        static thread_local unsigned long long transitions = 0;
+        ++transitions;
+        if (transitions == 1 || transitions == 1024 || transitions == 65536)
+            ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_DEPTH_ONLY_DRAW_BUFFER suppress=%d fbo=%u hit=%llu",
+                                   suppress ? 1 : 0, current_draw_fbo, transitions);
+    }
+#endif
+    return true;
+}
+#endif
 void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     LOG()
     LOG_D("glBindFramebuffer, target = %s, framebuffer = %u", glEnumToString(target), framebuffer)
@@ -452,6 +481,11 @@ void glDrawBuffers(GLsizei n, const GLenum* bufs) {
 
     framebuffer_t& fbo = get_framebuffer(current_draw_fbo);
     init_framebuffer(fbo);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // An explicit application draw-buffer command supersedes the temporary PZ
+    // routing. Its normal path below establishes the requested state.
+    fbo.pz_depth_only_color_suppressed = false;
+#endif
 
     bool all_none = true;
     for (int i = 0; i < n; ++i) {

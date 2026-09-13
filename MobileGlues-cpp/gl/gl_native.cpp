@@ -12,6 +12,7 @@
 #include "program.h"
 #include "shader.h"
 #include "server_attrib.h"
+#include "framebuffer.h"
 #include "texture.h"
 #include "../gles/loader.h"
 #include "mg.h"
@@ -66,6 +67,22 @@ struct fixed_state_shadow_t {
 };
 
 thread_local fixed_state_shadow_t g_fixed_state_shadow;
+
+struct requested_color_mask_t {
+    unsigned long long context_id = 0;
+    bool known = false;
+    GLboolean value[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+};
+thread_local requested_color_mask_t g_requested_color_mask;
+
+requested_color_mask_t& requested_color_mask() {
+    const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
+    if (g_requested_color_mask.context_id != context) {
+        g_requested_color_mask = {};
+        g_requested_color_mask.context_id = context;
+    }
+    return g_requested_color_mask;
+}
 
 fixed_state_shadow_t* fixed_state_shadow() {
     if (!mg_pz_state_shadow_active || !g_current_ctx) return nullptr;
@@ -162,6 +179,13 @@ bool fixed_blend_func(GLenum src_rgb, GLenum dst_rgb, GLenum src_alpha, GLenum d
 }
 
 bool fixed_color_mask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
+    requested_color_mask_t& requested = requested_color_mask();
+    requested.known = true;
+    requested.value[0] = red != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[1] = green != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[2] = blue != GL_FALSE ? GL_TRUE : GL_FALSE;
+    requested.value[3] = alpha != GL_FALSE ? GL_TRUE : GL_FALSE;
+
     fixed_state_shadow_t* state = fixed_state_shadow();
     if (!state) return false;
     const bool exact = state->color_mask_known && state->color_mask[0] == red && state->color_mask[1] == green &&
@@ -299,6 +323,16 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
 } // namespace
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+void mg_prepare_pz_depth_only_output() {
+    requested_color_mask_t& requested = requested_color_mask();
+    if (!requested.known) return;
+    const bool depth_only = requested.value[0] == GL_FALSE && requested.value[1] == GL_FALSE &&
+                            requested.value[2] == GL_FALSE && requested.value[3] == GL_FALSE;
+    mg_pz_depth_only_color_output(depth_only);
+}
+#endif
+
+#if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_STATE_RETURN_IF_REDUNDANT(call)                                                                             \
     do {                                                                                                               \
         if (call) return;                                                                                              \
@@ -433,6 +467,12 @@ NATIVE_FUNCTION_HEAD(void, glClearColor, GLfloat red, GLfloat green, GLfloat blu
 NATIVE_FUNCTION_HEAD(void, glClearDepthf, GLfloat d) NATIVE_FUNCTION_END_NO_RETURN(void, glClearDepthf, d)
 NATIVE_FUNCTION_HEAD(void, glClearStencil, GLint s) NATIVE_FUNCTION_END_NO_RETURN(void, glClearStencil, s)
 NATIVE_FUNCTION_HEAD(void, glColorMask, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // glColorMask is still sent to GLES. For PZ's depth-only chunk pass also
+    // disable the FBO colour destination itself: this avoids an Adreno path that
+    // leaks the pass's 1x1 white placeholder when the shader writes gl_FragDepth.
+    mg_pz_depth_only_color_output(red == GL_FALSE && green == GL_FALSE && blue == GL_FALSE && alpha == GL_FALSE);
+#endif
     MG_STATE_RETURN_IF_REDUNDANT(fixed_color_mask(red, green, blue, alpha));
 NATIVE_FUNCTION_END_NO_RETURN(void, glColorMask, red,green,blue,alpha)
 NATIVE_FUNCTION_HEAD(void, glCompileShader, GLuint shader) NATIVE_FUNCTION_END_NO_RETURN(void, glCompileShader, shader)

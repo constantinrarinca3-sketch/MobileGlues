@@ -49,6 +49,15 @@ struct framebuffer_t {
     // glReadBuffer can find the texture instead of moving it again. Empty means no
     // shuffle is in effect and every attachment is where the application put it.
     std::vector<GLenum> draw_buffer_map;
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // PZ renders depth-only tile quads into the chunk FBO with an all-false
+    // colour mask. Some GLES drivers still leak their 1x1 white placeholder
+    // into the colour attachment when the fragment shader also writes depth.
+    // This flag records the stronger, temporary GL_NONE routing used for that
+    // pass; it is backend state only and must not replace the application's
+    // logical draw-buffer selection.
+    bool pz_depth_only_color_suppressed = false;
+#endif
     // No depth_attachment / stencil_attachment. They were written and never read
     // by anything in the tree, and the branch that filled them did not recognise
     // GL_DEPTH_STENCIL_ATTACHMENT -- the usual way to attach depth -- so the one
@@ -92,6 +101,13 @@ void InitFramebufferMap(size_t expectedSize);
 // never bound, which the caller could not check when it indexed the table
 // directly from another translation unit.
 bool mg_draw_framebuffer_all_none();
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+// Route the current FBO's fragment colour output to GL_NONE while retaining
+// depth writes. Returns true only for the single-attachment layout used by PZ's
+// chunk renderer; other framebuffer layouts keep ordinary glColorMask semantics.
+bool mg_pz_depth_only_color_output(bool suppress);
+#endif
 
 // Points the backend READ binding at the FSR1 render target for as long as it
 // lives, and only when the application is reading its own framebuffer 0 while

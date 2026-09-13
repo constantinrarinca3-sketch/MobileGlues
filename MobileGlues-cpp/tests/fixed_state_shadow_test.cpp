@@ -25,6 +25,7 @@ bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
 void mg_pz_census_gl_call(const char*) {}
+bool mg_pz_depth_only_color_output(bool) { return false; }
 
 static int failures = 0;
 static int blend_equation_calls = 0;
