@@ -141,7 +141,7 @@ int main() {
                defaults[3].values[0] == 0.4 && defaults[3].values[2] == 0.4);
     }
 
-    // Structurally faithful, reduced forms of the four B42.20.x fragment
+    // Structurally faithful, reduced forms of the five B42.20.x fragment
     // shaders that bypass desktop GL_ALPHA_TEST. These fixtures test the
     // contract without copying the game's complete shader sources here.
     expect_alpha_rewrite(
@@ -175,6 +175,15 @@ int main() {
         "float calcDepthZ = zDepthBlendZ; gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
         pz_alpha_shader_kind::seam_fix_2, true);
 
+    expect_alpha_rewrite(
+        "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; uniform sampler2D MASK; in vec4 col;\n"
+        "uniform float zDepthBlendZ = 0; uniform float zDepthBlendToZ = 0;\n"
+        "void main() { vec4 c = texture2D(DIFFUSE, vec2(0)); float d = texture2D(DEPTH, vec2(0)).r;\n"
+        "vec4 m = texture2D(MASK, vec2(0)); if (m.g + m.b > 0.0) discard; c.rgba *= m.rrra;\n"
+        "c *= col; c.rgb *= col.a; if (c.a * d * m.a > 0) { float calcDepthZ = zDepthBlendZ;\n"
+        "gl_FragDepth = calcDepthZ; gl_FragColor = c; } else { discard; } }\n",
+        pz_alpha_shader_kind::cutaway_attached, true);
+
     {
         std::string near_miss =
             "uniform sampler2D DIFFUSE; uniform sampler2D DEPTH; varying vec4 col;\n"
@@ -193,11 +202,12 @@ int main() {
     // Local validation can point at the legally installed game shaders. CI
     // intentionally has no such dependency and skips this block.
     if (const char* shader_dir = std::getenv("PZ_SHADER_DIR")) {
-        const std::array<std::pair<const char*, pz_alpha_shader_kind>, 4> shaders{{
+        const std::array<std::pair<const char*, pz_alpha_shader_kind>, 5> shaders{{
             {"chunkShader.frag", pz_alpha_shader_kind::chunk_composite},
             {"tileWithDepth.frag", pz_alpha_shader_kind::tile_with_depth},
             {"opaqueWithDepth.frag", pz_alpha_shader_kind::opaque_with_depth},
             {"seamFix2.frag", pz_alpha_shader_kind::seam_fix_2},
+            {"CutawayAttached.frag", pz_alpha_shader_kind::cutaway_attached},
         }};
         for (const auto& shader : shaders) {
             expect_alpha_rewrite(read_file(std::string(shader_dir) + "/" + shader.first), shader.second,

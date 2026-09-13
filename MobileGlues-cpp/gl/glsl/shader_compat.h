@@ -29,6 +29,7 @@ enum class pz_alpha_shader_kind {
     tile_with_depth,
     opaque_with_depth,
     seam_fix_2,
+    cutaway_attached,
 };
 
 struct pz_alpha_rewrite_result {
@@ -48,6 +49,8 @@ inline const char* pz_alpha_shader_kind_name(pz_alpha_shader_kind kind) {
         return "opaque_with_depth";
     case pz_alpha_shader_kind::seam_fix_2:
         return "seam_fix_2";
+    case pz_alpha_shader_kind::cutaway_attached:
+        return "cutaway_attached";
     case pz_alpha_shader_kind::none:
         return "none";
     }
@@ -206,7 +209,7 @@ inline bool regex_present(const std::string& source, const std::regex& pattern) 
     return std::regex_search(source, pattern);
 }
 
-// Restore the one piece of legacy fixed-function state the four PZ chunk
+// Restore the one piece of legacy fixed-function state the five PZ chunk
 // shaders bypass. The matcher intentionally describes complete shader
 // contracts, not filenames (GL never receives those) and not a global alpha
 // heuristic. A changed game shader therefore stays untouched instead of being
@@ -264,6 +267,12 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
             static const std::regex mask_decl(R"(\buniform\s+sampler2D\s+MASK\s*;)");
             static const std::regex mask_sample(R"(\bvec4\s+m\s*=\s*texture2D\s*\(\s*MASK\b)");
             static const std::regex seam_condition(R"(\bif\s*\(\s*d\s*\*\s*m\s*\.\s*a\s*>\s*0(?:\.0+)?\s*\))");
+            static const std::regex cutaway_outline_condition(
+                R"(\bif\s*\(\s*m\s*\.\s*g\s*\+\s*m\s*\.\s*b\s*>\s*0(?:\.0+)?\s*\))");
+            static const std::regex cutaway_mask_multiply(
+                R"(\bc\s*\.\s*rgba\s*\*=\s*m\s*\.\s*rrra\s*;)");
+            static const std::regex cutaway_condition(
+                R"(\bif\s*\(\s*c\s*\.\s*a\s*\*\s*d\s*\*\s*m\s*\.\s*a\s*>\s*0(?:\.0+)?\s*\))");
             static const std::regex opaque_sample(R"(\bvec4\s+c0\s*=\s*texture2D\s*\(\s*DIFFUSE\b)");
             static const std::regex opaque_condition(
                 R"(\bif\s*\(\s*c0\s*\.\s*a\s*>\s*0\.8\s*&&\s*d\s*>\s*0\.0\s*\))");
@@ -273,17 +282,22 @@ inline pz_alpha_rewrite_result rewrite_pz_alpha_test_family(std::string& glsl) {
 
             const bool seam = regex_present(clean, mask_decl) && regex_present(clean, mask_sample) &&
                               regex_present(clean, seam_condition);
+            const bool cutaway = regex_present(clean, mask_decl) && regex_present(clean, mask_sample) &&
+                                  regex_present(clean, cutaway_outline_condition) &&
+                                  regex_present(clean, cutaway_mask_multiply) &&
+                                  regex_present(clean, cutaway_condition);
             const bool opaque = !regex_present(clean, mask_decl) && regex_present(clean, opaque_sample) &&
                                 regex_present(clean, multiply_opaque) && regex_present(clean, opaque_condition);
             const bool tile = !regex_present(clean, mask_decl) && !regex_present(clean, c0_token) &&
                               regex_present(clean, tile_sample) && regex_present(clean, multiply_color) &&
                               regex_present(clean, tile_condition);
-            const unsigned matches = static_cast<unsigned>(seam) + static_cast<unsigned>(opaque) +
-                                     static_cast<unsigned>(tile);
+            const unsigned matches = static_cast<unsigned>(seam) + static_cast<unsigned>(cutaway) +
+                                     static_cast<unsigned>(opaque) + static_cast<unsigned>(tile);
             if (matches == 1) {
-                result.kind = seam       ? pz_alpha_shader_kind::seam_fix_2
-                              : opaque   ? pz_alpha_shader_kind::opaque_with_depth
-                                         : pz_alpha_shader_kind::tile_with_depth;
+                result.kind = seam          ? pz_alpha_shader_kind::seam_fix_2
+                              : cutaway     ? pz_alpha_shader_kind::cutaway_attached
+                              : opaque      ? pz_alpha_shader_kind::opaque_with_depth
+                                            : pz_alpha_shader_kind::tile_with_depth;
                 replace = producer_depth_write;
             }
         }
