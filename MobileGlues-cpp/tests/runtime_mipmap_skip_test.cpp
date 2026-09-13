@@ -38,15 +38,17 @@ int main() {
     texture.texture = 7;
     texture.width = 1024;
     texture.height = 1024;
+    texture.internal_format = GL_RGBA;
 
-    expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
-           "the first generation must reach the driver");
-    expect(texture.runtime_mipmap_generated, "the first generation must be recorded");
+    expect(!mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
+           "the measured PZ chunk target must skip the first generation");
+    expect(texture.runtime_mipmap_generated && texture.runtime_mipmap_base_only,
+           "the skipped target must immediately become level-0-only");
 
     const GLint applied = mg_test_runtime_mipmap_min_filter(
         &texture, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     expect(applied == GL_LINEAR && texture.runtime_mipmap_base_only,
-           "the existing fallback must prove level-0-only sampling");
+           "the mip filter must use level-0-only sampling");
     expect(!mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
            "later generation must be skipped after the level-0 fallback");
 
@@ -54,15 +56,21 @@ int main() {
     expect(!texture.runtime_mipmap_generated && !texture.runtime_mipmap_base_only &&
                !texture.runtime_mipmap_fallback_logged,
            "redefining texture storage must clear learned mipmap state");
-    expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
-           "generation after storage redefinition must reach the driver");
+    expect(!mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_2D),
+           "generation after storage redefinition must still skip the measured target");
 
     TextureObject untouched{};
     untouched.texture = 8;
     untouched.width = 1024;
     untouched.height = 1024;
-    expect(mg_test_runtime_mipmap_prepare(&untouched, GL_TEXTURE_2D),
-           "a texture without the fallback must keep the driver path");
+    untouched.internal_format = GL_RGBA;
+    expect(!mg_test_runtime_mipmap_prepare(&untouched, GL_TEXTURE_2D),
+           "every newly observed measured PZ chunk target must skip generation");
+
+    TextureObject depth_target = texture;
+    depth_target.internal_format = GL_DEPTH_COMPONENT24;
+    expect(mg_test_runtime_mipmap_prepare(&depth_target, GL_TEXTURE_2D),
+           "a non-color 1024 target must keep the driver path");
 
     TextureObject other_size = texture;
     other_size.width = 512;

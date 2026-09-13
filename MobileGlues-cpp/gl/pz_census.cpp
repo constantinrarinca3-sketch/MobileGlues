@@ -384,7 +384,7 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_BUFFER_DISCARD_COALESCE enabled=1 requires=buffer_streaming")
         if (mg_pz_state_shadow_active) LOG_I("ZOMDROID_PZ_STATE_SHADOW enabled=1")
         if (mg_pz_runtime_mipmap_skip_active)
-            LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=learned_base_only")
+            LOG_I("ZOMDROID_PZ_RUNTIME_MIPMAP_SKIP enabled=1 mode=eager_chunk_base_only")
         if (mg_pz_quad_index_cache_active)
             LOG_I("ZOMDROID_PZ_QUAD_INDEX_CACHE enabled=1 mode=direct_single+whole_ebo_version+cpu_shadow")
         if (mg_pz_threaded_submission_active)

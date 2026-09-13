@@ -595,15 +595,18 @@ void reset_runtime_mipmap_learning(TextureObject* texture) {
 bool runtime_mipmap_prepare(TextureObject* texture, GLenum target) {
     if (!texture || texture->texture == 0 || target != GL_TEXTURE_2D) return true;
 
-    // The device trace identified one exact PZ resource family: every runtime
-    // mipmap/fallback pair was a 1024x1024 GL_TEXTURE_2D chunk target. Keep the
-    // optimization on that measured signature so an unrelated texture that
-    // happens to take the compatibility fallback retains normal generation.
-    const bool measured_chunk_target = texture->width == 1024 && texture->height == 1024;
-    const bool submit = !mg_pz_runtime_mipmap_skip_active || !texture->runtime_mipmap_base_only ||
-                        !measured_chunk_target;
+    // PZ's runtime chunk cache is an exact 1024x1024 RGBA texture family.  It
+    // immediately requests the level-0 fallback below, so generating even the
+    // first mip chain is unused work and can expose attached FBO contents to a
+    // broken driver mipmap path.  Mark that family level-0-only before its
+    // first generation; unrelated 1024 targets keep normal GL behaviour.
+    const bool measured_chunk_target = texture->width == 1024 && texture->height == 1024 &&
+                                       texture->internal_format == GL_RGBA;
+    const bool skip = mg_pz_runtime_mipmap_skip_active && measured_chunk_target;
+    const bool submit = !skip;
     const bool first_generation = !texture->runtime_mipmap_generated;
     texture->runtime_mipmap_generated = true;
+    if (skip) texture->runtime_mipmap_base_only = true;
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     if (mg_pz_census_active && first_generation)
