@@ -3,6 +3,7 @@
 // modifying the validated EGL implementation.
 
 #include "pz_static_sequence_census.h"
+#include "../egl/context.h"
 
 #include <EGL/egl.h>
 #include <cstdint>
@@ -25,9 +26,11 @@ MG_PZ_EXPORT EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurfa
     mg_pz_static_sequence_ensure_initialized();
     const EGLBoolean result = mg_pz_original_eglMakeCurrent(dpy, draw, read, ctx);
     if (result == EGL_TRUE && mg_pz_static_sequence_census_active) {
-        const auto token = ctx == EGL_NO_CONTEXT ? 0ULL
-                                                 : static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ctx));
-        mg_pz_static_sequence_context_changed(token);
+        // EGLContext handles are driver allocations and may be recycled. The
+        // stable context layer already assigns a monotonic logical id for this
+        // exact reason; follow that id so history never crosses context lifetimes.
+        const unsigned long long context_id = g_current_ctx != nullptr ? g_current_ctx->id : 0ULL;
+        mg_pz_static_sequence_context_changed(context_id);
     }
     return result;
 }
