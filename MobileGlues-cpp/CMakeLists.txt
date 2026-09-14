@@ -6,13 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Builds a separately named renderer for ZomDroid experiments.  Keeping the output distinct from
-# upstream MobileGlues and the existing MobileGL renderer makes installation and rollback
-# unambiguous; it does not alter MobileGlues rendering policy.
 option(ZOMDROID_EXPERIMENTAL "Build the isolated ZomDroid ARM64 renderer" OFF)
 
-
-# glslang & SPIRV-Cross
 set(ENABLE_RTTI                ON  CACHE BOOL "Enables RTTI (will be took by glslang)" FORCE)
 set(ENABLE_HLSL                OFF CACHE BOOL "Disable HLSL input for glslang" FORCE)
 set(BUILD_EXTERNAL             OFF CACHE BOOL "Disable build external dependencies for glslang" FORCE)
@@ -45,7 +40,6 @@ else()
 endif()
 
 if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    # Check if ThinLTO or LTO is suppported
     include(CheckIPOSupported)
     include(CheckCCompilerFlag)
     include(CheckCXXCompilerFlag)
@@ -56,7 +50,6 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     check_cxx_compiler_flag("-flto" HAS_LTO_CXX)
 
     if (LTOSupported OR (HAS_LTO_C AND HAS_LTO_CXX))
-    # Check ThinLTO
     check_c_compiler_flag("-flto=thin" HAS_THINLTO_C)
     check_cxx_compiler_flag("-flto=thin" HAS_THINLTO_CXX)
     if (HAS_THINLTO_C AND HAS_THINLTO_CXX)
@@ -65,7 +58,6 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-flto=thin)
         add_link_options(-flto=thin)
     else()
-        # ThinLTO is not supported
         message(STATUS "ThinLTO not available, fallback to CMAKE IPO")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
@@ -74,12 +66,10 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     endif()
 endif()
 
-
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MATCHES "AppleClang")
     add_compile_options(-O3 -ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections)
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-#    add_compile_options(/O2)
 else ()
     add_compile_options(-O2)
 endif()
@@ -141,7 +131,37 @@ if (ZOMDROID_EXPERIMENTAL)
         gl/pz_etc2.c
         gl/pz_etc2_runtime.cpp
         gl/pz_texture_memory.cpp
+        gl/pz_static_sequence_census.cpp
+        gl/pz_static_sequence_capture.cpp
+        gl/pz_static_sequence_frontend.cpp
+        gl/pz_static_sequence_egl.cpp
     )
+
+    # V5 leaves the validated drawing/EGL source files byte-for-byte unchanged.
+    # Only this diagnostic branch source-renames the public entry points so the
+    # wrappers above can observe full draw arguments and frame boundaries before
+    # forwarding to the exact original implementation.
+    set_property(SOURCE gl/drawing.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        glDrawArrays=mg_pz_original_glDrawArrays
+        glDrawArraysInstanced=mg_pz_original_glDrawArraysInstanced
+        glDrawElements=mg_pz_original_glDrawElements
+        glDrawElementsInstanced=mg_pz_original_glDrawElementsInstanced
+        glDrawElementsBaseVertex=mg_pz_original_glDrawElementsBaseVertex
+        glDrawRangeElements=mg_pz_original_glDrawRangeElements
+        glDrawRangeElementsBaseVertex=mg_pz_original_glDrawRangeElementsBaseVertex
+        glDrawElementsInstancedBaseVertex=mg_pz_original_glDrawElementsInstancedBaseVertex
+        glDrawArraysInstancedBaseInstance=mg_pz_original_glDrawArraysInstancedBaseInstance
+        glDrawElementsInstancedBaseInstance=mg_pz_original_glDrawElementsInstancedBaseInstance
+        glDrawElementsInstancedBaseVertexBaseInstance=mg_pz_original_glDrawElementsInstancedBaseVertexBaseInstance
+    )
+    set_property(SOURCE egl/egl.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        eglMakeCurrent=mg_pz_original_eglMakeCurrent
+        eglSwapBuffers=mg_pz_original_eglSwapBuffers
+        eglSwapBuffersWithDamageKHR=mg_pz_original_eglSwapBuffersWithDamageKHR
+        eglSwapBuffersWithDamageEXT=mg_pz_original_eglSwapBuffersWithDamageEXT
+        eglGetProcAddress=mg_pz_original_eglGetProcAddress
+    )
+
     # The encoder uses C11 atomics for its persistent worker pool. The project
     # retains gnu99 for its other C sources.
     set_source_files_properties(gl/pz_etc2.c PROPERTIES COMPILE_OPTIONS "-std=gnu11")
@@ -165,21 +185,10 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 if (NOT MSVC)
-    # Calls between this library's own translation units must land in this
-    # library. Without this, an internal call to an exported gl* symbol goes
-    # through a preemptible PLT slot, and in an Android app process the system
-    # libGLESv2 -- always in the global symbol scope -- can win the lookup: the
-    # DSA wrappers and the benchmark would then be calling the real driver where
-    # they meant the frontend, silently bypassing all state tracking. The
-    # symbols stay exported for dlsym and eglGetProcAddress; only who internal
-    # calls bind to changes. On the target, not in the AppleClang-guarded block
-    # above -- that block's condition has never been true (dangling NOT MATCHES),
-    # which is also why --gc-sections never made it into the link.
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -Wl,-Bsymbolic-functions)
 endif()
 
 if(MACOS)
-    # iOS
     target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
         "-F${CMAKE_SOURCE_DIR}/external"
         "-framework libEGL"
@@ -189,13 +198,11 @@ if(MACOS)
         "-framework QuartzCore"
     )
 elseif(ANDROID)
-    # Android
     target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
         android
         log
     )
     else()
-    # Linux — EGL/GLES are loaded dynamically via dlopen
     target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC
         ${CMAKE_DL_LIBS}
     )

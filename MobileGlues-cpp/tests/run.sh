@@ -28,6 +28,20 @@ $CXX -DZOMDROID_EXPERIMENTAL=1 -pthread \
     -o /tmp/mg_threaded_submission_test tests/threaded_submission_test.cpp gl/threaded_submission.cpp
 ${CC:-cc} -std=gnu11 -w -I. -pthread \
     -o /tmp/mg_pz_etc2_test tests/pz_etc2_test.c gl/pz_etc2.c
+
+# V5 static-sequence census: pure host-side telemetry and wrapper contracts.
+$CXX -DZOMDROID_EXPERIMENTAL=1 \
+    -o /tmp/mg_pz_static_seq_test tests/pz_static_sequence_census_test.cpp gl/pz_static_sequence_census.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o /tmp/mg_pz_static_capture_test tests/pz_static_sequence_capture_test.cpp \
+    gl/pz_static_sequence_capture.cpp gl/pz_static_sequence_census.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -o /tmp/mg_pz_static_frontend_test tests/pz_static_sequence_frontend_test.cpp \
+    gl/pz_static_sequence_frontend.cpp gl/pz_static_sequence_capture.cpp gl/pz_static_sequence_census.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 \
+    -o /tmp/mg_pz_static_egl_test tests/pz_static_sequence_egl_test.cpp \
+    gl/pz_static_sequence_egl.cpp gl/pz_static_sequence_census.cpp
+
 /tmp/mg_pixel_test
 echo
 /tmp/mg_fb_test
@@ -51,3 +65,11 @@ echo
 /tmp/mg_threaded_submission_test
 echo
 /tmp/mg_pz_etc2_test
+echo
+/tmp/mg_pz_static_seq_test
+echo
+/tmp/mg_pz_static_capture_test
+echo
+/tmp/mg_pz_static_frontend_test
+echo
+/tmp/mg_pz_static_egl_test
