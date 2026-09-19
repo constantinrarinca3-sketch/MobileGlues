@@ -1,7 +1,10 @@
 // Contract checks for learned runtime-mipmap skipping without a GLES driver.
 #include "gl/pz_census.h"
 #include "gl/texture.h"
+#include "gl/mg.h"
+#include "gles/loader.h"
 
+#include <array>
 #include <cstdio>
 
 bool mg_pz_census_active = false;
@@ -14,6 +17,21 @@ bool mg_pz_state_shadow_active = false;
 bool mg_pz_runtime_mipmap_skip_active = true;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
+
+gles_func_t g_gles_func{};
+gles_caps_t g_gles_caps{};
+gl_state_s g_default_gl_state{};
+thread_local gl_state_t gl_state = &g_default_gl_state;
+
+namespace {
+int backend_active_unit = 0;
+std::array<GLuint, MG_TEXTURE_ATTRIB_UNIT_LIMIT> backend_bindings{};
+
+void fake_active_texture(GLenum texture) { backend_active_unit = static_cast<int>(texture - GL_TEXTURE0); }
+void fake_bind_texture(GLenum target, GLuint texture) {
+    if (target == GL_TEXTURE_2D) backend_bindings[backend_active_unit] = texture;
+}
+} // namespace
 
 static int failures = 0;
 
@@ -34,6 +52,9 @@ static void expect(bool condition, const char* message) {
 }
 
 int main() {
+    GLES.glActiveTexture = fake_active_texture;
+    GLES.glBindTexture = fake_bind_texture;
+
     TextureObject texture{};
     texture.texture = 7;
     texture.width = 1024;
@@ -76,6 +97,26 @@ int main() {
     mg_pz_runtime_mipmap_skip_active = true;
     expect(mg_test_runtime_mipmap_prepare(&texture, GL_TEXTURE_CUBE_MAP),
            "non-2D texture targets must keep the driver path");
+
+    mg_test_texture_attrib_bind_2d(1, 11);
+    mg_test_texture_attrib_bind_2d(2, 22);
+    mg_test_texture_attrib_set_active(0);
+    mg_texture_attrib_snapshot_t attrib_snapshot;
+    mg_texture_attrib_capture(&attrib_snapshot);
+    mg_test_texture_attrib_bind_2d(1, 101);
+    mg_test_texture_attrib_bind_2d(2, 102);
+    mg_test_texture_attrib_bind_2d(3, 103);
+    mg_test_texture_attrib_set_active(3);
+    expect(mg_texture_attrib_restore(&attrib_snapshot) >= 4,
+           "texture attrib restore reports the three bindings and active unit");
+    expect(mg_test_texture_attrib_binding_2d(1) == 11 && backend_bindings[1] == 11,
+           "texture attrib restore repairs unit 1 frontend and backend state");
+    expect(mg_test_texture_attrib_binding_2d(2) == 22 && backend_bindings[2] == 22,
+           "texture attrib restore repairs unit 2 frontend and backend state");
+    expect(mg_test_texture_attrib_binding_2d(3) == 0 && backend_bindings[3] == 0,
+           "texture attrib restore clears the temporary unit 3 binding");
+    expect(mg_test_texture_attrib_active() == 0 && backend_active_unit == 0 && gl_state->current_tex_unit == 0,
+           "texture attrib restore returns both layers to the saved active unit");
 
     mg_texture_bind_context(101, 201);
     InitTextureMap(8);

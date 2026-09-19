@@ -8,6 +8,7 @@
 #ifndef MOBILEGLUES_TEXTURE_H
 #define MOBILEGLUES_TEXTURE_H
 
+#include <array>
 #include <memory>
 
 #ifdef __cplusplus
@@ -121,6 +122,30 @@ public:
     GLsizei pz_texture_memory_height = 0;
 #endif
 };
+
+// Desktop GL's GL_TEXTURE_BIT snapshots texture state for every texture unit.
+// PZ relies on that around its puddle pass, which temporarily binds reflection
+// and height-map textures on units 1..3.  GLES has no attribute stack, so keep
+// the 2D bindings and application-active unit here for server_attrib.cpp to
+// restore.  This is deliberately the same bound MobileGlues advertises and
+// tracks in texture.cpp.
+inline constexpr int MG_TEXTURE_ATTRIB_UNIT_LIMIT = 128;
+
+struct mg_texture_attrib_snapshot_t {
+    std::array<GLuint, MG_TEXTURE_ATTRIB_UNIT_LIMIT> bindings_2d{};
+    GLint active_unit = 0;
+    bool valid = false;
+};
+
+void mg_texture_attrib_capture(mg_texture_attrib_snapshot_t* snapshot);
+unsigned mg_texture_attrib_restore(const mg_texture_attrib_snapshot_t* snapshot);
+
+#if defined(MOBILEGLUES_TESTING)
+void mg_test_texture_attrib_bind_2d(int unit, GLuint texture);
+void mg_test_texture_attrib_set_active(int unit);
+GLuint mg_test_texture_attrib_binding_2d(int unit);
+int mg_test_texture_attrib_active();
+#endif
 
 // How many texture units this layer can actually track. Anything the driver
 // offers beyond this the layer cannot honour, so it must not be advertised

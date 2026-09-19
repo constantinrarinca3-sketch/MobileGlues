@@ -259,7 +259,7 @@ TextureTarget ConvertGLEnumToTextureTarget(GLenum target) {
 // the driver anything, and the glBindTexture that followed silently landed on
 // whichever unit was active before. mg_max_texture_units() now also caps what
 // the layer is willing to promise, so the two can no longer disagree.
-const int MAX_TEXTURE_IMAGE_UNITS = 128;
+const int MAX_TEXTURE_IMAGE_UNITS = MG_TEXTURE_ATTRIB_UNIT_LIMIT;
 
 class TextureBindingSlot {
 public:
@@ -432,6 +432,86 @@ TextureUnit& GetTextureUnit(int unit) {
     }
     return TextureUnits[unit];
 }
+
+void mg_texture_attrib_capture(mg_texture_attrib_snapshot_t* snapshot) {
+    if (!snapshot) return;
+
+    snapshot->active_unit = CurrentTextureUnitIndex;
+    for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
+        const TextureObject* object =
+            TextureUnits[unit].GetBindingSlot(TextureTarget::TEXTURE_2D).GetBoundObject();
+        snapshot->bindings_2d[unit] = object ? object->texture : 0;
+    }
+    snapshot->valid = true;
+}
+
+unsigned mg_texture_attrib_restore(const mg_texture_attrib_snapshot_t* snapshot) {
+    if (!snapshot || !snapshot->valid) return 0;
+
+    unsigned changes = 0;
+    for (int unit = 0; unit < MAX_TEXTURE_IMAGE_UNITS; ++unit) {
+        TextureBindingSlot& slot = TextureUnits[unit].GetBindingSlot(TextureTarget::TEXTURE_2D);
+        const TextureObject* current = slot.GetBoundObject();
+        const GLuint current_name = current ? current->texture : 0;
+        const GLuint saved_name = snapshot->bindings_2d[unit];
+        if (current_name == saved_name &&
+            get_driver_texture_binding(unit, TextureTarget::TEXTURE_2D) == saved_name)
+            continue;
+
+        if (DriverActiveTextureUnit != unit) {
+            GLES.glActiveTexture(GL_TEXTURE0 + unit);
+            DriverActiveTextureUnit = unit;
+        }
+        GLES.glBindTexture(GL_TEXTURE_2D, saved_name);
+        set_driver_texture_binding(unit, TextureTarget::TEXTURE_2D, saved_name);
+        TextureObject* restored = GetOrCreateTextureObject(saved_name);
+        slot.Bind(restored);
+        restored->target = TextureTarget::TEXTURE_2D;
+        ++changes;
+    }
+
+    const int saved_unit =
+        snapshot->active_unit >= 0 && snapshot->active_unit < MAX_TEXTURE_IMAGE_UNITS ? snapshot->active_unit : 0;
+    if (DriverActiveTextureUnit != saved_unit) {
+        GLES.glActiveTexture(GL_TEXTURE0 + saved_unit);
+        DriverActiveTextureUnit = saved_unit;
+        ++changes;
+    }
+    CurrentTextureUnitIndex = saved_unit;
+    if (gl_state) gl_state->current_tex_unit = static_cast<GLuint>(saved_unit);
+    return changes;
+}
+
+#if defined(MOBILEGLUES_TESTING)
+void mg_test_texture_attrib_bind_2d(int unit, GLuint texture) {
+    if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) return;
+    if (DriverActiveTextureUnit != unit) {
+        GLES.glActiveTexture(GL_TEXTURE0 + unit);
+        DriverActiveTextureUnit = unit;
+    }
+    GLES.glBindTexture(GL_TEXTURE_2D, texture);
+    TextureObject* object = GetOrCreateTextureObject(texture);
+    object->target = TextureTarget::TEXTURE_2D;
+    TextureUnits[unit].GetBindingSlot(TextureTarget::TEXTURE_2D).Bind(object);
+    set_driver_texture_binding(unit, TextureTarget::TEXTURE_2D, texture);
+}
+
+void mg_test_texture_attrib_set_active(int unit) {
+    if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) return;
+    if (DriverActiveTextureUnit != unit) GLES.glActiveTexture(GL_TEXTURE0 + unit);
+    DriverActiveTextureUnit = CurrentTextureUnitIndex = unit;
+    if (gl_state) gl_state->current_tex_unit = static_cast<GLuint>(unit);
+}
+
+GLuint mg_test_texture_attrib_binding_2d(int unit) {
+    if (unit < 0 || unit >= MAX_TEXTURE_IMAGE_UNITS) return 0;
+    const TextureObject* object =
+        TextureUnits[unit].GetBindingSlot(TextureTarget::TEXTURE_2D).GetBoundObject();
+    return object ? object->texture : 0;
+}
+
+int mg_test_texture_attrib_active() { return CurrentTextureUnitIndex; }
+#endif
 
 void MarkTextureObjectForDeletion(unsigned texture) {
     // Name 0 is not deletable. glBindTexture creates a record for it like any

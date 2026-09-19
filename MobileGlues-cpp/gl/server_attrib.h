@@ -9,6 +9,7 @@
 #define MOBILEGLUES_SERVER_ATTRIB_H
 
 #include "enable.h"
+#include "texture.h"
 #include <GL/gl.h>
 #include <array>
 #include <cstddef>
@@ -23,6 +24,7 @@ struct mg_server_attrib_snapshot_t {
     GLint scissor[4] = {0, 0, 0, 0};
     GLfloat depth_range[2] = {0.0f, 1.0f};
     mg_enable_state_t enable{};
+    mg_texture_attrib_snapshot_t texture{};
 };
 
 struct mg_server_attrib_state_t {

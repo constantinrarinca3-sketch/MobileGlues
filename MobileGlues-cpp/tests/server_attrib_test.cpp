@@ -19,6 +19,8 @@ GLfloat driver_depth_range[2] = {0.25f, 0.75f};
 std::unordered_map<GLenum, GLboolean> driver_enables;
 GLenum frontend_error = GL_NO_ERROR;
 int failures = 0;
+int texture_capture_calls = 0;
+int texture_restore_calls = 0;
 
 void expect(bool condition, const char* message) {
     if (condition) return;
@@ -60,6 +62,16 @@ bool same4(const GLint* a, const GLint* b) {
 }
 
 } // namespace
+
+void mg_texture_attrib_capture(mg_texture_attrib_snapshot_t* snapshot) {
+    ++texture_capture_calls;
+    snapshot->valid = true;
+}
+
+unsigned mg_texture_attrib_restore(const mg_texture_attrib_snapshot_t* snapshot) {
+    ++texture_restore_calls;
+    return snapshot && snapshot->valid ? 1u : 0u;
+}
 
 void mg_set_gl_error(GLenum error) {
     if (frontend_error == GL_NO_ERROR) frontend_error = error;
@@ -106,6 +118,13 @@ int main() {
     expect(driver_depth_range[0] == 0.25f && driver_depth_range[1] == 0.75f, "pop restores depth range");
     expect(mg_enable_get(GL_DEPTH_TEST, 0) == GL_FALSE, "pop restores depth-test enable");
     expect(mg_enable_get(GL_SCISSOR_TEST, 0) == GL_FALSE, "pop restores scissor-test enable");
+    expect(texture_capture_calls == 1 && texture_restore_calls == 1,
+           "all-attrib push/pop restores texture state");
+
+    glPushAttrib(GL_VIEWPORT_BIT);
+    glPopAttrib();
+    expect(texture_capture_calls == 1 && texture_restore_calls == 1,
+           "non-texture attrib scopes leave texture state alone");
 
     glPushAttrib(GL_VIEWPORT_BIT);
     fake_viewport(1, 2, 320, 180);

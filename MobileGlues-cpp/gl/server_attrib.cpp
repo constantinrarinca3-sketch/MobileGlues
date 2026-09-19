@@ -107,6 +107,7 @@ extern "C" GLAPI GLAPIENTRY void glPushAttrib(GLbitfield mask) {
     }
     if ((mask & (GL_ENABLE_BIT | GL_SCISSOR_BIT | GL_COLOR_BUFFER_BIT)) != 0)
         snapshot.enable = *mg_enable_state();
+    if ((mask & GL_TEXTURE_BIT) != 0) mg_texture_attrib_capture(&snapshot.texture);
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     if (mg_pz_census_active) {
@@ -170,6 +171,11 @@ extern "C" GLAPI GLAPIENTRY void glPopAttrib(void) {
     if ((snapshot.mask & GL_COLOR_BUFFER_BIT) != 0) {
         const unsigned alpha_changes = mg_alpha_test_restore(&snapshot.enable);
         if (alpha_changes != 0) changed |= GL_COLOR_BUFFER_BIT;
+    }
+
+    if ((snapshot.mask & GL_TEXTURE_BIT) != 0) {
+        const unsigned texture_changes = mg_texture_attrib_restore(&snapshot.texture);
+        if (texture_changes != 0) changed |= GL_TEXTURE_BIT;
     }
 
 #if defined(ZOMDROID_GL_BREADCRUMBS)
