@@ -26,6 +26,7 @@ bool mg_pz_threaded_submission_active = false;
 bool mg_pz_zbetterfps_fastpath_active = false;
 bool mg_pz_large_uniform_async_active = false;
 bool mg_pz_uniform_location_cache_active = false;
+bool mg_pz_async_error_drain_active = false;
 bool mg_pz_etc2_active = false;
 bool mg_pz_etc2_cache_active = false;
 int mg_pz_texture_memory_mode = 0;
@@ -93,6 +94,9 @@ struct counters_t {
     count_t uniform_location_hits = 0;
     count_t uniform_location_driver_queries = 0;
     count_t uniform_location_stores = 0;
+    count_t async_error_drain_requests = 0;
+    count_t async_error_drain_submitted = 0;
+    count_t async_error_drain_fallbacks = 0;
     count_t vertex_attrib_calls = 0;
     count_t attrib_tracked = 0;
     count_t attrib_exact = 0;
@@ -169,6 +173,9 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(uniform_location_hits);
     MG_ADD_FIELD(uniform_location_driver_queries);
     MG_ADD_FIELD(uniform_location_stores);
+    MG_ADD_FIELD(async_error_drain_requests);
+    MG_ADD_FIELD(async_error_drain_submitted);
+    MG_ADD_FIELD(async_error_drain_fallbacks);
     MG_ADD_FIELD(vertex_attrib_calls);
     MG_ADD_FIELD(attrib_tracked);
     MG_ADD_FIELD(attrib_exact);
@@ -361,12 +368,12 @@ void report(const census_state_t& state) {
     const double worst_ms = static_cast<double>(state.worst_ns) / 1000000.0;
     const counters_t& c = state.window;
     const counters_t& w = state.worst_frame;
-    LOG_I("ZOMDROID_PZ_CENSUS schema=7 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
+    LOG_I("ZOMDROID_PZ_CENSUS schema=8 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
           "uniform=%llu/%llu/%llu/%llu uniform_epoch=%llu/%llu/%llu/%llu "
-          "uniform_loc=%llu/%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
+          "uniform_loc=%llu/%llu/%llu/%llu error_drain=%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
           "attrib_enable=%llu/%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
@@ -386,6 +393,7 @@ void report(const census_state_t& state) {
           c.uniform_epoch_stale_refreshes,
           c.uniform_location_requests, c.uniform_location_hits, c.uniform_location_driver_queries,
           c.uniform_location_stores,
+          c.async_error_drain_requests, c.async_error_drain_submitted, c.async_error_drain_fallbacks,
           c.vertex_attrib_calls,
           c.attrib_tracked, c.attrib_exact, c.attrib_skipped, c.attrib_kind_calls[0], c.attrib_kind_exact[0],
           c.attrib_kind_skipped[0],
@@ -423,6 +431,8 @@ void mg_pz_census_init(void) {
     mg_pz_large_uniform_async_active =
         mg_pz_threaded_submission_active && opt_in_switch("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC");
     mg_pz_uniform_location_cache_active = opt_in_switch("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE");
+    mg_pz_async_error_drain_active =
+        mg_pz_threaded_submission_active && opt_in_switch("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN");
     mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     mg_pz_texture_memory_mode = clamped_int_switch("MOBILEGLUES_PZ_TEXTURE_MEMORY", 0, 2);
@@ -433,7 +443,7 @@ void mg_pz_census_init(void) {
     g_uniform_context = 0;
     g_batch = {};
     if (mg_pz_census_active) {
-        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=7 interval_frames=%u", kReportFrames)
+        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=8 interval_frames=%u", kReportFrames)
         if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
         if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
         if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
@@ -456,6 +466,8 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_LARGE_UNIFORM_ASYNC enabled=1 mode=packet_owned max_packet_bytes=8192")
         if (mg_pz_uniform_location_cache_active)
             LOG_I("ZOMDROID_PZ_UNIFORM_LOCATION_CACHE enabled=1 mode=positive_results context_scoped")
+        if (mg_pz_async_error_drain_active)
+            LOG_I("ZOMDROID_PZ_ASYNC_ERROR_DRAIN enabled=1 mode=fifo_discard")
         if (mg_pz_etc2_active)
             LOG_I("ZOMDROID_PZ_ETC2 enabled=1 cache=%d min_pixels=262144", mg_pz_etc2_cache_active ? 1 : 0)
         if (mg_pz_texture_memory_mode != 0)
@@ -686,6 +698,15 @@ void mg_pz_census_uniform_location(bool cache_hit, unsigned int driver_queries, 
     if (cache_hit) ++g_census.frame.uniform_location_hits;
     g_census.frame.uniform_location_driver_queries += driver_queries;
     if (stored) ++g_census.frame.uniform_location_stores;
+}
+
+void mg_pz_census_async_error_drain(bool submitted) {
+    if (!mg_pz_census_active) return;
+    ++g_census.frame.async_error_drain_requests;
+    if (submitted)
+        ++g_census.frame.async_error_drain_submitted;
+    else
+        ++g_census.frame.async_error_drain_fallbacks;
 }
 
 void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped) {

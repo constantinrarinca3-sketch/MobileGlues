@@ -126,6 +126,29 @@ R dispatch_call(R (*function)(Args...), bool synchronous, Args... args) {
     }
 }
 
+// MobileGlues intentionally reports GL_NO_ERROR to the application, but the
+// backend latch still has to be consumed at the correct point in the command
+// stream. Queue that destructive read without making the producer wait for a
+// value it will discard. FIFO execution preserves the original ordering.
+template <typename Function, typename Reporter> struct error_drain_command {
+    Function function;
+    Reporter reporter;
+
+    error_drain_command(Function fn, Reporter report) : function(fn), reporter(report) {}
+
+    static void execute(void* storage) {
+        auto* command = static_cast<error_drain_command*>(storage);
+        command->reporter(command->function());
+    }
+    static void destroy(void* storage) { static_cast<error_drain_command*>(storage)->~error_drain_command(); }
+};
+
+template <typename Function, typename Reporter> bool tryAsyncErrorDrain(Function function, Reporter reporter) {
+    if (!availableAndActive() || function == nullptr || reporter == nullptr) return false;
+    using command = error_drain_command<Function, Reporter>;
+    return enqueue<command>(function, reporter) != 0;
+}
+
 enum class slot_policy : uint8_t {
     automatic,
     synchronous,

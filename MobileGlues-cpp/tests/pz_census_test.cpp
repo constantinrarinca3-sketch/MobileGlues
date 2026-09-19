@@ -44,6 +44,7 @@ int main() {
     unsetenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
     unsetenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC");
     unsetenv("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE");
+    unsetenv("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN");
     unsetenv("MOBILEGLUES_PZ_ETC2");
     unsetenv("MOBILEGLUES_PZ_ETC2_CACHE");
     unsetenv("MOBILEGLUES_PZ_CENSUS");
@@ -61,6 +62,7 @@ int main() {
     expect(mg_pz_zbetterfps_fastpath_active, "validated ZBBetterFPS packet fast path must default on");
     expect(!mg_pz_large_uniform_async_active, "large-uniform async must remain experimental and opt-in");
     expect(!mg_pz_uniform_location_cache_active, "uniform-location cache must remain experimental and opt-in");
+    expect(!mg_pz_async_error_drain_active, "async error drain must remain experimental and opt-in");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
@@ -74,6 +76,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE", "0", 1);
+    setenv("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
@@ -92,6 +95,7 @@ int main() {
     expect(!mg_pz_zbetterfps_fastpath_active, "0 must disable the ZBBetterFPS packet fast path");
     expect(!mg_pz_large_uniform_async_active, "0 must disable large-uniform async");
     expect(!mg_pz_uniform_location_cache_active, "0 must disable the uniform-location cache");
+    expect(!mg_pz_async_error_drain_active, "0 must disable async error drain");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active, "0 must disable ETC2 and its cache");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
@@ -111,6 +115,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "true", 1);
     setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "true", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE", "true", 1);
+    setenv("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN", "true", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "true", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "true", 1);
     mg_pz_census_init();
@@ -129,6 +134,7 @@ int main() {
     expect(!mg_pz_large_uniform_async_active, "only the exact value 1 may enable large-uniform async");
     expect(!mg_pz_uniform_location_cache_active,
            "only the exact value 1 may enable the uniform-location cache");
+    expect(!mg_pz_async_error_drain_active, "only the exact value 1 may enable async error drain");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active,
            "only the exact value 1 may enable ETC2 and its cache");
 
@@ -144,6 +150,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "1", 1);
     setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "1", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE", "1", 1);
+    setenv("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN", "1", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "1", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
@@ -161,6 +168,7 @@ int main() {
     expect(mg_pz_zbetterfps_fastpath_active, "1 must enable the ZBBetterFPS packet fast path");
     expect(mg_pz_large_uniform_async_active, "1 must enable large-uniform async with threaded submission");
     expect(mg_pz_uniform_location_cache_active, "1 must enable the uniform-location cache");
+    expect(mg_pz_async_error_drain_active, "1 must enable async error drain with threaded submission");
     expect(mg_pz_etc2_active && mg_pz_etc2_cache_active, "1 must enable ETC2 and its cache");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -182,6 +190,8 @@ int main() {
            "forgetting a program must erase its cached values");
     mg_pz_census_uniform_location(false, 1, true);
     mg_pz_census_uniform_location(true, 0, false);
+    mg_pz_census_async_error_drain(true);
+    mg_pz_census_async_error_drain(false);
 
     for (int frame = 0; frame < 300; ++frame) {
         mg_pz_census_draw(false, GL_TRIANGLES, 6, 1);
@@ -206,7 +216,7 @@ int main() {
     expect(last_file_log.find("draw_a=300") != std::string::npos, "array draws must be aggregated");
     expect(last_file_log.find("items=1800") != std::string::npos, "draw item count must be aggregated");
     expect(last_file_log.find("program=300/100") != std::string::npos, "redundant program calls must be split");
-    expect(last_file_log.find("schema=7") != std::string::npos, "schema 7 must be reported");
+    expect(last_file_log.find("schema=8") != std::string::npos, "schema 8 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
     expect(last_file_log.find("uniform=300/304/301/301") != std::string::npos,
@@ -215,6 +225,8 @@ int main() {
            "uniform-array epoch invalidations and avoided cache churn must be reported");
     expect(last_file_log.find("uniform_loc=2/1/1/1") != std::string::npos,
            "uniform-location requests, cache hits, driver queries and stores must be reported");
+    expect(last_file_log.find("error_drain=2/1/1") != std::string::npos,
+           "async error drain requests, submissions and fallbacks must be reported");
     expect(last_file_log.find("attrib=300/300/299/299") != std::string::npos,
            "attribute tracked, exact and skipped counts must be split");
     expect(last_file_log.find("upload=300+0/38400B") != std::string::npos, "buffer bytes must be aggregated");
@@ -244,6 +256,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "0", 1);
     setenv("MOBILEGLUES_PZ_UNIFORM_LOCATION_CACHE", "0", 1);
+    setenv("MOBILEGLUES_PZ_ASYNC_ERROR_DRAIN", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "0", 1);
     mg_pz_census_init();
@@ -253,6 +266,7 @@ int main() {
                !mg_pz_runtime_mipmap_skip_active && !mg_pz_quad_index_cache_active &&
                !mg_pz_threaded_submission_active && !mg_pz_zbetterfps_fastpath_active &&
                !mg_pz_large_uniform_async_active && !mg_pz_uniform_location_cache_active &&
+               !mg_pz_async_error_drain_active &&
                !mg_pz_etc2_active && !mg_pz_etc2_cache_active,
            "all switches must remain disableable after use");
 

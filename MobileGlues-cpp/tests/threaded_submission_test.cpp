@@ -39,6 +39,8 @@ std::array<GLfloat, 60 * 16> large_uniform{};
 GLsizei large_uniform_count = 0;
 GLboolean large_uniform_transpose = GL_FALSE;
 std::atomic<uint64_t> counted{0};
+std::atomic<uint64_t> error_drains{0};
+std::atomic<GLenum> drained_error{GL_NO_ERROR};
 bool extended_payload_executed = false;
 
 void expect(bool condition, const char* message) {
@@ -100,6 +102,15 @@ GLint fakeQuery() {
 }
 
 GLint fakeQuietQuery() { return 88; }
+
+GLenum fakeErrorDrain() {
+    error_drains.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex);
+    order.push_back(6);
+    return GL_INVALID_OPERATION;
+}
+
+void fakeErrorReport(GLenum error) { drained_error.store(error, std::memory_order_relaxed); }
 
 void fakeFlush() {
     std::lock_guard<std::mutex> lock(mutex);
@@ -184,6 +195,11 @@ int main() {
         entered_cv.wait(lock, [] { return blocker_entered; });
     }
 
+    expect(mg_ts::tryAsyncErrorDrain(fakeErrorDrain, fakeErrorReport),
+           "a backend error drain must enter the worker queue without waiting");
+    expect(error_drains.load(std::memory_order_relaxed) == 0,
+           "an asynchronous error drain must return before blocked backend work completes");
+
     unsigned char source[4] = {1, 2, 3, 4};
     GLfloat source_uniform[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::array<unsigned char, 576> fusion_source{};
@@ -219,6 +235,10 @@ int main() {
     expect(large_uniform_count == 60 && large_uniform_transpose == GL_TRUE && large_uniform.front() == 0.25f &&
                large_uniform.back() == 959.25f,
            "large uniform bytes must remain packet-owned until backend execution");
+    expect(error_drains.load(std::memory_order_relaxed) == 1,
+           "the worker must eventually execute the backend error drain");
+    expect(drained_error.load(std::memory_order_relaxed) == GL_INVALID_OPERATION,
+           "the worker must preserve backend error diagnostics");
 
     // Cross the packet-ring boundary and make a partial final packet visible
     // through the following synchronous query.
@@ -242,8 +262,10 @@ int main() {
     expect(mg_ts::release_context(), "release must drain work and unbind the worker context");
     mg_ts::shutdown();
 
-    expect(order == std::vector<int>({1, 2, 3, 4, 5}), "backend calls must preserve producer order");
+    expect(order == std::vector<int>({1, 6, 2, 3, 4, 5}), "backend calls must preserve producer order");
     expect(!mg_ts::active(), "submission must be inactive after release");
+    expect(!mg_ts::tryAsyncErrorDrain(fakeErrorDrain, fakeErrorReport),
+           "an error drain must fall back when threaded submission is inactive");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "threaded submission checks passed", failures);
     return failures != 0;

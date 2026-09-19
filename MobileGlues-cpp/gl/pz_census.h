@@ -28,6 +28,7 @@ extern bool mg_pz_threaded_submission_active;
 extern bool mg_pz_zbetterfps_fastpath_active;
 extern bool mg_pz_large_uniform_async_active;
 extern bool mg_pz_uniform_location_cache_active;
+extern bool mg_pz_async_error_drain_active;
 extern bool mg_pz_etc2_active;
 extern bool mg_pz_etc2_cache_active;
 extern int mg_pz_texture_memory_mode;
@@ -62,6 +63,7 @@ void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signatu
 void mg_pz_census_forget_program(GLuint program);
 void mg_pz_census_context_changed(unsigned long long context_id);
 void mg_pz_census_uniform_location(bool cache_hit, unsigned int driver_queries, bool stored);
+void mg_pz_census_async_error_drain(bool submitted);
 void mg_pz_census_attrib(mg_pz_attrib_kind kind, bool tracked, bool exact_redundant, bool skipped = false);
 void mg_pz_census_attrib_value(GLuint index, uint32_t signature, const void* value, size_t bytes);
 void mg_pz_census_buffer_data(GLsizeiptr bytes, bool sub_data);

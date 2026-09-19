@@ -18,7 +18,9 @@
 #include "log.h"
 #include "mg.h"
 #include "pixel.h"
+#include "pz_census.h"
 #include "server_attrib.h"
+#include "threaded_submission.h"
 #include "random_string_gen.h"
 #include "../config/settings.h"
 
@@ -39,6 +41,15 @@ void mg_set_gl_error(GLenum error) {
     g_frontend_error = error;
     LOG_D("MobileGlues raised %s", glEnumToString(error))
 }
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+static void report_async_backend_error(GLenum error) {
+    if (error != GL_NO_ERROR) {
+        LOG_W("glGetError -> %s, asynchronously drained and reported to the application as GL_NO_ERROR",
+              glEnumToString(error))
+    }
+}
+#endif
 
 void glGetIntegerv(GLenum pname, GLint* params) {
     LOG()
@@ -217,11 +228,27 @@ void glGetIntegerv(GLenum pname, GLint* params) {
 
 GLenum glGetError() {
     LOG()
-    // Both are consumed whether or not they get reported: leaving either latched
-    // would hand it to a later, unrelated glGetError.
-    const GLenum backend = GLES.glGetError();
+    // Both are consumed whether or not they get reported. In async-drain mode,
+    // the backend latch is consumed in FIFO order by the worker rather than by
+    // blocking this producer thread.
     const GLenum frontend = g_frontend_error;
     g_frontend_error = GL_NO_ERROR;
+
+#if defined(ZOMDROID_EXPERIMENTAL)
+    if (mg_pz_async_error_drain_active) {
+        const bool submitted =
+            mg_ts::tryAsyncErrorDrain(static_cast<glGetError_PTR>(GLES.glGetError), report_async_backend_error);
+        mg_pz_census_async_error_drain(submitted);
+        if (submitted) {
+            if (frontend != GL_NO_ERROR) {
+                LOG_W("glGetError -> %s, reported to the application as GL_NO_ERROR", glEnumToString(frontend))
+            }
+            return GL_NO_ERROR;
+        }
+    }
+#endif
+
+    const GLenum backend = GLES.glGetError();
 
     // GL_NO_ERROR, always, in every configuration and whatever ignoreError says.
     //
