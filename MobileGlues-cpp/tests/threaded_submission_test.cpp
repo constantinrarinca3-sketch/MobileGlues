@@ -14,6 +14,7 @@
 
 bool mg_pz_threaded_submission_active = true;
 bool mg_pz_zbetterfps_fastpath_active = true;
+bool mg_pz_large_uniform_async_active = true;
 bool mg_pz_census_active = false;
 
 extern "C" void write_log(const char*, ...) {}
@@ -34,6 +35,9 @@ std::vector<int> order;
 unsigned char uploaded[4] = {};
 std::array<unsigned char, 576> fusion_upload{};
 GLfloat uniform[4] = {};
+std::array<GLfloat, 60 * 16> large_uniform{};
+GLsizei large_uniform_count = 0;
+GLboolean large_uniform_transpose = GL_FALSE;
 std::atomic<uint64_t> counted{0};
 bool extended_payload_executed = false;
 
@@ -80,6 +84,13 @@ void fakeUniform4fv(GLint, GLsizei count, const GLfloat* value) {
     std::lock_guard<std::mutex> lock(mutex);
     order.push_back(3);
     if (count == 1 && value != nullptr) std::memcpy(uniform, value, sizeof(uniform));
+}
+
+void fakeUniformMatrix4fv(GLint, GLsizei count, GLboolean transpose, const GLfloat* value) {
+    large_uniform_count = count;
+    large_uniform_transpose = transpose;
+    if (count == 60 && value != nullptr)
+        std::memcpy(large_uniform.data(), value, large_uniform.size() * sizeof(GLfloat));
 }
 
 GLint fakeQuery() {
@@ -176,14 +187,21 @@ int main() {
     unsigned char source[4] = {1, 2, 3, 4};
     GLfloat source_uniform[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::array<unsigned char, 576> fusion_source{};
+    std::array<GLfloat, 60 * 16> large_uniform_source{};
     fusion_source.front() = 0x31;
     fusion_source.back() = 0x79;
+    for (size_t i = 0; i < large_uniform_source.size(); ++i)
+        large_uniform_source[i] = static_cast<GLfloat>(i) + 0.25f;
     buffer_data(GL_ARRAY_BUFFER, 4, source, GL_STREAM_DRAW);
     buffer_sub_data(GL_ARRAY_BUFFER, 0, fusion_source.size(), fusion_source.data());
     uniform4fv(9, 1, source_uniform);
+    expect(mg_ts::tryUniformCopy(fakeUniformMatrix4fv, 16, 11, 60, static_cast<GLboolean>(GL_TRUE),
+                                 static_cast<const GLfloat*>(large_uniform_source.data())),
+           "a 3.75 KiB matrix palette must be copied into the command packet asynchronously");
     std::memset(source, 9, sizeof(source));
     fusion_source.fill(0xff);
     for (float& value : source_uniform) value = 9.0f;
+    large_uniform_source.fill(9.0f);
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -198,6 +216,9 @@ int main() {
            "a 576-byte fusion upload must remain packet-owned until backend execution");
     expect(uniform[0] == 1.0f && uniform[1] == 2.0f && uniform[2] == 3.0f && uniform[3] == 4.0f,
            "uniform bytes must be copied before returning to the caller");
+    expect(large_uniform_count == 60 && large_uniform_transpose == GL_TRUE && large_uniform.front() == 0.25f &&
+               large_uniform.back() == 959.25f,
+           "large uniform bytes must remain packet-owned until backend execution");
 
     // Cross the packet-ring boundary and make a partial final packet visible
     // through the following synchronous query.

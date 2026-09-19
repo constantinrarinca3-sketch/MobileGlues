@@ -42,6 +42,7 @@ int main() {
     unsetenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
     unsetenv("MOBILEGLUES_PZ_THREADED_SUBMISSION");
     unsetenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
+    unsetenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC");
     unsetenv("MOBILEGLUES_PZ_ETC2");
     unsetenv("MOBILEGLUES_PZ_ETC2_CACHE");
     unsetenv("MOBILEGLUES_PZ_CENSUS");
@@ -57,6 +58,7 @@ int main() {
            "validated renderer paths must default on");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active, "ETC2 and its cache must remain opt-in");
     expect(mg_pz_zbetterfps_fastpath_active, "validated ZBBetterFPS packet fast path must default on");
+    expect(!mg_pz_large_uniform_async_active, "large-uniform async must remain experimental and opt-in");
 
     setenv("MOBILEGLUES_PZ_VAO_FASTPATH", "0", 1);
     setenv("MOBILEGLUES_PZ_ATTRIB_FASTPATH", "0", 1);
@@ -68,6 +70,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "0", 1);
+    setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "0", 1);
@@ -84,6 +87,7 @@ int main() {
     expect(!mg_pz_quad_index_cache_active, "0 must disable the quad index cache");
     expect(!mg_pz_threaded_submission_active, "0 must disable threaded submission");
     expect(!mg_pz_zbetterfps_fastpath_active, "0 must disable the ZBBetterFPS packet fast path");
+    expect(!mg_pz_large_uniform_async_active, "0 must disable large-uniform async");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active, "0 must disable ETC2 and its cache");
 
     setenv("MOBILEGLUES_PZ_CENSUS", "true", 1);
@@ -101,6 +105,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "true", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "true", 1);
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "true", 1);
+    setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "true", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "true", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "true", 1);
     mg_pz_census_init();
@@ -116,6 +121,7 @@ int main() {
     expect(!mg_pz_threaded_submission_active, "only the exact value 1 may enable threaded submission");
     expect(!mg_pz_zbetterfps_fastpath_active,
            "only the exact value 1 may enable the ZBBetterFPS packet fast path");
+    expect(!mg_pz_large_uniform_async_active, "only the exact value 1 may enable large-uniform async");
     expect(!mg_pz_etc2_active && !mg_pz_etc2_cache_active,
            "only the exact value 1 may enable ETC2 and its cache");
 
@@ -129,6 +135,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "1", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "1", 1);
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "1", 1);
+    setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "1", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "1", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "1", 1);
     setenv("MOBILEGLUES_PZ_CENSUS", "1", 1);
@@ -144,6 +151,7 @@ int main() {
     expect(mg_pz_quad_index_cache_active, "1 must enable the quad index cache");
     expect(mg_pz_threaded_submission_active, "1 must enable threaded submission");
     expect(mg_pz_zbetterfps_fastpath_active, "1 must enable the ZBBetterFPS packet fast path");
+    expect(mg_pz_large_uniform_async_active, "1 must enable large-uniform async with threaded submission");
     expect(mg_pz_etc2_active && mg_pz_etc2_cache_active, "1 must enable ETC2 and its cache");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -203,6 +211,7 @@ int main() {
     setenv("MOBILEGLUES_PZ_QUAD_INDEX_CACHE", "0", 1);
     setenv("MOBILEGLUES_PZ_THREADED_SUBMISSION", "0", 1);
     setenv("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH", "0", 1);
+    setenv("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2", "0", 1);
     setenv("MOBILEGLUES_PZ_ETC2_CACHE", "0", 1);
     mg_pz_census_init();
@@ -211,7 +220,7 @@ int main() {
                !mg_pz_buffer_discard_coalesce_active && !mg_pz_state_shadow_active &&
                !mg_pz_runtime_mipmap_skip_active && !mg_pz_quad_index_cache_active &&
                !mg_pz_threaded_submission_active && !mg_pz_zbetterfps_fastpath_active &&
-               !mg_pz_etc2_active && !mg_pz_etc2_cache_active,
+               !mg_pz_large_uniform_async_active && !mg_pz_etc2_active && !mg_pz_etc2_cache_active,
            "all switches must remain disableable after use");
 
     std::printf("%s (%d failures)\n", failures ? "FAILED" : "PZ census checks passed", failures);

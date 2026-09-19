@@ -23,6 +23,7 @@ bool mg_pz_runtime_mipmap_skip_active = false;
 bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
 bool mg_pz_zbetterfps_fastpath_active = false;
+bool mg_pz_large_uniform_async_active = false;
 bool mg_pz_etc2_active = false;
 bool mg_pz_etc2_cache_active = false;
 int mg_pz_texture_memory_mode = 0;
@@ -365,6 +366,8 @@ void mg_pz_census_init(void) {
     mg_pz_quad_index_cache_active = default_on_switch("MOBILEGLUES_PZ_QUAD_INDEX_CACHE");
     mg_pz_threaded_submission_active = default_on_switch("MOBILEGLUES_PZ_THREADED_SUBMISSION");
     mg_pz_zbetterfps_fastpath_active = default_on_switch("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
+    mg_pz_large_uniform_async_active =
+        mg_pz_threaded_submission_active && opt_in_switch("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC");
     mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     mg_pz_texture_memory_mode = clamped_int_switch("MOBILEGLUES_PZ_TEXTURE_MEMORY", 0, 2);
@@ -391,6 +394,8 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_THREADED_SUBMISSION enabled=1 mode=dedicated_context+spsc_packet_queue")
         if (mg_pz_zbetterfps_fastpath_active)
             LOG_I("ZOMDROID_PZ_ZBETTERFPS_FASTPATH enabled=1 mode=packet_inline_upload max_bytes=1024")
+        if (mg_pz_large_uniform_async_active)
+            LOG_I("ZOMDROID_PZ_LARGE_UNIFORM_ASYNC enabled=1 mode=packet_owned max_packet_bytes=8192")
         if (mg_pz_etc2_active)
             LOG_I("ZOMDROID_PZ_ETC2 enabled=1 cache=%d min_pixels=262144", mg_pz_etc2_cache_active ? 1 : 0)
         if (mg_pz_texture_memory_mode != 0)

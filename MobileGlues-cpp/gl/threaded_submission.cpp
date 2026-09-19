@@ -227,6 +227,17 @@ class submission_state {
         }
     }
 
+    void recordLargeUniformCopy(bool packet_owned, size_t bytes) {
+        if (!mg_pz_census_active) return;
+        if (packet_owned) {
+            packet_uniform_copies_.fetch_add(1, std::memory_order_relaxed);
+            packet_uniform_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        } else {
+            fallback_uniform_copies_.fetch_add(1, std::memory_order_relaxed);
+            fallback_uniform_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+        }
+    }
+
     uint64_t nextSwapNumber() {
         return mg_pz_census_active ? swaps_submitted_.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     }
@@ -242,7 +253,8 @@ class submission_state {
               "packet_avg=%.2f sync_waits=%llu sync_avg_ms=%.3f sync_max_ms=%.3f queue_waits=%llu "
               "queue_wait_avg_ms=%.3f queue_wait_max_ms=%.3f frame_wait_avg_ms=%.3f "
               "frame_wait_max_ms=%.3f queue_highwater=%llu packet_highwater=%llu "
-              "upload_inline=%llu/%lluB upload_heap=%llu/%lluB swap_done=%llu swap_fail=%llu",
+              "upload_inline=%llu/%lluB upload_heap=%llu/%lluB "
+              "uniform_large=%llu/%lluB/%llu/%lluB swap_done=%llu swap_fail=%llu",
               static_cast<unsigned long long>(frames),
               static_cast<unsigned long long>(submitted),
               static_cast<unsigned long long>(executed_.load(std::memory_order_relaxed)),
@@ -267,6 +279,10 @@ class submission_state {
               static_cast<unsigned long long>(inline_buffer_bytes_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(heap_buffer_copies_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(heap_buffer_bytes_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(packet_uniform_copies_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(packet_uniform_bytes_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(fallback_uniform_copies_.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(fallback_uniform_bytes_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(swaps_completed_.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(swap_failures_.load(std::memory_order_relaxed)))
     }
@@ -468,6 +484,10 @@ class submission_state {
     std::atomic<uint64_t> inline_buffer_bytes_{0};
     std::atomic<uint64_t> heap_buffer_copies_{0};
     std::atomic<uint64_t> heap_buffer_bytes_{0};
+    std::atomic<uint64_t> packet_uniform_copies_{0};
+    std::atomic<uint64_t> packet_uniform_bytes_{0};
+    std::atomic<uint64_t> fallback_uniform_copies_{0};
+    std::atomic<uint64_t> fallback_uniform_bytes_{0};
     uint64_t queue_highwater_ = 0;
     uint64_t packet_highwater_ = 0;
     std::atomic<uint64_t> swaps_submitted_{0};
@@ -518,6 +538,8 @@ void wait(uint64_t sequence) { state().waitFor(sequence); }
 void flush_pending() { state().flushPending(); }
 void record_buffer_copy(bool packet_inline, size_t bytes) { state().recordBufferCopy(packet_inline, bytes); }
 bool buffer_inline_copy_active() { return mg_pz_zbetterfps_fastpath_active; }
+void record_large_uniform_copy(bool packet_owned, size_t bytes) { state().recordLargeUniformCopy(packet_owned, bytes); }
+bool large_uniform_packet_copy_active() { return mg_pz_large_uniform_async_active; }
 
 bool adopt_context(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context,
                    egl_bind_api_fn bind_api, egl_make_current_fn make_current, egl_release_thread_fn release_thread) {

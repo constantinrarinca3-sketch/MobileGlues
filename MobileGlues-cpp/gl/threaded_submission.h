@@ -45,6 +45,8 @@ void flush_pending() __attribute__((weak));
 bool draw_async_safe(bool indexed, bool indirect) __attribute__((weak));
 void record_buffer_copy(bool packet_inline, size_t bytes) __attribute__((weak));
 bool buffer_inline_copy_active() __attribute__((weak));
+void record_large_uniform_copy(bool packet_owned, size_t bytes) __attribute__((weak));
+bool large_uniform_packet_copy_active() __attribute__((weak));
 
 using egl_bind_api_fn = EGLBoolean (*)(EGLenum);
 using egl_make_current_fn = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
@@ -189,6 +191,10 @@ inline unsigned uniformElementsForName(const char* name) {
     return uniform[0] >= '1' && uniform[0] <= '4' ? static_cast<unsigned>(uniform[0] - '0') : 0;
 }
 
+inline size_t alignPayload(size_t value, size_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
 template <typename Fn, typename T> struct uniform_vector_command {
     Fn function;
     GLint location;
@@ -269,12 +275,110 @@ template <typename Fn> struct program_uniform_matrix_command {
     }
 };
 
+template <typename Fn, typename T> struct packet_uniform_vector_command {
+    Fn function;
+    GLint location;
+    GLsizei count;
+    const T* values;
+
+    packet_uniform_vector_command(Fn fn, GLint loc, GLsizei n, const T* owned_values)
+        : function(fn), location(loc), count(n), values(owned_values) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<packet_uniform_vector_command*>(storage);
+        command->function(command->location, command->count, command->values);
+    }
+    static void destroy(void* storage) {
+        static_cast<packet_uniform_vector_command*>(storage)->~packet_uniform_vector_command();
+    }
+};
+
+template <typename Fn> struct packet_uniform_matrix_command {
+    Fn function;
+    GLint location;
+    GLsizei count;
+    GLboolean transpose;
+    const GLfloat* values;
+
+    packet_uniform_matrix_command(Fn fn, GLint loc, GLsizei n, GLboolean trans, const GLfloat* owned_values)
+        : function(fn), location(loc), count(n), transpose(trans), values(owned_values) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<packet_uniform_matrix_command*>(storage);
+        command->function(command->location, command->count, command->transpose, command->values);
+    }
+    static void destroy(void* storage) {
+        static_cast<packet_uniform_matrix_command*>(storage)->~packet_uniform_matrix_command();
+    }
+};
+
+template <typename Fn, typename T> struct packet_program_uniform_vector_command {
+    Fn function;
+    GLuint program;
+    GLint location;
+    GLsizei count;
+    const T* values;
+
+    packet_program_uniform_vector_command(Fn fn, GLuint prog, GLint loc, GLsizei n, const T* owned_values)
+        : function(fn), program(prog), location(loc), count(n), values(owned_values) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<packet_program_uniform_vector_command*>(storage);
+        command->function(command->program, command->location, command->count, command->values);
+    }
+    static void destroy(void* storage) {
+        static_cast<packet_program_uniform_vector_command*>(storage)->~packet_program_uniform_vector_command();
+    }
+};
+
+template <typename Fn> struct packet_program_uniform_matrix_command {
+    Fn function;
+    GLuint program;
+    GLint location;
+    GLsizei count;
+    GLboolean transpose;
+    const GLfloat* values;
+
+    packet_program_uniform_matrix_command(Fn fn, GLuint prog, GLint loc, GLsizei n, GLboolean trans,
+                                          const GLfloat* owned_values)
+        : function(fn), program(prog), location(loc), count(n), transpose(trans), values(owned_values) {}
+    static void execute(void* storage) {
+        auto* command = static_cast<packet_program_uniform_matrix_command*>(storage);
+        command->function(command->program, command->location, command->count, command->transpose, command->values);
+    }
+    static void destroy(void* storage) {
+        static_cast<packet_program_uniform_matrix_command*>(storage)->~packet_program_uniform_matrix_command();
+    }
+};
+
 inline bool validCopySize(GLsizei count, unsigned elements, size_t element_size, size_t* bytes) {
     if (count <= 0 || elements == 0) return false;
     const size_t n = static_cast<size_t>(count);
-    if (n > std::numeric_limits<size_t>::max() / elements || n * elements > kInlineCopyBytes / element_size)
+    if (n > std::numeric_limits<size_t>::max() / elements) return false;
+    const size_t scalar_count = n * elements;
+    if (scalar_count > std::numeric_limits<size_t>::max() / element_size) return false;
+    *bytes = scalar_count * element_size;
+    return true;
+}
+
+inline bool largeUniformPacketCopyEnabled() {
+    return large_uniform_packet_copy_active != nullptr && large_uniform_packet_copy_active();
+}
+
+template <typename Command, typename T, typename... Args>
+bool enqueuePacketUniformCopy(size_t bytes, const T* source, Args&&... args) {
+    const size_t data_offset = alignPayload(sizeof(Command), alignof(std::max_align_t));
+    if (data_offset > kPacketPayloadBytes || bytes > kPacketPayloadBytes - data_offset) {
+        if (record_large_uniform_copy != nullptr) record_large_uniform_copy(false, bytes);
         return false;
-    *bytes = n * elements * element_size;
+    }
+    const reservation slot = reserve(&Command::execute, &Command::destroy, data_offset + bytes, alignof(Command));
+    if (slot.storage == nullptr) {
+        if (record_large_uniform_copy != nullptr) record_large_uniform_copy(false, bytes);
+        return false;
+    }
+    auto* copy = reinterpret_cast<T*>(static_cast<unsigned char*>(slot.storage) + data_offset);
+    std::memcpy(copy, source, bytes);
+    new (slot.storage) Command(std::forward<Args>(args)..., copy);
+    publish(slot.sequence);
+    if (record_large_uniform_copy != nullptr) record_large_uniform_copy(true, bytes);
     return true;
 }
 
@@ -283,8 +387,13 @@ bool tryUniformCopy(void (*function)(GLint, GLsizei, const T*), unsigned element
                     const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
-    using command = uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, location, count, value, bytes) != 0;
+    if (bytes <= kInlineCopyBytes) {
+        using command = uniform_vector_command<decltype(function), T>;
+        return enqueue<command>(function, location, count, value, bytes) != 0;
+    }
+    if (!largeUniformPacketCopyEnabled()) return false;
+    using command = packet_uniform_vector_command<decltype(function), T>;
+    return enqueuePacketUniformCopy<command>(bytes, value, function, location, count);
 }
 
 inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
@@ -292,8 +401,13 @@ inline bool tryUniformCopy(void (*function)(GLint, GLsizei, GLboolean, const GLf
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
-    using command = uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, location, count, transpose, value, bytes) != 0;
+    if (bytes <= kInlineCopyBytes) {
+        using command = uniform_matrix_command<decltype(function)>;
+        return enqueue<command>(function, location, count, transpose, value, bytes) != 0;
+    }
+    if (!largeUniformPacketCopyEnabled()) return false;
+    using command = packet_uniform_matrix_command<decltype(function)>;
+    return enqueuePacketUniformCopy<command>(bytes, value, function, location, count, transpose);
 }
 
 template <typename T>
@@ -301,8 +415,13 @@ bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, const T*), unsigned
                     GLint location, GLsizei count, const T* value) {
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(T), &bytes)) return false;
-    using command = program_uniform_vector_command<decltype(function), T>;
-    return enqueue<command>(function, program, location, count, value, bytes) != 0;
+    if (bytes <= kInlineCopyBytes) {
+        using command = program_uniform_vector_command<decltype(function), T>;
+        return enqueue<command>(function, program, location, count, value, bytes) != 0;
+    }
+    if (!largeUniformPacketCopyEnabled()) return false;
+    using command = packet_program_uniform_vector_command<decltype(function), T>;
+    return enqueuePacketUniformCopy<command>(bytes, value, function, program, location, count);
 }
 
 inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, const GLfloat*), unsigned elements,
@@ -310,8 +429,13 @@ inline bool tryUniformCopy(void (*function)(GLuint, GLint, GLsizei, GLboolean, c
     size_t bytes = 0;
     if (!availableAndActive() || value == nullptr || !validCopySize(count, elements, sizeof(GLfloat), &bytes))
         return false;
-    using command = program_uniform_matrix_command<decltype(function)>;
-    return enqueue<command>(function, program, location, count, transpose, value, bytes) != 0;
+    if (bytes <= kInlineCopyBytes) {
+        using command = program_uniform_matrix_command<decltype(function)>;
+        return enqueue<command>(function, program, location, count, transpose, value, bytes) != 0;
+    }
+    if (!largeUniformPacketCopyEnabled()) return false;
+    using command = packet_program_uniform_matrix_command<decltype(function)>;
+    return enqueuePacketUniformCopy<command>(bytes, value, function, program, location, count, transpose);
 }
 
 template <typename Fn, typename... Args> bool tryUniformCopy(Fn, unsigned, Args...) { return false; }
@@ -368,10 +492,6 @@ template <typename Fn> struct inline_buffer_sub_data_command {
         static_cast<inline_buffer_sub_data_command*>(storage)->~inline_buffer_sub_data_command();
     }
 };
-
-inline size_t alignPayload(size_t value, size_t alignment) {
-    return (value + alignment - 1) & ~(alignment - 1);
-}
 
 template <typename Command, typename... Args>
 bool enqueueInlineBufferCopy(size_t bytes, const void* source, Args&&... args) {

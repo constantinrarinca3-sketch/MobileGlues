@@ -215,6 +215,19 @@ MOBILEGLUES_PZ_THREADED_SUBMISSION=1  # worker owns the EGL context and submits 
 MOBILEGLUES_PZ_THREADED_SUBMISSION=0  # direct submission override
 ```
 
+Large uniform arrays can opt into packet-owned asynchronous submission:
+
+```text
+MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC=1  # copy payloads larger than 192 B into the SPSC packet
+MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC=0  # synchronous fallback (default)
+```
+
+This experiment targets model/bone matrix palettes. Payloads that fit in the fixed 8192-byte
+packet storage are copied before returning to the caller and require no heap allocation. Larger
+payloads retain the synchronous lifetime-safe path. It has no effect unless threaded submission is
+also enabled. With Census enabled, `uniform_large=packet_calls/packet_bytes/fallback_calls/fallback_bytes`
+reports whether the route is active enough to matter.
+
 The application thread retains MobileGlues state translation and records ordered backend commands
 into compact packets in a fixed SPSC queue. Each packet carries up to 32 calls and is published,
 woken and completed as one queue unit; synchronous calls and presentation flush a partial packet.
