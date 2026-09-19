@@ -363,6 +363,9 @@ static UnorderedMap<unsigned, GLuint> DefaultFSMap; // essl version <-> shader i
 void glLinkProgram(GLuint program) {
     LOG()
     MG_PZ_UNIFORM_STATE(mg_pz_census_forget_program(program));
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_uniform_location_cache_forget_program(program);
+#endif
 
     LOG_D("glLinkProgram(%d)", program)
     if (!shaderInfo.converted.empty() && shaderInfo.frag_data_changed) {
@@ -534,6 +537,9 @@ GLuint glCreateProgram() {
     LOG()
     LOG_D("glCreateProgram")
     GLuint program = GLES.glCreateProgram();
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_uniform_location_cache_forget_program(program);
+#endif
     program_map_uniform_defaults.erase(program);
 #if defined(ZOMDROID_EXPERIMENTAL)
     program_map_pz_alpha_shaders.erase(program);

@@ -10,6 +10,9 @@
 #include "glcorearb.h"
 #include "log.h"
 #include "program.h"
+#if defined(ZOMDROID_EXPERIMENTAL)
+#include "pz_uniform_location_cache.h"
+#endif
 #include "shader.h"
 #include "server_attrib.h"
 #include "texture.h"
@@ -72,6 +75,9 @@ struct requested_color_mask_t {
     GLboolean value[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
 };
 thread_local requested_color_mask_t g_requested_color_mask;
+thread_local mg_pz_uniform_location_cache g_uniform_location_cache;
+
+unsigned long long uniform_location_context_id() { return g_current_ctx ? g_current_ctx->id : 0; }
 
 requested_color_mask_t& requested_color_mask() {
     const unsigned long long context = g_current_ctx ? g_current_ctx->id : 0;
@@ -324,6 +330,13 @@ void census_attrib_scalars(GLuint index, uint32_t signature, T first, Rest... re
 } // namespace
 
 #if defined(ZOMDROID_EXPERIMENTAL)
+void mg_pz_uniform_location_cache_forget_program(GLuint program) {
+    if (!mg_pz_uniform_location_cache_active) return;
+    g_uniform_location_cache.forget_program(program);
+}
+#endif
+
+#if defined(ZOMDROID_EXPERIMENTAL)
 bool mg_pz_push_color_mask_suppression() {
     requested_color_mask_t& requested = requested_color_mask();
     if (requested.value[0] == GL_FALSE && requested.value[1] == GL_FALSE &&
@@ -491,6 +504,9 @@ NATIVE_FUNCTION_END_NO_RETURN(void, glCullFace, mode)
 // NATIVE_FUNCTION_HEAD(void, glDeleteFramebuffers, GLsizei n, const GLuint *framebuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteFramebuffers, n,framebuffers)   // implemented in gl/framebuffer.cpp
 NATIVE_FUNCTION_HEAD(void, glDeleteProgram, GLuint program)
     MG_PZ_UNIFORM_STATE(mg_pz_census_forget_program(program));
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_uniform_location_cache_forget_program(program);
+#endif
     mg_program_deleted(program);
 NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteProgram, program)
 NATIVE_FUNCTION_HEAD(void, glDeleteRenderbuffers, GLsizei n, const GLuint *renderbuffers) NATIVE_FUNCTION_END_NO_RETURN(void, glDeleteRenderbuffers, n,renderbuffers)
@@ -552,8 +568,23 @@ NATIVE_FUNCTION_HEAD(void, glGetTexParameteriv, GLenum target, GLenum pname, GLi
 NATIVE_FUNCTION_HEAD(void, glGetUniformfv, GLuint program, GLint location, GLfloat *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformfv, program,location,params)
 NATIVE_FUNCTION_HEAD(void, glGetUniformiv, GLuint program, GLint location, GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glGetUniformiv, program,location,params)
 NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar* name)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    GLint cached_location = -1;
+    if (mg_pz_uniform_location_cache_active &&
+        g_uniform_location_cache.lookup(uniform_location_context_id(), program, name, &cached_location)) {
+        MG_PZ_CENSUS(mg_pz_census_uniform_location(true, 0, false));
+        CHECK_GL_ERROR
+        return cached_location;
+    }
+#endif
     const GLint original_location = GLES.glGetUniformLocation(program, name);
     if (original_location >= 0 || !name) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+        const bool stored = mg_pz_uniform_location_cache_active &&
+                            g_uniform_location_cache.store(uniform_location_context_id(), program, name,
+                                                           original_location);
+        MG_PZ_CENSUS(mg_pz_census_uniform_location(false, 1, stored));
+#endif
         CHECK_GL_ERROR
         return original_location;
     }
@@ -561,11 +592,19 @@ NATIVE_FUNCTION_HEAD(GLint, glGetUniformLocation, GLuint program, const GLchar* 
     std::string remapped_name;
     const GLchar* driver_name = mg_glsl_compat::remap_texture_sampler_uniform_name(name, remapped_name);
     if (driver_name == name) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+        MG_PZ_CENSUS(mg_pz_census_uniform_location(false, 1, false));
+#endif
         CHECK_GL_ERROR
         return original_location;
     }
 
     const GLint location = GLES.glGetUniformLocation(program, driver_name);
+#if defined(ZOMDROID_EXPERIMENTAL)
+    const bool stored = mg_pz_uniform_location_cache_active &&
+                        g_uniform_location_cache.store(uniform_location_context_id(), program, name, location);
+    MG_PZ_CENSUS(mg_pz_census_uniform_location(false, 2, stored));
+#endif
 #if defined(ZOMDROID_GL_BREADCRUMBS)
     ZOMDROID_DIAGNOSTIC_LOG("ZOMDROID_UNIFORM_ALIAS program=%u requested=%s driver=%s location=%d", program, name, driver_name,
               location);
@@ -753,7 +792,11 @@ NATIVE_FUNCTION_HEAD(GLboolean, glIsTransformFeedback, GLuint id) NATIVE_FUNCTIO
 NATIVE_FUNCTION_HEAD(void, glPauseTransformFeedback) NATIVE_FUNCTION_END_NO_RETURN(void, glPauseTransformFeedback)
 NATIVE_FUNCTION_HEAD(void, glResumeTransformFeedback) NATIVE_FUNCTION_END_NO_RETURN(void, glResumeTransformFeedback)
 NATIVE_FUNCTION_HEAD(void, glGetProgramBinary, GLuint program, GLsizei bufSize, GLsizei *length, GLenum *binaryFormat, void *binary) NATIVE_FUNCTION_END_NO_RETURN(void, glGetProgramBinary, program,bufSize,length,binaryFormat,binary)
-NATIVE_FUNCTION_HEAD(void, glProgramBinary, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramBinary, program,binaryFormat,binary,length)
+NATIVE_FUNCTION_HEAD(void, glProgramBinary, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length)
+#if defined(ZOMDROID_EXPERIMENTAL)
+    mg_pz_uniform_location_cache_forget_program(program);
+#endif
+NATIVE_FUNCTION_END_NO_RETURN(void, glProgramBinary, program,binaryFormat,binary,length)
 NATIVE_FUNCTION_HEAD(void, glProgramParameteri, GLuint program, GLenum pname, GLint value) NATIVE_FUNCTION_END_NO_RETURN(void, glProgramParameteri, program,pname,value)
 NATIVE_FUNCTION_HEAD(void, glInvalidateFramebuffer, GLenum target, GLsizei numAttachments, const GLenum *attachments) NATIVE_FUNCTION_END_NO_RETURN(void, glInvalidateFramebuffer, target,numAttachments,attachments)
 NATIVE_FUNCTION_HEAD(void, glInvalidateSubFramebuffer, GLenum target, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height) NATIVE_FUNCTION_END_NO_RETURN(void, glInvalidateSubFramebuffer, target,numAttachments,attachments,x,y,width,height)

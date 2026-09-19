@@ -18,6 +18,7 @@ $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sect
     -o /tmp/mg_server_attrib_test tests/server_attrib_test.cpp gl/server_attrib.cpp gl/enable.cpp gl/pz_census.cpp
 $CXX -o /tmp/mg_quad_test   tests/quad_indices_test.cpp
 $CXX -o /tmp/mg_shader_compat_test tests/shader_compat_test.cpp
+$CXX -o /tmp/mg_uniform_location_cache_test tests/pz_uniform_location_cache_test.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -DZOMDROID_GL_BREADCRUMBS=1 \
     -o /tmp/mg_pz_census_test tests/pz_census_test.cpp gl/pz_census.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -41,6 +42,8 @@ echo
 /tmp/mg_quad_test
 echo
 /tmp/mg_shader_compat_test
+echo
+/tmp/mg_uniform_location_cache_test
 echo
 /tmp/mg_pz_census_test
 echo

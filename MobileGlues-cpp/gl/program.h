@@ -24,6 +24,7 @@ extern "C"
     void mg_shader_detached(GLuint program, GLuint shader);
     void mg_program_deleted(GLuint program);
 #if defined(ZOMDROID_EXPERIMENTAL)
+    void mg_pz_uniform_location_cache_forget_program(GLuint program);
     void mg_prepare_pz_alpha_test(GLuint program);
     void mg_pz_note_draw_pixels(GLuint program, GLint location, GLint value);
     bool mg_pz_begin_draw_pixels(GLuint program);
