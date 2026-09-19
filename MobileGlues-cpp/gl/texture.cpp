@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -401,8 +402,15 @@ void InitTextureMap(size_t expectedSize) {
 }
 
 TextureObject* GetOrCreateTextureObject(GLuint index) {
+    // PZ uses -1 in signed Java texture fields as the "no texture" sentinel.
+    // JNI exposes it here as UINT_MAX. Never let that sentinel wrap index + 100
+    // and become an out-of-bounds access into the dense texture table.
+    if (index == std::numeric_limits<GLuint>::max()) return nullptr;
+
     if (index >= BufferObjectsVec.size()) {
-        BufferObjectsVec.resize(index + 100, nullptr);
+        const size_t requested = static_cast<size_t>(index) + 100u;
+        if (requested > BufferObjectsVec.max_size()) return nullptr;
+        BufferObjectsVec.resize(requested, nullptr);
     }
 
     auto& obj = BufferObjectsVec[index];
@@ -1961,6 +1969,21 @@ void glBindTexture(GLenum target, GLuint texture) {
     LOG()
     LOG_D("glBindTexture(%s, %d)", glEnumToString(target), texture)
     INIT_CHECK_GL_ERROR
+
+    // A TextureDraw with Java's -1 sentinel can reach this entrypoint during
+    // chunk replay after its Texture object has lost the backend name. In PZ
+    // that value means "no texture", so normalize it to name 0 and update both
+    // the driver and MobileGlues shadows through the ordinary path.
+    // Previously GetOrCreateTextureObject(UINT_MAX) wrapped its growth size and
+    // then indexed vector[UINT_MAX], producing the observed SIGSEGV here.
+    if (texture == std::numeric_limits<GLuint>::max()) {
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true, std::memory_order_relaxed)) {
+            LOG_W_FORCE("glBindTexture: normalized Java no-texture sentinel 0xFFFFFFFF to texture 0")
+        }
+        glBindTexture(target, 0);
+        return;
+    }
 
     int currentUnitIndex = GetCurrentTextureUnitIndex();
     auto& currentUnit = GetTextureUnit(currentUnitIndex);
