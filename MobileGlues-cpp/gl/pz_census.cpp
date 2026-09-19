@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <array>
+#include <limits>
 #include <unordered_map>
 
 bool mg_pz_census_active = false;
@@ -83,6 +84,10 @@ struct counters_t {
     count_t uniform_tracked = 0;
     count_t uniform_exact = 0;
     count_t uniform_skipped = 0;
+    count_t uniform_epoch_invalidations = 0;
+    count_t uniform_epoch_scans_avoided = 0;
+    count_t uniform_epoch_entries_invalidated = 0;
+    count_t uniform_epoch_stale_refreshes = 0;
     count_t vertex_attrib_calls = 0;
     count_t attrib_tracked = 0;
     count_t attrib_exact = 0;
@@ -151,6 +156,10 @@ counters_t& operator+=(counters_t& out, const counters_t& in) {
     MG_ADD_FIELD(uniform_tracked);
     MG_ADD_FIELD(uniform_exact);
     MG_ADD_FIELD(uniform_skipped);
+    MG_ADD_FIELD(uniform_epoch_invalidations);
+    MG_ADD_FIELD(uniform_epoch_scans_avoided);
+    MG_ADD_FIELD(uniform_epoch_entries_invalidated);
+    MG_ADD_FIELD(uniform_epoch_stale_refreshes);
     MG_ADD_FIELD(vertex_attrib_calls);
     MG_ADD_FIELD(attrib_tracked);
     MG_ADD_FIELD(attrib_exact);
@@ -213,14 +222,44 @@ struct census_state_t {
 thread_local census_state_t g_census;
 
 struct uniform_value_t {
+    uint64_t epoch = 0;
     uint32_t signature = 0;
     uint16_t bytes = 0;
     std::array<unsigned char, 128> value{};
 };
 
-thread_local std::unordered_map<uint64_t, uniform_value_t> g_uniform_values;
+struct uniform_program_t {
+    uint64_t epoch = 1;
+    count_t active_values = 0;
+    std::unordered_map<GLint, uniform_value_t> values;
+};
+
+thread_local std::unordered_map<GLuint, uniform_program_t> g_uniform_programs;
+thread_local count_t g_uniform_active_values = 0;
 thread_local std::unordered_map<GLuint, uniform_value_t> g_attrib_values;
 thread_local unsigned long long g_uniform_context = 0;
+
+void uniform_invalidate_program(GLuint program) {
+    if (mg_pz_census_active) {
+        ++g_census.frame.uniform_epoch_invalidations;
+        g_census.frame.uniform_epoch_scans_avoided += g_uniform_active_values;
+    }
+
+    const auto found = g_uniform_programs.find(program);
+    if (found == g_uniform_programs.end()) return;
+
+    uniform_program_t& state = found->second;
+    if (mg_pz_census_active) g_census.frame.uniform_epoch_entries_invalidated += state.active_values;
+    g_uniform_active_values -= state.active_values;
+    state.active_values = 0;
+
+    if (state.epoch == std::numeric_limits<uint64_t>::max()) {
+        state.values.clear();
+        state.epoch = 1;
+    } else {
+        ++state.epoch;
+    }
+}
 
 enum class batch_break_t : uint8_t {
     state,
@@ -313,11 +352,11 @@ void report(const census_state_t& state) {
     const double worst_ms = static_cast<double>(state.worst_ns) / 1000000.0;
     const counters_t& c = state.window;
     const counters_t& w = state.worst_frame;
-    LOG_I("ZOMDROID_PZ_CENSUS schema=5 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
+    LOG_I("ZOMDROID_PZ_CENSUS schema=6 frames=%u avg_ms=%.3f max_ms=%.3f over20=%u over33=%u over50=%u "
           "over100=%u swap_fail=%u draw_a=%llu draw_e=%llu multidraw=%llu commands=%llu items=%llu "
           "mode_tri=%llu mode_quad=%llu mode_other=%llu program=%llu/%llu texture=%llu/%llu "
           "active_tex=%llu/%llu buffer_bind=%llu/%llu vao=%llu/%llu/%llu/%llu fbo=%llu/%llu enable=%llu/%llu "
-          "uniform=%llu/%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
+          "uniform=%llu/%llu/%llu/%llu uniform_epoch=%llu/%llu/%llu/%llu attrib=%llu/%llu/%llu/%llu "
           "attrib_enable=%llu/%llu/%llu attrib_pointer=%llu/%llu attrib_divisor=%llu/%llu "
           "attrib_format=%llu/%llu attrib_binding=%llu/%llu attrib_vbuffer=%llu/%llu attrib_constant=%llu/%llu "
           "state=%llu query=%llu sync=%llu upload=%llu+%llu/%lluB map=%llu/%lluB "
@@ -332,7 +371,10 @@ void report(const census_state_t& state) {
           c.active_texture_redundant, c.bind_buffer, c.bind_buffer_same, c.bind_vao, c.bind_vao_same,
           c.bind_vao_driver_confirmed, c.bind_vao_skipped,
           c.bind_framebuffer, c.bind_framebuffer_same, c.enable_disable, c.enable_disable_redundant,
-          c.uniform_calls, c.uniform_tracked, c.uniform_exact, c.uniform_skipped, c.vertex_attrib_calls,
+          c.uniform_calls, c.uniform_tracked, c.uniform_exact, c.uniform_skipped,
+          c.uniform_epoch_invalidations, c.uniform_epoch_scans_avoided, c.uniform_epoch_entries_invalidated,
+          c.uniform_epoch_stale_refreshes,
+          c.vertex_attrib_calls,
           c.attrib_tracked, c.attrib_exact, c.attrib_skipped, c.attrib_kind_calls[0], c.attrib_kind_exact[0],
           c.attrib_kind_skipped[0],
           c.attrib_kind_calls[1], c.attrib_kind_exact[1],
@@ -372,15 +414,18 @@ void mg_pz_census_init(void) {
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     mg_pz_texture_memory_mode = clamped_int_switch("MOBILEGLUES_PZ_TEXTURE_MEMORY", 0, 2);
     g_census = {};
-    g_uniform_values.clear();
+    g_uniform_programs.clear();
+    g_uniform_active_values = 0;
     g_attrib_values.clear();
     g_uniform_context = 0;
     g_batch = {};
     if (mg_pz_census_active) {
-        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=5 interval_frames=%u", kReportFrames)
+        LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=6 interval_frames=%u", kReportFrames)
         if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
         if (mg_pz_attrib_fastpath_active) LOG_I("ZOMDROID_PZ_ATTRIB_FASTPATH enabled=1")
         if (mg_pz_uniform_fastpath_active) LOG_I("ZOMDROID_PZ_UNIFORM_FASTPATH enabled=1")
+        if (mg_pz_uniform_fastpath_active)
+            LOG_I("ZOMDROID_PZ_UNIFORM_EPOCH enabled=1 mode=per_program_generation")
         if (mg_pz_buffer_streaming_active)
             LOG_I("ZOMDROID_PZ_BUFFER_STREAMING enabled=1 mode=cpu_staging+auto_persistent")
         if (mg_pz_buffer_discard_coalesce_active)
@@ -544,21 +589,29 @@ bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsi
         batch_resolve_pending(batch_pending_t::uniform, false);
         return false;
     }
-    const uint64_t key = (static_cast<uint64_t>(program) << 32U) | static_cast<uint32_t>(location);
     if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
         batch_resolve_pending(batch_pending_t::uniform, false);
-        mg_pz_census_forget_program(program);
+        uniform_invalidate_program(program);
         return false;
     }
-    const auto found = g_uniform_values.find(key);
-    const bool exact = found != g_uniform_values.end() && found->second.signature == signature &&
+    uniform_program_t& program_state = g_uniform_programs[program];
+    const auto found = program_state.values.find(location);
+    const bool exact = found != program_state.values.end() && found->second.epoch == program_state.epoch &&
+                       found->second.signature == signature &&
                        found->second.bytes == bytes && std::memcmp(found->second.value.data(), value, bytes) == 0;
     if (mg_pz_census_active) {
         ++g_census.frame.uniform_tracked;
         if (exact) ++g_census.frame.uniform_exact;
     }
     batch_resolve_pending(batch_pending_t::uniform, exact);
-    uniform_value_t& stored = g_uniform_values[key];
+    auto [stored_it, inserted] = program_state.values.try_emplace(location);
+    uniform_value_t& stored = stored_it->second;
+    if (stored.epoch != program_state.epoch) {
+        if (!inserted && mg_pz_census_active) ++g_census.frame.uniform_epoch_stale_refreshes;
+        stored.epoch = program_state.epoch;
+        ++program_state.active_values;
+        ++g_uniform_active_values;
+    }
     stored.signature = signature;
     stored.bytes = static_cast<uint16_t>(bytes);
     std::memcpy(stored.value.data(), value, bytes);
@@ -572,15 +625,23 @@ void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signatu
     if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || program == 0 || location < 0) return;
     if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
         batch_break(batch_break_t::uniform);
-        mg_pz_census_forget_program(program);
+        uniform_invalidate_program(program);
         return;
     }
-    const uint64_t key = (static_cast<uint64_t>(program) << 32U) | static_cast<uint32_t>(location);
-    const auto found = g_uniform_values.find(key);
-    const bool exact = found != g_uniform_values.end() && found->second.signature == signature &&
+    uniform_program_t& program_state = g_uniform_programs[program];
+    const auto found = program_state.values.find(location);
+    const bool exact = found != program_state.values.end() && found->second.epoch == program_state.epoch &&
+                       found->second.signature == signature &&
                        found->second.bytes == bytes && std::memcmp(found->second.value.data(), value, bytes) == 0;
     if (!exact) batch_break(batch_break_t::uniform);
-    uniform_value_t& stored = g_uniform_values[key];
+    auto [stored_it, inserted] = program_state.values.try_emplace(location);
+    uniform_value_t& stored = stored_it->second;
+    if (stored.epoch != program_state.epoch) {
+        if (!inserted && mg_pz_census_active) ++g_census.frame.uniform_epoch_stale_refreshes;
+        stored.epoch = program_state.epoch;
+        ++program_state.active_values;
+        ++g_uniform_active_values;
+    }
     stored.signature = signature;
     stored.bytes = static_cast<uint16_t>(bytes);
     std::memcpy(stored.value.data(), value, bytes);
@@ -589,18 +650,17 @@ void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signatu
 void mg_pz_census_forget_program(GLuint program) {
     if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return;
     batch_break(batch_break_t::uniform);
-    for (auto it = g_uniform_values.begin(); it != g_uniform_values.end();) {
-        if (static_cast<GLuint>(it->first >> 32U) == program)
-            it = g_uniform_values.erase(it);
-        else
-            ++it;
-    }
+    const auto found = g_uniform_programs.find(program);
+    if (found == g_uniform_programs.end()) return;
+    g_uniform_active_values -= found->second.active_values;
+    g_uniform_programs.erase(found);
 }
 
 void mg_pz_census_context_changed(unsigned long long context_id) {
     if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || context_id == g_uniform_context) return;
     g_uniform_context = context_id;
-    g_uniform_values.clear();
+    g_uniform_programs.clear();
+    g_uniform_active_values = 0;
     g_attrib_values.clear();
     batch_reset_sequence();
 }

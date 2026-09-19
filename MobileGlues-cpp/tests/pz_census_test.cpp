@@ -155,6 +155,22 @@ int main() {
     expect(mg_pz_etc2_active && mg_pz_etc2_cache_active, "1 must enable ETC2 and its cache");
 
     const GLfloat uniform_value[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const GLfloat uniform_array[8] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+
+    // An array write must invalidate only its program. The following scalar
+    // write must reach the driver once, while another program stays cached.
+    mg_pz_uniform_driver_write(41, 1, 0x304U, 1, uniform_value, sizeof(uniform_value));
+    mg_pz_uniform_driver_write(42, 1, 0x304U, 1, uniform_value, sizeof(uniform_value));
+    mg_pz_uniform_driver_write(41, 1, 0x304U, 2, uniform_array, sizeof(uniform_array));
+    expect(!mg_pz_uniform_call(41, 1, 0x304U, 1, uniform_value, sizeof(uniform_value)),
+           "an array write must invalidate prior scalar values for its program");
+    expect(mg_pz_uniform_call(41, 1, 0x304U, 1, uniform_value, sizeof(uniform_value)),
+           "a refreshed scalar value must become cacheable again");
+    expect(mg_pz_uniform_call(42, 1, 0x304U, 1, uniform_value, sizeof(uniform_value)),
+           "array invalidation must not disturb another program");
+    mg_pz_census_forget_program(41);
+    expect(!mg_pz_uniform_call(41, 1, 0x304U, 1, uniform_value, sizeof(uniform_value)),
+           "forgetting a program must erase its cached values");
 
     for (int frame = 0; frame < 300; ++frame) {
         mg_pz_census_draw(false, GL_TRIANGLES, 6, 1);
@@ -179,11 +195,13 @@ int main() {
     expect(last_file_log.find("draw_a=300") != std::string::npos, "array draws must be aggregated");
     expect(last_file_log.find("items=1800") != std::string::npos, "draw item count must be aggregated");
     expect(last_file_log.find("program=300/100") != std::string::npos, "redundant program calls must be split");
-    expect(last_file_log.find("schema=5") != std::string::npos, "schema 5 must be reported");
+    expect(last_file_log.find("schema=6") != std::string::npos, "schema 6 must be reported");
     expect(last_file_log.find("vao=300/300/300/300") != std::string::npos,
            "VAO frontend, confirmed and skipped counts must be split");
-    expect(last_file_log.find("uniform=300/300/299/299") != std::string::npos,
+    expect(last_file_log.find("uniform=300/304/301/301") != std::string::npos,
            "uniform tracked, exact and skipped counts must be split");
+    expect(last_file_log.find("uniform_epoch=1/2/1/1") != std::string::npos,
+           "uniform-array epoch invalidations and avoided cache churn must be reported");
     expect(last_file_log.find("attrib=300/300/299/299") != std::string::npos,
            "attribute tracked, exact and skipped counts must be split");
     expect(last_file_log.find("upload=300+0/38400B") != std::string::npos, "buffer bytes must be aggregated");
