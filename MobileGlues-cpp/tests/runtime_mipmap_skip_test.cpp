@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdio>
+#include <limits>
 
 bool mg_pz_census_active = false;
 bool mg_pz_vao_fastpath_active = false;
@@ -54,6 +55,9 @@ static void expect(bool condition, const char* message) {
 int main() {
     GLES.glActiveTexture = fake_active_texture;
     GLES.glBindTexture = fake_bind_texture;
+
+    expect(GetOrCreateTextureObject(std::numeric_limits<GLuint>::max()) == nullptr,
+           "the Java no-texture sentinel must never index the texture object table");
 
     TextureObject texture{};
     texture.texture = 7;
