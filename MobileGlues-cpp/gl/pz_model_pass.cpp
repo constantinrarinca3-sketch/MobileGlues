@@ -20,8 +20,8 @@ struct pass_counts {
 
 struct marker_state {
     mg_pz_model_pass current = mg_pz_model_pass::none;
-    pass_counts frame[2]{};
-    pass_counts window[2]{};
+    pass_counts frame[3]{};
+    pass_counts window[3]{};
     count_t malformed_frame = 0;
     count_t malformed_window = 0;
     unsigned frames = 0;
@@ -30,7 +30,9 @@ struct marker_state {
 thread_local marker_state g_marker;
 
 size_t pass_index(mg_pz_model_pass pass) {
-    return pass == mg_pz_model_pass::transparent ? 1u : 0u;
+    if (pass == mg_pz_model_pass::transparent) return 1u;
+    if (pass == mg_pz_model_pass::zombie) return 2u;
+    return 0u;
 }
 
 void add(pass_counts& out, const pass_counts& in) {
@@ -73,6 +75,10 @@ bool mg_pz_model_pass_handle_marker(GLenum source, GLenum type, GLuint id) {
         return begin(mg_pz_model_pass::transparent);
     case MG_PZ_MARKER_TRANSPARENT_END:
         return end(mg_pz_model_pass::transparent);
+    case MG_PZ_MARKER_ZOMBIE_BEGIN:
+        return begin(mg_pz_model_pass::zombie);
+    case MG_PZ_MARKER_ZOMBIE_END:
+        return end(mg_pz_model_pass::zombie);
     default:
         return false;
     }
@@ -90,6 +96,10 @@ bool mg_pz_model_pass_handle_uniform_marker(GLint location, GLfloat value) {
         return begin(mg_pz_model_pass::transparent);
     case MG_PZ_MARKER_TRANSPARENT_END:
         return end(mg_pz_model_pass::transparent);
+    case MG_PZ_MARKER_ZOMBIE_BEGIN:
+        return begin(mg_pz_model_pass::zombie);
+    case MG_PZ_MARKER_ZOMBIE_END:
+        return end(mg_pz_model_pass::zombie);
     default:
         return false;
     }
@@ -119,7 +129,7 @@ void mg_pz_model_pass_present() {
         ++g_marker.malformed_frame;
         g_marker.current = mg_pz_model_pass::none;
     }
-    for (size_t i = 0; i < 2; ++i) {
+    for (size_t i = 0; i < 3; ++i) {
         add(g_marker.window[i], g_marker.frame[i]);
         g_marker.frame[i] = {};
     }
@@ -130,15 +140,18 @@ void mg_pz_model_pass_present() {
 
     const pass_counts& opaque = g_marker.window[0];
     const pass_counts& transparent = g_marker.window[1];
-    if (opaque.begins != 0 || transparent.begins != 0 || g_marker.malformed_window != 0) {
+    const pass_counts& zombie = g_marker.window[2];
+    if (opaque.begins != 0 || transparent.begins != 0 || zombie.begins != 0 || g_marker.malformed_window != 0) {
         LOG_I("ZOMDROID_PZ_MODEL_PASS frames=%u opaque=%llu/%llu/%llu/%llu/%llu "
-              "transparent=%llu/%llu/%llu/%llu/%llu malformed=%llu",
+              "transparent=%llu/%llu/%llu/%llu/%llu zombie=%llu/%llu/%llu/%llu/%llu malformed=%llu",
               g_marker.frames, opaque.begins, opaque.ends, opaque.gl_calls, opaque.draws, opaque.items,
               transparent.begins, transparent.ends, transparent.gl_calls, transparent.draws, transparent.items,
+              zombie.begins, zombie.ends, zombie.gl_calls, zombie.draws, zombie.items,
               g_marker.malformed_window)
     }
     g_marker.window[0] = {};
     g_marker.window[1] = {};
+    g_marker.window[2] = {};
     g_marker.malformed_window = 0;
     g_marker.frames = 0;
 }

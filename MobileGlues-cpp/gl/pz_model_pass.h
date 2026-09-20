@@ -9,6 +9,7 @@ enum class mg_pz_model_pass : uint8_t {
     none = 0,
     opaque = 1,
     transparent = 2,
+    zombie = 3,
 };
 
 constexpr GLenum MG_PZ_MARKER_SOURCE_APPLICATION = 0x824A;
@@ -17,6 +18,8 @@ constexpr GLuint MG_PZ_MARKER_OPAQUE_BEGIN = 0x5A420101U;
 constexpr GLuint MG_PZ_MARKER_OPAQUE_END = 0x5A420102U;
 constexpr GLuint MG_PZ_MARKER_TRANSPARENT_BEGIN = 0x5A420103U;
 constexpr GLuint MG_PZ_MARKER_TRANSPARENT_END = 0x5A420104U;
+constexpr GLuint MG_PZ_MARKER_ZOMBIE_BEGIN = 0x5A420105U;
+constexpr GLuint MG_PZ_MARKER_ZOMBIE_END = 0x5A420106U;
 constexpr GLint MG_PZ_MARKER_UNIFORM_LOCATION = -1;
 
 // Returns true only for one of the four reserved ZBetterFPS messages. A true
