@@ -15,11 +15,13 @@ $CXX -ffunction-sections -fdata-sections -Wl,--gc-sections \
 $CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_buffer_streaming_test tests/buffer_streaming_test.cpp gl/buffer.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
-    -o /tmp/mg_server_attrib_test tests/server_attrib_test.cpp gl/server_attrib.cpp gl/enable.cpp gl/pz_census.cpp
+    -o /tmp/mg_server_attrib_test tests/server_attrib_test.cpp gl/server_attrib.cpp gl/enable.cpp gl/pz_census.cpp gl/pz_model_pass.cpp
 $CXX -o /tmp/mg_quad_test   tests/quad_indices_test.cpp
 $CXX -o /tmp/mg_shader_compat_test tests/shader_compat_test.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -DZOMDROID_GL_BREADCRUMBS=1 \
-    -o /tmp/mg_pz_census_test tests/pz_census_test.cpp gl/pz_census.cpp
+    -o /tmp/mg_pz_census_test tests/pz_census_test.cpp gl/pz_census.cpp gl/pz_model_pass.cpp
+$CXX -DZOMDROID_EXPERIMENTAL=1 -DZOMDROID_GL_BREADCRUMBS=1 \
+    -o /tmp/mg_pz_model_pass_test tests/pz_model_pass_test.cpp gl/pz_model_pass.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
     -o /tmp/mg_fixed_state_shadow_test tests/fixed_state_shadow_test.cpp gl/gl_native.cpp
 $CXX -DZOMDROID_EXPERIMENTAL=1 -DMOBILEGLUES_TESTING=1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -43,6 +45,8 @@ echo
 /tmp/mg_shader_compat_test
 echo
 /tmp/mg_pz_census_test
+echo
+/tmp/mg_pz_model_pass_test
 echo
 /tmp/mg_fixed_state_shadow_test
 echo

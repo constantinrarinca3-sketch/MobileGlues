@@ -5,6 +5,7 @@
 #include "pz_census.h"
 
 #include "log.h"
+#include "pz_model_pass.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -419,6 +420,7 @@ void mg_pz_census_init(void) {
     g_attrib_values.clear();
     g_uniform_context = 0;
     g_batch = {};
+    mg_pz_model_pass_reset();
     if (mg_pz_census_active) {
         LOG_I("ZOMDROID_PZ_CENSUS enabled=1 schema=6 interval_frames=%u", kReportFrames)
         if (mg_pz_vao_fastpath_active) LOG_I("ZOMDROID_PZ_VAO_FASTPATH enabled=1")
@@ -452,6 +454,7 @@ void mg_pz_census_init(void) {
 
 void mg_pz_census_gl_call(const char* function) {
     if (!mg_pz_census_active || function == nullptr) return;
+    mg_pz_model_pass_gl_call();
     batch_flush_pending();
     counters_t& c = g_census.frame;
     if (starts_with(function, "glUniform") || starts_with(function, "glProgramUniform")) {
@@ -501,6 +504,7 @@ void mg_pz_census_gl_call(const char* function) {
 
 void mg_pz_census_draw(bool indexed, GLenum mode, GLsizei count, GLsizei instances, bool direct_elements_candidate) {
     if (!mg_pz_census_active) return;
+    mg_pz_model_pass_draw(count, instances);
     batch_flush_pending();
     if (!direct_elements_candidate) batch_break(batch_break_t::draw);
     counters_t& c = g_census.frame;
@@ -741,6 +745,7 @@ void mg_pz_census_texture_upload(bool sub_image, GLenum source_format, bool has_
 
 void mg_pz_census_present(bool succeeded) {
     if (!mg_pz_census_active) return;
+    mg_pz_model_pass_present();
     batch_flush_pending();
     batch_reset_sequence();
     census_state_t& state = g_census;

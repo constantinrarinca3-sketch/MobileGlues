@@ -9,6 +9,7 @@ on:
       - zomdroid-zbetterfps-fastpath-exp
       - zomdroid-texture-memory-saver-exp
       - zomdroid-tiledepth-drawpixels-fix
+      - zomdroid-pz-model-pass-marker-exp
   workflow_dispatch:
 jobs:
   build-ios:

@@ -10,6 +10,7 @@
 #include "glcorearb.h"
 #include "log.h"
 #include "program.h"
+#include "pz_model_pass.h"
 #include "shader.h"
 #include "server_attrib.h"
 #include "texture.h"
@@ -833,7 +834,21 @@ NATIVE_FUNCTION_HEAD(void, glVertexBindingDivisor, GLuint bindingindex, GLuint d
 NATIVE_FUNCTION_HEAD(void, glBlendBarrier) NATIVE_FUNCTION_END_NO_RETURN(void, glBlendBarrier)
 NATIVE_FUNCTION_HEAD(void, glCopyImageSubData, GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) NATIVE_FUNCTION_END_NO_RETURN(void, glCopyImageSubData, srcName,srcTarget,srcLevel,srcX,srcY,srcZ,dstName,dstTarget,dstLevel,dstX,dstY,dstZ,srcWidth,srcHeight,srcDepth)
 NATIVE_FUNCTION_HEAD(void, glDebugMessageControl, GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) NATIVE_FUNCTION_END_NO_RETURN(void, glDebugMessageControl, source,type,severity,count,ids,enabled)
-NATIVE_FUNCTION_HEAD(void, glDebugMessageInsert, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf) NATIVE_FUNCTION_END_NO_RETURN(void, glDebugMessageInsert, source,type,id,severity,length,buf)
+#ifndef __APPLE__
+extern "C" GLAPI GLAPIENTRY void glDebugMessageInsertARB(GLenum source, GLenum type, GLuint id, GLenum severity,
+                                                          GLsizei length, const GLchar* buf)
+    __attribute__((alias("glDebugMessageInsert")));
+#endif
+extern "C" GLAPI GLAPIENTRY void glDebugMessageInsert(GLenum source, GLenum type, GLuint id, GLenum severity,
+                                                       GLsizei length, const GLchar* buf) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Consume only our reserved IDs. This occurs before LOG()/generic threaded
+    // dispatch, so four frame markers cause neither driver work nor queue drains.
+    if (mg_pz_model_pass_handle_marker(source, type, id)) return;
+#endif
+    LOG()
+    GLES.glDebugMessageInsert(source, type, id, severity, length, buf);
+}
 NATIVE_FUNCTION_HEAD(void, glDebugMessageCallback, GLDEBUGPROC callback, const void *userParam) NATIVE_FUNCTION_END_NO_RETURN(void, glDebugMessageCallback, callback,userParam)
 NATIVE_FUNCTION_HEAD(GLuint, glGetDebugMessageLog, GLuint count, GLsizei bufSize, GLenum *sources, GLenum *types, GLuint *ids, GLenum *severities, GLsizei *lengths, GLchar *messageLog) NATIVE_FUNCTION_END(GLuint, glGetDebugMessageLog, count,bufSize,sources,types,ids,severities,lengths,messageLog)
 NATIVE_FUNCTION_HEAD(void, glPushDebugGroup, GLenum source, GLuint id, GLsizei length, const GLchar *message) NATIVE_FUNCTION_END_NO_RETURN(void, glPushDebugGroup, source,id,length,message)

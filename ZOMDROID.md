@@ -240,3 +240,20 @@ returns the backend `eglSwapBuffers` result so surface loss is reported on the c
 Its `ZOMDROID_PZ_THREADED_SUBMISSION` report shows command and packet totals, average packet fill,
 synchronous waits, queue-full waits, presentation wait time, maximum queue depth and swap failures.
 The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.
+
+## Ultimate ZBetterFPS model-pass marker
+
+The matching experimental Ultimate ZBetterFPS build can mark PZ's opaque and transparent
+`RenderList` model passes with four reserved `glDebugMessageInsert` IDs. MobileGlues consumes those
+IDs in the frontend before backend dispatch. They therefore produce no GLES driver call and do not
+flush threaded submission.
+
+With `MOBILEGLUES_PZ_CENSUS=1`, every 300 frames MobileGlues emits:
+
+```text
+ZOMDROID_PZ_MODEL_PASS frames=300 opaque=begin/end/gl_calls/draws/items transparent=... malformed=...
+```
+
+The Java option defaults off. `malformed=0` and matching begin/end totals confirm balanced markers.
+The marker only separates workload for measurement and later pass-specific fast paths; it does not
+change rendering by itself.
