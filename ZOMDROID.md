@@ -41,6 +41,18 @@ The packet owns a byte-for-byte copy until worker execution. Larger uploads reta
 the existing heap-owned path. With Census enabled, the threaded-submission report
 adds `upload_inline=calls/bytes` and `upload_heap=calls/bytes`.
 
+The matching Ultimate ZBetterFPS experimental marker can also enable exact
+deduplication of large zombie bone/uniform arrays:
+
+```text
+MOBILEGLUES_PZ_ZOMBIE_MODEL_FASTPATH=1  # opt-in, requires the Java zombie marker
+```
+
+Only identical 256–8192 byte uniform arrays inside an `IsoZombie` model render
+command are skipped. The cache compares the complete payload and invalidates any
+cached array touched by an overlapping uniform write. Draw calls, geometry and
+non-zombie uniforms are unchanged.
+
 Large static RGB/RGBA textures can be reduced before either an ordinary GLES
 upload or ETC2 encoding:
 
@@ -243,17 +255,17 @@ The report is collected and emitted only when `MOBILEGLUES_PZ_CENSUS=1`.
 
 ## Ultimate ZBetterFPS model-pass marker
 
-The matching experimental Ultimate ZBetterFPS build can mark PZ's opaque and transparent
-`RenderList` model passes with four reserved `glDebugMessageInsert` IDs. MobileGlues consumes those
-IDs in the frontend before backend dispatch. They therefore produce no GLES driver call and do not
+The matching experimental Ultimate ZBetterFPS build marks the actual
+`ModelSlotRenderData.render` path only when its character is an `IsoZombie`. It transports reserved
+IDs through `glUniform1f(-1, bit_payload)`, which MobileGlues consumes in the frontend before
+uniform caching or backend dispatch. The marker therefore produces no GLES driver call and does not
 flush threaded submission.
 
 With `MOBILEGLUES_PZ_CENSUS=1`, every 300 frames MobileGlues emits:
 
 ```text
-ZOMDROID_PZ_MODEL_PASS frames=300 opaque=begin/end/gl_calls/draws/items transparent=... malformed=...
+ZOMDROID_PZ_MODEL_PASS frames=300 opaque=... transparent=... zombie=begin/end/gl_calls/draws/items zombie_uniform=candidates/skipped/savedB malformed=0
 ```
 
-The Java option defaults off. `malformed=0` and matching begin/end totals confirm balanced markers.
-The marker only separates workload for measurement and later pass-specific fast paths; it does not
-change rendering by itself.
+The Java option and zombie model fast path default off. `malformed=0` and matching zombie begin/end
+totals confirm balanced markers. With the native fast path disabled, the marker only measures.

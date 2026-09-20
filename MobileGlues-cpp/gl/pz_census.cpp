@@ -13,6 +13,7 @@
 #include <array>
 #include <limits>
 #include <unordered_map>
+#include <vector>
 
 bool mg_pz_census_active = false;
 bool mg_pz_vao_fastpath_active = false;
@@ -26,6 +27,7 @@ bool mg_pz_quad_index_cache_active = false;
 bool mg_pz_threaded_submission_active = false;
 bool mg_pz_zbetterfps_fastpath_active = false;
 bool mg_pz_large_uniform_async_active = false;
+bool mg_pz_zombie_model_fastpath_active = false;
 bool mg_pz_etc2_active = false;
 bool mg_pz_etc2_cache_active = false;
 int mg_pz_texture_memory_mode = 0;
@@ -240,6 +242,84 @@ thread_local count_t g_uniform_active_values = 0;
 thread_local std::unordered_map<GLuint, uniform_value_t> g_attrib_values;
 thread_local unsigned long long g_uniform_context = 0;
 
+constexpr size_t kZombieUniformMinBytes = 256;
+constexpr size_t kZombieUniformMaxBytes = 8192;
+
+struct zombie_uniform_value_t {
+    uint32_t signature = 0;
+    GLsizei count = 0;
+    std::vector<unsigned char> value;
+};
+
+using zombie_uniform_locations_t = std::unordered_map<GLint, zombie_uniform_value_t>;
+thread_local std::unordered_map<GLuint, zombie_uniform_locations_t> g_zombie_uniform_programs;
+
+bool uniform_range(GLint location, GLsizei count, GLint* last) {
+    if (location < 0 || count <= 0) return false;
+    const long long end = static_cast<long long>(location) + static_cast<long long>(count) - 1;
+    if (end > std::numeric_limits<GLint>::max()) return false;
+    *last = static_cast<GLint>(end);
+    return true;
+}
+
+bool ranges_overlap(GLint first_a, GLint last_a, GLint first_b, GLint last_b) {
+    return first_a <= last_b && first_b <= last_a;
+}
+
+void zombie_uniform_invalidate_range(GLuint program, GLint first, GLint last, GLint keep = -1) {
+    const auto program_it = g_zombie_uniform_programs.find(program);
+    if (program_it == g_zombie_uniform_programs.end()) return;
+    auto& locations = program_it->second;
+    for (auto it = locations.begin(); it != locations.end();) {
+        GLint entry_last = 0;
+        const bool valid = uniform_range(it->first, it->second.count, &entry_last);
+        if (it->first == keep || (valid && !ranges_overlap(first, last, it->first, entry_last)))
+            ++it;
+        else
+            it = locations.erase(it);
+    }
+    if (locations.empty()) g_zombie_uniform_programs.erase(program_it);
+}
+
+bool zombie_large_uniform_call(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
+                               size_t element_bytes, bool allow_skip) {
+    if (!mg_pz_zombie_model_fastpath_active || program == 0 || location < 0 || count <= 0) return false;
+    GLint last = 0;
+    if (!uniform_range(location, count, &last)) return false;
+    if (value == nullptr || element_bytes == 0 ||
+        static_cast<size_t>(count) > std::numeric_limits<size_t>::max() / element_bytes) {
+        zombie_uniform_invalidate_range(program, location, last);
+        return false;
+    }
+
+    const size_t total_bytes = static_cast<size_t>(count) * element_bytes;
+    const bool candidate = count > 1 && total_bytes >= kZombieUniformMinBytes &&
+                           total_bytes <= kZombieUniformMaxBytes &&
+                           mg_pz_model_pass_current() == mg_pz_model_pass::zombie;
+    if (!candidate) {
+        zombie_uniform_invalidate_range(program, location, last);
+        return false;
+    }
+
+    auto& locations = g_zombie_uniform_programs[program];
+    const auto found = locations.find(location);
+    const bool exact = found != locations.end() && found->second.signature == signature &&
+                       found->second.count == count && found->second.value.size() == total_bytes &&
+                       std::memcmp(found->second.value.data(), value, total_bytes) == 0;
+    zombie_uniform_invalidate_range(program, location, last, location);
+    if (!exact) {
+        zombie_uniform_value_t& stored = g_zombie_uniform_programs[program][location];
+        stored.signature = signature;
+        stored.count = count;
+        const auto* first = static_cast<const unsigned char*>(value);
+        stored.value.assign(first, first + total_bytes);
+    }
+
+    const bool skipped = allow_skip && exact;
+    mg_pz_model_pass_large_uniform(total_bytes, skipped);
+    return skipped;
+}
+
 void uniform_invalidate_program(GLuint program) {
     if (mg_pz_census_active) {
         ++g_census.frame.uniform_epoch_invalidations;
@@ -411,6 +491,7 @@ void mg_pz_census_init(void) {
     mg_pz_zbetterfps_fastpath_active = default_on_switch("MOBILEGLUES_PZ_ZBETTERFPS_FASTPATH");
     mg_pz_large_uniform_async_active =
         mg_pz_threaded_submission_active && opt_in_switch("MOBILEGLUES_PZ_LARGE_UNIFORM_ASYNC");
+    mg_pz_zombie_model_fastpath_active = opt_in_switch("MOBILEGLUES_PZ_ZOMBIE_MODEL_FASTPATH");
     mg_pz_etc2_active = opt_in_switch("MOBILEGLUES_PZ_ETC2");
     mg_pz_etc2_cache_active = mg_pz_etc2_active && opt_in_switch("MOBILEGLUES_PZ_ETC2_CACHE");
     mg_pz_texture_memory_mode = clamped_int_switch("MOBILEGLUES_PZ_TEXTURE_MEMORY", 0, 2);
@@ -418,6 +499,7 @@ void mg_pz_census_init(void) {
     g_uniform_programs.clear();
     g_uniform_active_values = 0;
     g_attrib_values.clear();
+    g_zombie_uniform_programs.clear();
     g_uniform_context = 0;
     g_batch = {};
     mg_pz_model_pass_reset();
@@ -443,6 +525,8 @@ void mg_pz_census_init(void) {
             LOG_I("ZOMDROID_PZ_ZBETTERFPS_FASTPATH enabled=1 mode=packet_inline_upload max_bytes=1024")
         if (mg_pz_large_uniform_async_active)
             LOG_I("ZOMDROID_PZ_LARGE_UNIFORM_ASYNC enabled=1 mode=packet_owned max_packet_bytes=8192")
+        if (mg_pz_zombie_model_fastpath_active)
+            LOG_I("ZOMDROID_PZ_ZOMBIE_MODEL_FASTPATH enabled=1 mode=exact_large_uniform_dedup bytes=256..8192")
         if (mg_pz_etc2_active)
             LOG_I("ZOMDROID_PZ_ETC2 enabled=1 cache=%d min_pixels=262144", mg_pz_etc2_cache_active ? 1 : 0)
         if (mg_pz_texture_memory_mode != 0)
@@ -588,7 +672,11 @@ void mg_pz_census_bind_vao(bool same_frontend_binding, bool driver_confirmed, bo
 
 bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
                         size_t bytes) {
-    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return false;
+    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_zombie_model_fastpath_active) return false;
+    if (zombie_large_uniform_call(program, location, signature, count, value, bytes, true)) {
+        batch_resolve_pending(batch_pending_t::uniform, true);
+        return true;
+    }
     if (program == 0 || location < 0) {
         batch_resolve_pending(batch_pending_t::uniform, false);
         return false;
@@ -626,7 +714,10 @@ bool mg_pz_uniform_call(GLuint program, GLint location, uint32_t signature, GLsi
 
 void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signature, GLsizei count, const void* value,
                                 size_t bytes) {
-    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || program == 0 || location < 0) return;
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_zombie_model_fastpath_active) ||
+        program == 0 || location < 0)
+        return;
+    (void)zombie_large_uniform_call(program, location, signature, count, value, bytes, false);
     if (count != 1 || value == nullptr || bytes == 0 || bytes > 128) {
         batch_break(batch_break_t::uniform);
         uniform_invalidate_program(program);
@@ -652,8 +743,9 @@ void mg_pz_uniform_driver_write(GLuint program, GLint location, uint32_t signatu
 }
 
 void mg_pz_census_forget_program(GLuint program) {
-    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active) return;
+    if (!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_zombie_model_fastpath_active) return;
     batch_break(batch_break_t::uniform);
+    g_zombie_uniform_programs.erase(program);
     const auto found = g_uniform_programs.find(program);
     if (found == g_uniform_programs.end()) return;
     g_uniform_active_values -= found->second.active_values;
@@ -661,11 +753,14 @@ void mg_pz_census_forget_program(GLuint program) {
 }
 
 void mg_pz_census_context_changed(unsigned long long context_id) {
-    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active) || context_id == g_uniform_context) return;
+    if ((!mg_pz_census_active && !mg_pz_uniform_fastpath_active && !mg_pz_zombie_model_fastpath_active) ||
+        context_id == g_uniform_context)
+        return;
     g_uniform_context = context_id;
     g_uniform_programs.clear();
     g_uniform_active_values = 0;
     g_attrib_values.clear();
+    g_zombie_uniform_programs.clear();
     batch_reset_sequence();
 }
 

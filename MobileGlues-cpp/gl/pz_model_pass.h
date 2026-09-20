@@ -3,6 +3,7 @@
 #define MOBILEGLUES_PZ_MODEL_PASS_H
 
 #include <GL/gl.h>
+#include <cstddef>
 #include <cstdint>
 
 enum class mg_pz_model_pass : uint8_t {
@@ -22,7 +23,7 @@ constexpr GLuint MG_PZ_MARKER_ZOMBIE_BEGIN = 0x5A420105U;
 constexpr GLuint MG_PZ_MARKER_ZOMBIE_END = 0x5A420106U;
 constexpr GLint MG_PZ_MARKER_UNIFORM_LOCATION = -1;
 
-// Returns true only for one of the four reserved ZBetterFPS messages. A true
+// Returns true only for one of the six reserved ZBetterFPS messages. A true
 // result means the frontend consumed it and it must not be sent to the driver.
 bool mg_pz_model_pass_handle_marker(GLenum source, GLenum type, GLuint id);
 // Consumes the GL20-safe Java transport: glUniform1f(-1, bit_cast<float>(id)).
@@ -33,6 +34,7 @@ mg_pz_model_pass mg_pz_model_pass_current();
 // Census hooks. All are constant-time no-ops while census is disabled.
 void mg_pz_model_pass_gl_call();
 void mg_pz_model_pass_draw(GLsizei count, GLsizei instances);
+void mg_pz_model_pass_large_uniform(size_t bytes, bool skipped);
 void mg_pz_model_pass_present();
 void mg_pz_model_pass_reset();
 

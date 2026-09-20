@@ -16,6 +16,9 @@ struct pass_counts {
     count_t gl_calls = 0;
     count_t draws = 0;
     count_t items = 0;
+    count_t large_uniforms = 0;
+    count_t large_uniforms_skipped = 0;
+    count_t large_uniform_bytes_saved = 0;
 };
 
 struct marker_state {
@@ -41,6 +44,9 @@ void add(pass_counts& out, const pass_counts& in) {
     out.gl_calls += in.gl_calls;
     out.draws += in.draws;
     out.items += in.items;
+    out.large_uniforms += in.large_uniforms;
+    out.large_uniforms_skipped += in.large_uniforms_skipped;
+    out.large_uniform_bytes_saved += in.large_uniform_bytes_saved;
 }
 
 bool begin(mg_pz_model_pass pass) {
@@ -123,6 +129,16 @@ void mg_pz_model_pass_draw(GLsizei count, GLsizei instances) {
     }
 }
 
+void mg_pz_model_pass_large_uniform(size_t bytes, bool skipped) {
+    if (!mg_pz_census_active || g_marker.current != mg_pz_model_pass::zombie) return;
+    pass_counts& out = g_marker.frame[pass_index(g_marker.current)];
+    ++out.large_uniforms;
+    if (skipped) {
+        ++out.large_uniforms_skipped;
+        out.large_uniform_bytes_saved += static_cast<count_t>(bytes);
+    }
+}
+
 void mg_pz_model_pass_present() {
     if (!mg_pz_census_active) return;
     if (g_marker.current != mg_pz_model_pass::none) {
@@ -143,10 +159,12 @@ void mg_pz_model_pass_present() {
     const pass_counts& zombie = g_marker.window[2];
     if (opaque.begins != 0 || transparent.begins != 0 || zombie.begins != 0 || g_marker.malformed_window != 0) {
         LOG_I("ZOMDROID_PZ_MODEL_PASS frames=%u opaque=%llu/%llu/%llu/%llu/%llu "
-              "transparent=%llu/%llu/%llu/%llu/%llu zombie=%llu/%llu/%llu/%llu/%llu malformed=%llu",
+              "transparent=%llu/%llu/%llu/%llu/%llu zombie=%llu/%llu/%llu/%llu/%llu "
+              "zombie_uniform=%llu/%llu/%lluB malformed=%llu",
               g_marker.frames, opaque.begins, opaque.ends, opaque.gl_calls, opaque.draws, opaque.items,
               transparent.begins, transparent.ends, transparent.gl_calls, transparent.draws, transparent.items,
               zombie.begins, zombie.ends, zombie.gl_calls, zombie.draws, zombie.items,
+              zombie.large_uniforms, zombie.large_uniforms_skipped, zombie.large_uniform_bytes_saved,
               g_marker.malformed_window)
     }
     g_marker.window[0] = {};

@@ -49,12 +49,16 @@ int main() {
            "uniform marker transport did not consume zombie begin");
     mg_pz_model_pass_gl_call();
     mg_pz_model_pass_draw(36, 4);
+    mg_pz_model_pass_large_uniform(2048, false);
+    mg_pz_model_pass_large_uniform(2048, true);
     expect(mg_pz_model_pass_handle_uniform_marker(
                MG_PZ_MARKER_UNIFORM_LOCATION, std::bit_cast<GLfloat>(MG_PZ_MARKER_ZOMBIE_END)),
            "uniform marker transport did not consume zombie end");
     for (int frame = 0; frame < 300; ++frame) mg_pz_model_pass_present();
     expect(last_log.find("zombie=1/1/1/1/144") != std::string::npos,
            "zombie marker census did not preserve counts");
+    expect(last_log.find("zombie_uniform=2/1/2048B") != std::string::npos,
+           "zombie large-uniform census did not preserve skips and saved bytes");
 
     mg_pz_model_pass_reset();
     expect(!mg_pz_model_pass_handle_marker(MG_PZ_MARKER_SOURCE_APPLICATION, MG_PZ_MARKER_TYPE, 7),

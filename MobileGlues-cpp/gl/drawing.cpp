@@ -962,7 +962,7 @@ void glUniform1i(GLint location, GLint v0) {
     LOG_D("glUniform1i, location: %d, v0: %d", location, v0)
 #if defined(ZOMDROID_EXPERIMENTAL)
     mg_pz_note_draw_pixels(gl_state->current_program, location, v0);
-    if ((mg_pz_census_active || mg_pz_uniform_fastpath_active) &&
+    if ((mg_pz_census_active || mg_pz_uniform_fastpath_active || mg_pz_zombie_model_fastpath_active) &&
         mg_pz_uniform_call(gl_state->current_program, location, 0x101U, 1, &v0, sizeof(v0)))
         return;
 #endif

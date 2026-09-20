@@ -355,7 +355,8 @@ void mg_pz_pop_color_mask_suppression(bool restore) {
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_UNIFORM_RETURN_IF_REDUNDANT(call)                                                                           \
     do {                                                                                                               \
-        if ((mg_pz_census_active || mg_pz_uniform_fastpath_active) && (call)) return;                                  \
+        if ((mg_pz_census_active || mg_pz_uniform_fastpath_active || mg_pz_zombie_model_fastpath_active) && (call))   \
+            return;                                                                                                    \
     } while (0)
 #else
 #define MG_UNIFORM_RETURN_IF_REDUNDANT(call)                                                                           \

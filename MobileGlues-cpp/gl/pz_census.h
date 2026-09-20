@@ -27,6 +27,7 @@ extern bool mg_pz_quad_index_cache_active;
 extern bool mg_pz_threaded_submission_active;
 extern bool mg_pz_zbetterfps_fastpath_active;
 extern bool mg_pz_large_uniform_async_active;
+extern bool mg_pz_zombie_model_fastpath_active;
 extern bool mg_pz_etc2_active;
 extern bool mg_pz_etc2_cache_active;
 extern int mg_pz_texture_memory_mode;
@@ -82,7 +83,7 @@ void mg_pz_census_present(bool succeeded);
 #if defined(ZOMDROID_EXPERIMENTAL)
 #define MG_PZ_UNIFORM_STATE(call)                                                                                      \
     do {                                                                                                               \
-        if (mg_pz_census_active || mg_pz_uniform_fastpath_active) call;                                                \
+        if (mg_pz_census_active || mg_pz_uniform_fastpath_active || mg_pz_zombie_model_fastpath_active) call;         \
     } while (0)
 #else
 #define MG_PZ_UNIFORM_STATE(call)                                                                                      \
