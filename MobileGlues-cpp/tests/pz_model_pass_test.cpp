@@ -2,6 +2,7 @@
 #include "gl/pz_census.h"
 
 #include <cstdarg>
+#include <bit>
 #include <cstdio>
 #include <string>
 
@@ -27,6 +28,22 @@ static void expect(bool condition, const char* message) {
 }
 
 int main() {
+    mg_pz_model_pass_reset();
+    expect(!mg_pz_model_pass_handle_uniform_marker(3, std::bit_cast<GLfloat>(MG_PZ_MARKER_OPAQUE_BEGIN)),
+           "ordinary uniform locations must reach the backend");
+    expect(!mg_pz_model_pass_handle_uniform_marker(MG_PZ_MARKER_UNIFORM_LOCATION, 1.0f),
+           "ordinary glUniform1f(-1) values must retain normal no-op semantics");
+    expect(mg_pz_model_pass_handle_uniform_marker(
+               MG_PZ_MARKER_UNIFORM_LOCATION, std::bit_cast<GLfloat>(MG_PZ_MARKER_OPAQUE_BEGIN)),
+           "uniform marker transport did not consume opaque begin");
+    expect(mg_pz_model_pass_current() == mg_pz_model_pass::opaque,
+           "uniform marker transport did not open opaque pass");
+    expect(mg_pz_model_pass_handle_uniform_marker(
+               MG_PZ_MARKER_UNIFORM_LOCATION, std::bit_cast<GLfloat>(MG_PZ_MARKER_OPAQUE_END)),
+           "uniform marker transport did not consume opaque end");
+    expect(mg_pz_model_pass_current() == mg_pz_model_pass::none,
+           "uniform marker transport did not close opaque pass");
+
     mg_pz_model_pass_reset();
     expect(!mg_pz_model_pass_handle_marker(MG_PZ_MARKER_SOURCE_APPLICATION, MG_PZ_MARKER_TYPE, 7),
            "unreserved debug markers must reach the backend");

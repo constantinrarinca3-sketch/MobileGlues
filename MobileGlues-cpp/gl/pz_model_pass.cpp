@@ -3,6 +3,8 @@
 #include "log.h"
 #include "pz_census.h"
 
+#include <bit>
+
 namespace {
 
 using count_t = unsigned long long;
@@ -62,6 +64,23 @@ bool end(mg_pz_model_pass pass) {
 
 bool mg_pz_model_pass_handle_marker(GLenum source, GLenum type, GLuint id) {
     if (source != MG_PZ_MARKER_SOURCE_APPLICATION || type != MG_PZ_MARKER_TYPE) return false;
+    switch (id) {
+    case MG_PZ_MARKER_OPAQUE_BEGIN:
+        return begin(mg_pz_model_pass::opaque);
+    case MG_PZ_MARKER_OPAQUE_END:
+        return end(mg_pz_model_pass::opaque);
+    case MG_PZ_MARKER_TRANSPARENT_BEGIN:
+        return begin(mg_pz_model_pass::transparent);
+    case MG_PZ_MARKER_TRANSPARENT_END:
+        return end(mg_pz_model_pass::transparent);
+    default:
+        return false;
+    }
+}
+
+bool mg_pz_model_pass_handle_uniform_marker(GLint location, GLfloat value) {
+    if (location != MG_PZ_MARKER_UNIFORM_LOCATION) return false;
+    const GLuint id = std::bit_cast<GLuint>(value);
     switch (id) {
     case MG_PZ_MARKER_OPAQUE_BEGIN:
         return begin(mg_pz_model_pass::opaque);

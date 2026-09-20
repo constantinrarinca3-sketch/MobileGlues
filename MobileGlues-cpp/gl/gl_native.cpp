@@ -622,7 +622,23 @@ NATIVE_FUNCTION_HEAD(void, glTexParameterfv, GLenum target, GLenum pname, const 
 //NATIVE_FUNCTION_HEAD(void, glTexParameteri, GLenum target, GLenum pname, GLint param) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteri, target,pname,param)
 //NATIVE_FUNCTION_HEAD(void, glTexParameteriv, GLenum target, GLenum pname, const GLint *params) NATIVE_FUNCTION_END_NO_RETURN(void, glTexParameteriv, target,pname,params)
 //NATIVE_FUNCTION_HEAD(void, glTexSubImage2D, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) NATIVE_FUNCTION_END_NO_RETURN(void, glTexSubImage2D, target,level,xoffset,yoffset,width,height,format,type,pixels)
-MG_UNIFORM_SCALAR1(glUniform1f, GLfloat, 0x301U)
+#ifndef __APPLE__
+extern "C" GLAPI GLAPIENTRY void glUniform1fARB(GLint location, GLfloat v0)
+    __attribute__((alias("glUniform1f")));
+#endif
+extern "C" GLAPI GLAPIENTRY void glUniform1f(GLint location, GLfloat v0) {
+#if defined(ZOMDROID_EXPERIMENTAL)
+    // Consume the Java model-pass transport before LOG()/census, uniform
+    // caching and threaded dispatch. Four markers therefore add no backend
+    // work and are not counted as calls inside their own pass.
+    if (mg_pz_model_pass_handle_uniform_marker(location, v0)) return;
+#endif
+    LOG()
+    MG_UNIFORM_RETURN_IF_REDUNDANT(
+        uniform_scalars_should_skip(gl_state->current_program, location, 0x301U, v0));
+    LOG_D("Use native function: %s @ %s(...)", RENDERERNAME, __FUNCTION__);
+    GLES.glUniform1f(location, v0);
+}
 MG_UNIFORM_VECTOR(glUniform1fv, GLfloat, 1, 0x301U)
 //NATIVE_FUNCTION_HEAD(void, glUniform1i, GLint location, GLint v0) NATIVE_FUNCTION_END_NO_RETURN(void, glUniform1i, location,v0)
 MG_UNIFORM_VECTOR(glUniform1iv, GLint, 1, 0x101U)
