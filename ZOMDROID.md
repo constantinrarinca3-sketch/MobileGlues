@@ -21,6 +21,22 @@ GLES 3.2. Test cold start, credits, menu, world load, zoom, lighting/weather, wo
 five-minute driving route. Any black world, missing texture, shader failure, delayed world or crash
 rejects the renderer without changing another route.
 
+## World-only material stream experiment
+
+The texture-array material stream is a separate switch from its repack base:
+
+```text
+MOBILEGLUES_PZ_REPACK_RENDERER=1  # required base, keep constant for A/B
+MOBILEGLUES_PZ_MATERIAL_STREAM=1  # world-only material stream ON
+MOBILEGLUES_PZ_MATERIAL_STREAM=0  # material stream OFF (default)
+```
+
+Both values must be present before MobileGlues initializes. Restart after changing them.
+With the repack base kept ON, changing only `MOBILEGLUES_PZ_MATERIAL_STREAM`
+isolates the material-stream renderer. The experiment accepts compatible
+tile-depth draws only; unsupported draws keep the original route. Neither switch
+controls PZOpt's Java toggle menu or the separate macOS Lighting JNI library.
+
 ## Project Zomboid census (optimization branch)
 
 The diagnostic census is controlled only through the renderer environment:
