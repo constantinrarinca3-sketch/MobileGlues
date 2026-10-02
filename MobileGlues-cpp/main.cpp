@@ -84,13 +84,15 @@ void proc_init() {
 #if defined(ZOMDROID_EXPERIMENTAL)
     const char* repack_renderer = std::getenv("MOBILEGLUES_PZ_REPACK_RENDERER");
     if (repack_renderer != nullptr && std::strcmp(repack_renderer, "1") == 0) {
+        const char* material_stream = std::getenv("MOBILEGLUES_PZ_MATERIAL_STREAM");
+        const bool material_enabled = material_stream != nullptr && std::strcmp(material_stream, "1") == 0;
         mg_pz_repack_renderer_install();
-        mg_pz_material_stream_v493_install();
+        if (material_enabled) mg_pz_material_stream_v493_install();
         mg_pz_repack_draw_router_install();
-        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493_ROUTE enabled=1 revision=4.9.3-world-only mode=perf_ceiling "
+        LOG_I("ZOMDROID_PZ_MATERIAL_STREAM_V493_ROUTE enabled=%d revision=4.9.3-world-only mode=perf_ceiling "
               "base=v492 texture_guard=uint32_overflow_band depth_aux=ssbo_sidecar "
               "inputs=loc3_vec2+optional_loc4_vec2 mask_contract=aux2 ordering=preserved "
-              "capture=tile_depth_only no_depth=passthrough stable_untouched=1")
+              "capture=tile_depth_only no_depth=passthrough stable_untouched=1", material_enabled ? 1 : 0)
     } else {
         mg_pz_repack_probe_install();
     }
